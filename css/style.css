@@ -1580,3 +1580,207 @@ ul, ol {
     font-size: 14px;
   }
 }
+
+/* ============================================
+   SETTINGS GEAR BUTTON & MODAL
+   ============================================ */
+.btn--settings {
+  background: var(--white-06);
+  border: 1px solid var(--border-color);
+  font-size: 18px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all var(--transition-base);
+  cursor: pointer;
+  margin-right: 12px;
+}
+
+.btn--settings:hover {
+  background: var(--white-12);
+  border-color: var(--border-color-hover);
+  transform: rotate(30deg);
+}
+
+/* Modal Window */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.modal.active {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.modal__overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+}
+
+.modal__card {
+  position: relative;
+  width: 100%;
+  max-width: 580px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 36px;
+  z-index: 2;
+  box-shadow: var(--shadow-lg);
+  transform: scale(0.9);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal.active .modal__card {
+  transform: scale(1);
+}
+
+.modal__close {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: var(--white-50);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.modal__close:hover {
+  color: var(--white);
+}
+
+.modal__title {
+  font-size: 22px;
+  font-weight: var(--fw-bold);
+  color: var(--white);
+  margin-bottom: 10px;
+}
+
+.modal__subtitle {
+  font-size: 14px;
+  color: var(--white-50);
+  line-height: 1.5;
+  margin-bottom: 24px;
+}
+
+.modal__form-group {
+  margin-bottom: 20px;
+}
+
+.modal__label {
+  display: block;
+  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  color: var(--white-90);
+  margin-bottom: 8px;
+}
+
+.modal__input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  color: var(--white);
+  font-size: 14px;
+  font-family: inherit;
+  transition: all var(--transition-base);
+}
+
+.modal__input:focus {
+  outline: none;
+  border-color: #F9D423;
+  box-shadow: 0 0 12px rgba(249, 212, 35, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.modal__input-help {
+  font-size: 12px;
+  color: var(--white-40);
+  margin-top: 6px;
+}
+
+.modal__divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 24px 0;
+}
+
+.modal__guide {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.modal__guide-title {
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  color: var(--white-90);
+  margin-bottom: 12px;
+}
+
+.modal__guide-list {
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--white-60);
+  line-height: 1.8;
+}
+
+.modal__guide-list li {
+  margin-bottom: 8px;
+}
+
+.modal__code {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: monospace;
+  color: #FF4E50;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* Adjustments for mobile view */
+@media (max-width: 768px) {
+  .modal__card {
+    padding: 24px;
+    max-width: calc(100vw - 32px);
+  }
+  .modal__actions {
+    flex-direction: column-reverse;
+  }
+  .modal__actions .btn {
+    width: 100%;
+    margin-top: 10px;
+  }
+  .btn--settings {
+    margin-right: 8px;
+  }
+}

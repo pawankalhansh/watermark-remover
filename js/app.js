@@ -45,6 +45,19 @@
   // Tabs
   const tabBtns = $$('.tabs__btn');
 
+  // Settings Modal
+  const settingsBtn = $('#settingsBtn');
+  const settingsModal = $('#settingsModal');
+  const modalCloseBtn = $('#modalCloseBtn');
+  const modalCancelBtn = $('#modalCancelBtn');
+  const modalSaveBtn = $('#modalSaveBtn');
+  const workerUrlInput = $('#workerUrlInput');
+  const modalOverlay = $('#modalOverlay');
+
+  // Cloudflare Worker URL storage
+  let workerUrl = localStorage.getItem('cloudflare_worker_url') || '';
+  if (workerUrlInput) workerUrlInput.value = workerUrl;
+
   // ============================================
   // MOBILE NAVIGATION
   // ============================================
@@ -62,6 +75,39 @@
       document.body.style.overflow = '';
     });
   });
+
+  // ============================================
+  // SETTINGS MODAL INTERACTIONS
+  // ============================================
+  const openSettingsModal = () => {
+    settingsModal.classList.add('active');
+    settingsModal.setAttribute('aria-hidden', 'false');
+    if (workerUrlInput) workerUrlInput.value = workerUrl;
+  };
+
+  const closeSettingsModal = () => {
+    settingsModal.classList.remove('active');
+    settingsModal.setAttribute('aria-hidden', 'true');
+  };
+
+  if (settingsBtn) settingsBtn.addEventListener('click', openSettingsModal);
+  if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeSettingsModal);
+  if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeSettingsModal);
+  if (modalOverlay) modalOverlay.addEventListener('click', closeSettingsModal);
+
+  if (modalSaveBtn) {
+    modalSaveBtn.addEventListener('click', () => {
+      const url = workerUrlInput.value.trim();
+      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+        showToast('❌ Please enter a valid HTTP or HTTPS URL.');
+        return;
+      }
+      workerUrl = url;
+      localStorage.setItem('cloudflare_worker_url', url);
+      closeSettingsModal();
+      showToast('💾 Settings saved successfully!');
+    });
+  }
 
   // Header scroll effect
   let lastScroll = 0;
@@ -199,7 +245,7 @@
     reader.readAsDataURL(file);
   }
 
-  function startProcessing(img) {
+  async function startProcessing(img) {
     uploadArea.style.display = 'none';
     resultState.classList.remove('active');
     processingState.classList.add('active');
@@ -207,29 +253,198 @@
 
     let progress = 0;
     const progressInterval = setInterval(() => {
-      progress += Math.random() * 8;
+      progress += Math.random() * 6;
       if (progress > 90) progress = 90;
       progressFill.style.width = progress + '%';
     }, 150);
 
-    // Use setTimeout to allow UI to render, then process
-    setTimeout(() => {
-      processedCanvas = processImage(img);
+    try {
+      if (workerUrl) {
+        showToast('🚀 Running AI Inpainting on Cloudflare...', 2500);
+        // Create the mask canvas to get the binary mask for the worker
+        const maskCanvas = generateDetectedMaskCanvas(img);
+        
+        // Convert original image and mask canvas to blobs
+        const originalBlob = await getCanvasBlob(createResizedCanvas(img, 1600));
+        const maskBlob = await getCanvasBlob(maskCanvas);
 
+        // Send to Cloudflare Worker
+        const formData = new FormData();
+        formData.append('image', originalBlob, 'image.png');
+        formData.append('mask', maskBlob, 'mask.png');
+
+        const response = await fetch(workerUrl, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          throw new Error(`Worker returned status ${response.status}`);
+        }
+
+        const resultBlob = await response.blob();
+        const resultUrl = URL.createObjectURL(resultBlob);
+
+        // Load the resulting image back into processedCanvas
+        const resultImg = new Image();
+        await new Promise((resolve, reject) => {
+          resultImg.onload = () => {
+            processedCanvas = document.createElement('canvas');
+            processedCanvas.width = resultImg.width;
+            processedCanvas.height = resultImg.height;
+            const pCtx = processedCanvas.getContext('2d');
+            pCtx.drawImage(resultImg, 0, 0);
+            resolve();
+          };
+          resultImg.onerror = reject;
+          resultImg.src = resultUrl;
+        });
+
+        showToast('✨ Flawless AI Inpainting Completed!');
+      } else {
+        // Standard mathematical client-side fallback
+        processedCanvas = processImageLocal(img);
+      }
+    } catch (err) {
+      console.error('AI inpainting failed, falling back to mathematical method:', err);
+      showToast('⚠️ AI Worker failed. Falling back to local inpainting.');
+      processedCanvas = processImageLocal(img);
+    } finally {
       clearInterval(progressInterval);
       progressFill.style.width = '100%';
-
       setTimeout(() => {
         showResult(img);
       }, 400);
-    }, 800);
+    }
   }
 
   // ============================================
-  // ADVANCED CLIENT-SIDE WATERMARK REMOVAL
+  // CLOUDFLARE AI HELPER FUNCTIONS
+  // ============================================
+  function getCanvasBlob(canvas) {
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), 'image/png');
+    });
+  }
+
+  function createResizedCanvas(img, maxDim) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    let w = img.naturalWidth;
+    let h = img.naturalHeight;
+    if (w > maxDim || h > maxDim) {
+      const scale = maxDim / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas;
+  }
+
+  function generateDetectedMaskCanvas(img) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    const maxDim = 1600;
+    let w = img.naturalWidth;
+    let h = img.naturalHeight;
+    if (w > maxDim || h > maxDim) {
+      const scale = maxDim / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+
+    const blockSize = 12;
+    const medianR = new Float32Array(w * h);
+    const medianG = new Float32Array(w * h);
+    const medianB = new Float32Array(w * h);
+    computeLocalMedian(data, w, h, blockSize, medianR, medianG, medianB);
+
+    const watermarkMask = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        const i = idx * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const mr = medianR[idx], mg = medianG[idx], mb = medianB[idx];
+        let score = 0;
+
+        const brightness = (r + g + b) / 3;
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
+
+        if (brightness > 180 && saturation < 0.15) {
+          const medBrightness = (mr + mg + mb) / 3;
+          const contrast = brightness - medBrightness;
+          if (contrast > 30) {
+            score = Math.max(score, Math.min(contrast / 80, 1.0));
+          }
+        }
+
+        const pixHue = rgbToHue(r, g, b);
+        const medHue = rgbToHue(mr, mg, mb);
+        const hueDiff = hueDistance(pixHue, medHue);
+        const colorDiff = Math.sqrt(
+          Math.pow(r - mr, 2) + Math.pow(g - mg, 2) + Math.pow(b - mb, 2)
+        );
+
+        if (hueDiff > 15 && colorDiff > 25) {
+          const colorScore = Math.min((hueDiff / 60) * (colorDiff / 60), 1.0);
+          score = Math.max(score, colorScore);
+        }
+
+        const dr = r - mr, dg = g - mg, db = b - mb;
+        const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
+        if (pullMagnitude > 20) {
+          const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
+          const directionality = maxPull / (pullMagnitude + 1);
+          if (directionality > 0.5) {
+            const overlayScore = Math.min(pullMagnitude / 80, 1.0) * directionality;
+            score = Math.max(score, overlayScore);
+          }
+        }
+        watermarkMask[idx] = score;
+      }
+    }
+
+    const binaryMask = new Uint8Array(w * h);
+    const threshold = 0.25;
+    for (let i = 0; i < w * h; i++) {
+      binaryMask[i] = watermarkMask[i] > threshold ? 1 : 0;
+    }
+
+    cleanMask(binaryMask, w, h, 3, 4);
+    const dilatedMask = dilateMask(binaryMask, w, h, 3);
+
+    // Draw black and white mask image
+    const maskImageData = ctx.createImageData(w, h);
+    const maskData = maskImageData.data;
+    for (let i = 0; i < w * h; i++) {
+      const val = dilatedMask[i] ? 255 : 0;
+      const mi = i * 4;
+      maskData[mi] = val;
+      maskData[mi + 1] = val;
+      maskData[mi + 2] = val;
+      maskData[mi + 3] = 255;
+    }
+    ctx.putImageData(maskImageData, 0, 0);
+    return canvas;
+  }
+
+  // ============================================
+  // ADVANCED CLIENT-SIDE WATERMARK REMOVAL (FALLBACK)
   // Handles: White/gray, colored (red/blue/etc), semi-transparent overlays
   // ============================================
-  function processImage(img) {
+  function processImageLocal(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
@@ -299,15 +514,12 @@
         }
 
         // Strategy 3: Semi-transparent overlay detection
-        // An overlay shifts pixel towards overlay color uniformly
-        // Detect by checking if pixel is "pulled" away from median in a consistent direction
         const dr = r - mr, dg = g - mg, db = b - mb;
         const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
 
         if (pullMagnitude > 20) {
-          // Check if the pull direction is consistent with a colored overlay
           const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
-          const directionality = maxPull / (pullMagnitude + 1); // How directional the shift is
+          const directionality = maxPull / (pullMagnitude + 1);
           if (directionality > 0.5) {
             const overlayScore = Math.min(pullMagnitude / 80, 1.0) * directionality;
             score = Math.max(score, overlayScore);
@@ -326,14 +538,10 @@
       binaryMask[i] = watermarkMask[i] > threshold ? 1 : 0;
     }
 
-    // Remove small isolated detections (noise)
     cleanMask(binaryMask, w, h, 3, 4);
-
-    // Dilate to cover edges of watermark
     const dilatedMask = dilateMask(binaryMask, w, h, 3);
 
     // ---- STEP 4: Inpaint - replace watermark pixels ----
-    // Use multi-radius neighbor interpolation from clean pixels
     const outputData = new Uint8ClampedArray(data);
 
     for (let y = 0; y < h; y++) {
@@ -343,16 +551,13 @@
           const i = idx * 4;
           const confidence = watermarkMask[idx];
 
-          // Get clean neighbor average with expanding radius
           const clean = getCleanNeighborWeighted(data, dilatedMask, x, y, w, h);
 
           if (confidence > 0.6) {
-            // Strong watermark — fully replace
             outputData[i] = clean.r;
             outputData[i + 1] = clean.g;
             outputData[i + 2] = clean.b;
           } else {
-            // Partial watermark — blend with original
             const blend = Math.min(confidence * 2, 1.0);
             outputData[i] = Math.round(data[i] * (1 - blend) + clean.r * blend);
             outputData[i + 1] = Math.round(data[i + 1] * (1 - blend) + clean.g * blend);
@@ -370,7 +575,6 @@
           const idx = y * w + x;
           if (dilatedMask[idx]) {
             const i = idx * 4;
-            // 5x5 weighted average (Gaussian-like)
             let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
             for (let dy = -2; dy <= 2; dy++) {
               for (let dx = -2; dx <= 2; dx++) {
@@ -389,7 +593,6 @@
           }
         }
       }
-      // Copy back for next pass
       for (let i = 0; i < finalData.length; i++) {
         outputData[i] = finalData[i];
       }
@@ -749,10 +952,80 @@
     document.addEventListener('touchend', onEnd);
 
     // Apply button — inpaint the painted areas
-    $('#brushApplyBtn').addEventListener('click', () => {
-      showToast('Processing painted areas...', 2000);
+    $('#brushApplyBtn').addEventListener('click', async () => {
+      showToast('Processing painted areas...', 3000);
 
-      setTimeout(() => {
+      // Create a canvas for the mask to convert to blob
+      const maskBlobCanvas = document.createElement('canvas');
+      maskBlobCanvas.width = brushCanvas.width;
+      maskBlobCanvas.height = brushCanvas.height;
+      const maskBlobCtx = maskBlobCanvas.getContext('2d');
+      // Draw the user mask onto it as black and white
+      maskBlobCtx.fillStyle = 'black';
+      maskBlobCtx.fillRect(0, 0, brushCanvas.width, brushCanvas.height);
+      maskBlobCtx.drawImage(maskCanvas, 0, 0);
+
+      try {
+        if (workerUrl) {
+          showToast('🚀 Running AI Touch-up on Cloudflare...', 2500);
+          
+          const origCanvas = document.createElement('canvas');
+          origCanvas.width = brushCanvas.width;
+          origCanvas.height = brushCanvas.height;
+          const origCtx = origCanvas.getContext('2d');
+          origCtx.drawImage(sourceImage, 0, 0, brushCanvas.width, brushCanvas.height);
+
+          const originalBlob = await getCanvasBlob(origCanvas);
+          const maskBlob = await getCanvasBlob(maskBlobCanvas);
+
+          const formData = new FormData();
+          formData.append('image', originalBlob, 'image.png');
+          formData.append('mask', maskBlob, 'mask.png');
+
+          const response = await fetch(workerUrl, {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!response.ok) {
+            throw new Error(`Worker returned status ${response.status}`);
+          }
+
+          const resultBlob = await response.blob();
+          const resultUrl = URL.createObjectURL(resultBlob);
+
+          const resultImg = new Image();
+          await new Promise((resolve, reject) => {
+            resultImg.onload = () => {
+              brushCtx.drawImage(resultImg, 0, 0);
+              resolve();
+            };
+            resultImg.onerror = reject;
+            resultImg.src = resultUrl;
+          });
+
+          // Update processed canvas
+          const pCtx = processedCanvas.getContext('2d');
+          pCtx.drawImage(brushCanvas, 0, 0);
+
+          // Update result image
+          resultAfter.src = processedCanvas.toDataURL('image/png');
+
+          // Clear paint overlay
+          paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+          maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+
+          showToast('✨ AI Touch-up applied successfully!', 3000);
+        } else {
+          runLocalBrushInpaint();
+        }
+      } catch (err) {
+        console.error('AI manual inpainting failed, using local fallback:', err);
+        showToast('⚠️ AI worker error. Using local fallback.');
+        runLocalBrushInpaint();
+      }
+
+      function runLocalBrushInpaint() {
         // Get the mask
         const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
         const srcData = brushCtx.getImageData(0, 0, brushCanvas.width, brushCanvas.height);
@@ -765,15 +1038,6 @@
           paintMask[i] = maskData[i * 4] > 128 ? 1 : 0;
         }
 
-        // Get original image data for reference
-        const origCanvas = document.createElement('canvas');
-        origCanvas.width = bw;
-        origCanvas.height = bh;
-        const origCtx = origCanvas.getContext('2d');
-        origCtx.drawImage(sourceImage, 0, 0, bw, bh);
-        const origData = origCtx.getImageData(0, 0, bw, bh).data;
-
-        // Inpaint painted areas using clean neighbors
         const dilatedPaint = dilateMask(paintMask, bw, bh, 2);
 
         for (let y = 0; y < bh; y++) {
@@ -788,7 +1052,6 @@
           }
         }
 
-        // Smooth inpainted region
         const smoothed = new Uint8ClampedArray(pixels);
         for (let y = 2; y < bh - 2; y++) {
           for (let x = 2; x < bw - 2; x++) {
@@ -827,7 +1090,7 @@
         maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
         showToast('✅ Touch-up applied! Paint more or click Apply again.', 3000);
-      }, 100);
+      }
     });
 
     // Cancel

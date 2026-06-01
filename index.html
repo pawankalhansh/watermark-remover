@@ -45,6 +45,9 @@
             </nav>
 
             <div class="header__actions">
+                <button class="btn btn--settings" id="settingsBtn" title="AI Settings" aria-label="AI Settings">
+                    ⚙️
+                </button>
                 <a href="#hero" class="btn btn--primary" id="headerCta">Try Free</a>
                 <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
                     <span class="hamburger__line"></span>
@@ -537,6 +540,41 @@
             </div>
         </div>
     </footer>
+
+    <!-- ========== SETTINGS MODAL ========== -->
+    <div class="modal" id="settingsModal" aria-hidden="true">
+        <div class="modal__overlay" id="modalOverlay"></div>
+        <div class="modal__card">
+            <button class="modal__close" id="modalCloseBtn" aria-label="Close Settings">✕</button>
+            
+            <h3 class="modal__title">⚙️ AI Settings (Cloudflare Workers)</h3>
+            <p class="modal__subtitle">Enable flawless, deep-learning watermark removal powered by Stable Diffusion AI for free!</p>
+
+            <div class="modal__form-group">
+                <label class="modal__label" for="workerUrlInput">Cloudflare Worker API URL:</label>
+                <input type="url" class="modal__input" id="workerUrlInput" placeholder="https://watermark-remover-ai.your-subdomain.workers.dev" />
+                <p class="modal__input-help">Leave empty to use the fast, local client-side mathematical fallback.</p>
+            </div>
+
+            <div class="modal__divider"></div>
+
+            <div class="modal__guide">
+                <h4 class="modal__guide-title">🛠️ Cloudflare Worker Kaise Deploy Karein? (Step-by-Step)</h4>
+                <ol class="modal__guide-list">
+                    <li>Aapke project folder me ek <code>worker</code> folder banaya gaya hai jisme AI backend code hai.</li>
+                    <li>Sabhse pehle computer me terminal/PowerShell kholein aur Wrangler install karein: <br><code class="modal__code">npm install -g wrangler</code></li>
+                    <li>Cloudflare account me login karein: <br><code class="modal__code">npx wrangler login</code></li>
+                    <li>Worker folder ke andar jayein aur deploy command chalayein: <br><code class="modal__code">cd "d:\Water mark remover\worker"</code> <br><code class="modal__code">npx wrangler deploy</code></li>
+                    <li>Deployment ke baad terminal me ek <strong>*.workers.dev</strong> ka URL milega. Us URL ko copy karke upar box me paste kar ke <strong>Save</strong> kar dein!</li>
+                </ol>
+            </div>
+
+            <div class="modal__actions">
+                <button class="btn btn--outline" id="modalCancelBtn">Cancel</button>
+                <button class="btn btn--primary" id="modalSaveBtn">💾 Save Config</button>
+            </div>
+        </div>
+    </div>
 
     <script src="js/app.js"></script>
 </body>
