@@ -280,6 +280,57 @@
     const srcRGB = new cv.Mat();
     cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
 
+    const safeMask = buildOpenCVWatermarkMask(srcRGB, w, h);
+    const safeMaskPixelCount = cv.countNonZero(safeMask);
+    const safeTotalPixels = w * h;
+    const safePct = (safeMaskPixelCount / safeTotalPixels * 100).toFixed(2);
+    console.log(`[WMR v4] Mask detection: ${safeMaskPixelCount} / ${safeTotalPixels} pixels (${safePct}%)`);
+
+    if (safeMaskPixelCount === 0 || safeMaskPixelCount / safeTotalPixels < 0.00005) {
+      showToast('No clear watermark detected. Use Touch Up to paint the exact text/logo area.', 5000);
+      safeMask.delete();
+      srcRGB.delete();
+      srcMat.delete();
+      return srcCanvas;
+    }
+
+    if (safeMaskPixelCount / safeTotalPixels > 0.18) {
+      showToast(`Watermark detection captured too much (${safePct}%). Use Touch Up for this image.`, 5000);
+      safeMask.delete();
+      srcRGB.delete();
+      srcMat.delete();
+      return srcCanvas;
+    }
+
+    showToast(`Detected watermark strokes (${safePct}%). Cleaning image...`, 3500);
+
+    const closeKernelSafe = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+    const closedMaskSafe = new cv.Mat();
+    cv.morphologyEx(safeMask, closedMaskSafe, cv.MORPH_CLOSE, closeKernelSafe, new cv.Point(-1, -1), 1);
+
+    const openMaskSafe = new cv.Mat();
+    cv.morphologyEx(closedMaskSafe, openMaskSafe, cv.MORPH_OPEN, closeKernelSafe, new cv.Point(-1, -1), 1);
+
+    const dilateKernelSafe = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
+    const dilatedMaskSafe = new cv.Mat();
+    cv.dilate(openMaskSafe, dilatedMaskSafe, dilateKernelSafe, new cv.Point(-1, -1), 1);
+
+    const dstSafe = new cv.Mat();
+    cv.inpaint(srcRGB, dilatedMaskSafe, dstSafe, 3, cv.INPAINT_TELEA);
+    cv.imshow(srcCanvas, dstSafe);
+
+    srcMat.delete();
+    srcRGB.delete();
+    safeMask.delete();
+    closeKernelSafe.delete();
+    closedMaskSafe.delete();
+    openMaskSafe.delete();
+    dilateKernelSafe.delete();
+    dilatedMaskSafe.delete();
+    dstSafe.delete();
+
+    return srcCanvas;
+
     // ============================================
     // 1. Compute local background using Gaussian blur
     //    21x21 kernel — large enough to average out thin watermark text
@@ -445,6 +496,54 @@
     return canvas;
   }
 
+  function buildOpenCVWatermarkMask(srcRGB, w, h) {
+    const blurredRGB = new cv.Mat();
+    cv.GaussianBlur(srcRGB, blurredRGB, new cv.Size(31, 31), 0);
+
+    const srcData = srcRGB.data;
+    const blurData = blurredRGB.data;
+    const mask = cv.Mat.zeros(h, w, cv.CV_8UC1);
+    const maskData = mask.data;
+
+    for (let idx = 0; idx < w * h; idx++) {
+      const i = idx * 3;
+      const r = srcData[i], g = srcData[i + 1], b = srcData[i + 2];
+      const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
+      const rDiff = r - rb, gDiff = g - gb, bDiff = b - bb;
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lumBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+      const hsv = rgbToHsv(r, g, b);
+
+      const redOrOrangeHue = hsv.h <= 18 || hsv.h >= 165;
+      const blueHue = hsv.h >= 90 && hsv.h <= 145;
+      const magentaHue = hsv.h >= 145 && hsv.h < 165;
+
+      const coloredText =
+        hsv.s > 32 &&
+        Math.abs(lum - lumBlur) > 5 &&
+        (
+          (redOrOrangeHue && r > g + 6 && r > b + 6 && rDiff - 0.45 * (gDiff + bDiff) > 7) ||
+          (blueHue && b > r + 6 && bDiff - 0.45 * (rDiff + gDiff) > 7) ||
+          (magentaHue && r > g + 4 && b > g + 4)
+        );
+
+      const paleText =
+        sat < 0.24 &&
+        Math.abs(lum - lumBlur) > 10 &&
+        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 24;
+
+      if (coloredText || paleText) {
+        maskData[idx] = 255;
+      }
+    }
+
+    blurredRGB.delete();
+    return mask;
+  }
+
   function generateDetectedMaskCanvas(img) {
     const canvas = createResizedCanvas(img, 4096);
     
@@ -577,6 +676,33 @@
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
+    const localDetection = buildLocalWatermarkMask(data, w, h);
+    const localRatio = localDetection.count / (w * h);
+    console.log(`[WMR v4 fallback] Mask detection: ${localDetection.count} / ${w * h} pixels (${(localRatio * 100).toFixed(2)}%)`);
+
+    if (localDetection.count === 0 || localRatio < 0.00005 || localRatio > 0.18) {
+      return canvas;
+    }
+
+    const localDilated = dilateMask(localDetection.mask, w, h, 3);
+    const localOutput = new Uint8ClampedArray(data);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (localDilated[idx]) {
+          const i = idx * 4;
+          const clean = getCleanNeighborWeighted(data, localDilated, x, y, w, h);
+          localOutput[i] = clean.r;
+          localOutput[i + 1] = clean.g;
+          localOutput[i + 2] = clean.b;
+        }
+      }
+    }
+
+    ctx.putImageData(new ImageData(localOutput, w, h), 0, 0);
+    return canvas;
+
     // ---- STEP 1: Compute local blurred background ----
     const blockSize = 21;
     const blurR = new Float32Array(w * h);
@@ -679,6 +805,60 @@
     ctx.putImageData(newImageData, 0, 0);
 
     return canvas;
+  }
+
+  function buildLocalWatermarkMask(data, w, h) {
+    const blockSize = 31;
+    const blurR = new Float32Array(w * h);
+    const blurG = new Float32Array(w * h);
+    const blurB = new Float32Array(w * h);
+    const mask = new Uint8Array(w * h);
+    let count = 0;
+
+    computeLocalMedian(data, w, h, blockSize, blurR, blurG, blurB);
+
+    for (let idx = 0; idx < w * h; idx++) {
+      const i = idx * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
+      const rDiff = r - rb, gDiff = g - gb, bDiff = b - bb;
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lumBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+      const hsv = rgbToHsv(r, g, b);
+
+      const redOrOrangeHue = hsv.h <= 18 || hsv.h >= 165;
+      const blueHue = hsv.h >= 90 && hsv.h <= 145;
+      const magentaHue = hsv.h >= 145 && hsv.h < 165;
+      const coloredText =
+        hsv.s > 32 &&
+        Math.abs(lum - lumBlur) > 5 &&
+        (
+          (redOrOrangeHue && r > g + 6 && r > b + 6 && rDiff - 0.45 * (gDiff + bDiff) > 7) ||
+          (blueHue && b > r + 6 && bDiff - 0.45 * (rDiff + gDiff) > 7) ||
+          (magentaHue && r > g + 4 && b > g + 4)
+        );
+
+      const paleText =
+        sat < 0.24 &&
+        Math.abs(lum - lumBlur) > 10 &&
+        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 24;
+
+      if (coloredText || paleText) {
+        mask[idx] = 1;
+        count++;
+      }
+    }
+
+    cleanMask(mask, w, h, 1, 1);
+    count = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i]) count++;
+    }
+
+    return { mask, count };
   }
 
   // ---- Helper: Compute local median using block sampling ----
@@ -835,6 +1015,13 @@
 
     resultBefore.src = originalImageData;
     resultAfter.src = processedCanvas.toDataURL('image/png');
+
+    const aspectRatio = processedCanvas.width / processedCanvas.height;
+    const maxPreviewHeight = Math.min(window.innerHeight * 0.72, 760);
+    const previewWidth = Math.min(900, Math.max(320, Math.round(maxPreviewHeight * aspectRatio)));
+    resultComparison.style.setProperty('--result-aspect-ratio', `${processedCanvas.width} / ${processedCanvas.height}`);
+    resultComparison.style.maxWidth = `${previewWidth}px`;
+    resultState.style.maxWidth = `${Math.max(previewWidth, 360)}px`;
 
     updateResultSlider(50);
     resultState.scrollIntoView({ behavior: 'smooth', block: 'center' });
