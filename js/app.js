@@ -287,12 +287,13 @@
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
     // ============================================
-    // 3. RED watermark detection (Hue 0-12 and 168-180, S > 25, V > 25)
-    //    Tighter saturation/value floors to avoid false positives on skin tones
+    // 3. RED watermark detection (Wide hue range, very low S/V floors)
+    //    Semi-transparent red watermarks have low saturation after blending
+    //    With pure inpainting, false positives are harmless
     // ============================================
-    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 25, 25, 0]);
-    let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
-    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 25, 25, 0]);
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 5, 5, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [18, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [160, 5, 5, 0]);
     let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
     let maskRed1 = new cv.Mat();
@@ -304,10 +305,10 @@
     cv.add(maskRed1, maskRed2, redMask);
 
     // ============================================
-    // 4. BLUE watermark detection (Hue 100-135, S > 25, V > 25)
+    // 4. BLUE watermark detection (Hue 90-140, very low S/V floors)
     // ============================================
-    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 25, 25, 0]);
-    let upperBlue = new cv.Mat(h, w, hsv.type(), [135, 255, 255, 255]);
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [90, 5, 5, 0]);
+    let upperBlue = new cv.Mat(h, w, hsv.type(), [140, 255, 255, 255]);
     let blueMask = new cv.Mat();
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
@@ -319,20 +320,21 @@
     cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
 
     let blurredGray = new cv.Mat();
-    cv.GaussianBlur(gray, blurredGray, new cv.Size(31, 31), 0);
+    cv.GaussianBlur(gray, blurredGray, new cv.Size(41, 41), 0);
 
     let localContrast = new cv.Mat();
     cv.absdiff(gray, blurredGray, localContrast);
 
     let whiteMask = new cv.Mat();
-    cv.threshold(localContrast, whiteMask, 8, 255, cv.THRESH_BINARY);
+    cv.threshold(localContrast, whiteMask, 3, 255, cv.THRESH_BINARY);
 
-    // Extract Saturation channel — white/gray text has very low saturation
+    // Extract Saturation channel — white/gray text has low saturation
+    // Allow up to 50 to catch slightly tinted watermarks too
     let saturationChannel = new cv.Mat();
     cv.extractChannel(hsv, saturationChannel, 1);
 
     let lowSatMask = new cv.Mat();
-    cv.threshold(saturationChannel, lowSatMask, 30, 255, cv.THRESH_BINARY_INV);
+    cv.threshold(saturationChannel, lowSatMask, 50, 255, cv.THRESH_BINARY_INV);
 
     let finalWhiteMask = new cv.Mat();
     cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -473,9 +475,9 @@
         const hsv = new cv.Mat();
         cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 25, 25, 0]);
-        let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
-        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 25, 25, 0]);
+        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 5, 5, 0]);
+        let upperRed1 = new cv.Mat(h, w, hsv.type(), [18, 255, 255, 255]);
+        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [160, 5, 5, 0]);
         let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
         let maskRed1 = new cv.Mat();
@@ -486,8 +488,8 @@
         let redMask = new cv.Mat();
         cv.add(maskRed1, maskRed2, redMask);
 
-        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 25, 25, 0]);
-        let upperBlue = new cv.Mat(h, w, hsv.type(), [135, 255, 255, 255]);
+        let lowerBlue = new cv.Mat(h, w, hsv.type(), [90, 5, 5, 0]);
+        let upperBlue = new cv.Mat(h, w, hsv.type(), [140, 255, 255, 255]);
         let blueMask = new cv.Mat();
         cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
@@ -495,19 +497,19 @@
         cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
 
         let blurredGray = new cv.Mat();
-        cv.GaussianBlur(gray, blurredGray, new cv.Size(31, 31), 0);
+        cv.GaussianBlur(gray, blurredGray, new cv.Size(41, 41), 0);
 
         let localContrast = new cv.Mat();
         cv.absdiff(gray, blurredGray, localContrast);
 
         let whiteMask = new cv.Mat();
-        cv.threshold(localContrast, whiteMask, 8, 255, cv.THRESH_BINARY);
+        cv.threshold(localContrast, whiteMask, 3, 255, cv.THRESH_BINARY);
 
         let saturationChannel = new cv.Mat();
         cv.extractChannel(hsv, saturationChannel, 1);
 
         let lowSatMask = new cv.Mat();
-        cv.threshold(saturationChannel, lowSatMask, 30, 255, cv.THRESH_BINARY_INV);
+        cv.threshold(saturationChannel, lowSatMask, 50, 255, cv.THRESH_BINARY_INV);
 
         let finalWhiteMask = new cv.Mat();
         cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -604,21 +606,21 @@
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const hsv = rgbToHsv(r, g, b);
 
-        // Red: Hue 0-12 or 168-180, S > 25, V > 25
-        if ((hsv.h <= 12 || hsv.h >= 168) && hsv.s > 25 && hsv.v > 25) {
+        // Red: Hue 0-18 or 160-180, S > 5, V > 5
+        if ((hsv.h <= 18 || hsv.h >= 160) && hsv.s > 5 && hsv.v > 5) {
           redMask[idx] = 1;
         }
 
-        // Blue: Hue 100-135, S > 25, V > 25
-        if (hsv.h >= 100 && hsv.h <= 135 && hsv.s > 25 && hsv.v > 25) {
+        // Blue: Hue 90-140, S > 5, V > 5
+        if (hsv.h >= 90 && hsv.h <= 140 && hsv.s > 5 && hsv.v > 5) {
           blueMask[idx] = 1;
         }
 
-        // White: absolute local contrast > 8, S <= 30
+        // White: absolute local contrast > 3, S <= 50
         const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
         const grayVal = 0.299 * r + 0.587 * g + 0.114 * b;
         const grayBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-        if (Math.abs(grayVal - grayBlur) > 8 && hsv.s <= 30) {
+        if (Math.abs(grayVal - grayBlur) > 3 && hsv.s <= 50) {
           whiteMask[idx] = 1;
         }
       }
