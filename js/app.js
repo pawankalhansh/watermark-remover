@@ -311,12 +311,12 @@
     const openMaskSafe = new cv.Mat();
     cv.morphologyEx(closedMaskSafe, openMaskSafe, cv.MORPH_OPEN, closeKernelSafe, new cv.Point(-1, -1), 1);
 
-    const dilateKernelSafe = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
+    const dilateKernelSafe = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
     const dilatedMaskSafe = new cv.Mat();
     cv.dilate(openMaskSafe, dilatedMaskSafe, dilateKernelSafe, new cv.Point(-1, -1), 1);
 
     const dstSafe = new cv.Mat();
-    cv.inpaint(srcRGB, dilatedMaskSafe, dstSafe, 3, cv.INPAINT_TELEA);
+    cv.inpaint(srcRGB, dilatedMaskSafe, dstSafe, 2, cv.INPAINT_TELEA);
     cv.imshow(srcCanvas, dstSafe);
 
     srcMat.delete();
@@ -522,18 +522,19 @@
       const magentaHue = hsv.h >= 145 && hsv.h < 165;
 
       const coloredText =
-        hsv.s > 32 &&
-        Math.abs(lum - lumBlur) > 5 &&
+        hsv.s > 20 &&
+        Math.abs(lum - lumBlur) > 3 &&
         (
-          (redOrOrangeHue && r > g + 6 && r > b + 6 && rDiff - 0.45 * (gDiff + bDiff) > 7) ||
-          (blueHue && b > r + 6 && bDiff - 0.45 * (rDiff + gDiff) > 7) ||
-          (magentaHue && r > g + 4 && b > g + 4)
+          (redOrOrangeHue && r > g + 3 && r > b + 2 && rDiff - 0.45 * (gDiff + bDiff) > 3) ||
+          (blueHue && b > r + 4 && bDiff - 0.45 * (rDiff + gDiff) > 5) ||
+          (magentaHue && r > g + 3 && b > g + 3 && Math.abs(rDiff) + Math.abs(bDiff) > 8)
         );
 
       const paleText =
-        sat < 0.24 &&
-        Math.abs(lum - lumBlur) > 10 &&
-        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 24;
+        sat < 0.14 &&
+        lum > 190 &&
+        Math.abs(lum - lumBlur) > 18 &&
+        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 42;
 
       if (coloredText || paleText) {
         maskData[idx] = 255;
@@ -684,7 +685,7 @@
       return canvas;
     }
 
-    const localDilated = dilateMask(localDetection.mask, w, h, 3);
+    const localDilated = dilateMask(localDetection.mask, w, h, 2);
     const localOutput = new Uint8ClampedArray(data);
 
     for (let y = 0; y < h; y++) {
@@ -833,18 +834,19 @@
       const blueHue = hsv.h >= 90 && hsv.h <= 145;
       const magentaHue = hsv.h >= 145 && hsv.h < 165;
       const coloredText =
-        hsv.s > 32 &&
-        Math.abs(lum - lumBlur) > 5 &&
+        hsv.s > 20 &&
+        Math.abs(lum - lumBlur) > 3 &&
         (
-          (redOrOrangeHue && r > g + 6 && r > b + 6 && rDiff - 0.45 * (gDiff + bDiff) > 7) ||
-          (blueHue && b > r + 6 && bDiff - 0.45 * (rDiff + gDiff) > 7) ||
-          (magentaHue && r > g + 4 && b > g + 4)
+          (redOrOrangeHue && r > g + 3 && r > b + 2 && rDiff - 0.45 * (gDiff + bDiff) > 3) ||
+          (blueHue && b > r + 4 && bDiff - 0.45 * (rDiff + gDiff) > 5) ||
+          (magentaHue && r > g + 3 && b > g + 3 && Math.abs(rDiff) + Math.abs(bDiff) > 8)
         );
 
       const paleText =
-        sat < 0.24 &&
-        Math.abs(lum - lumBlur) > 10 &&
-        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 24;
+        sat < 0.14 &&
+        lum > 190 &&
+        Math.abs(lum - lumBlur) > 18 &&
+        Math.abs(rDiff) + Math.abs(gDiff) + Math.abs(bDiff) > 42;
 
       if (coloredText || paleText) {
         mask[idx] = 1;
