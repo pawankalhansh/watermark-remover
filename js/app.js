@@ -288,8 +288,8 @@
     cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
 
     const dstRGB = new cv.Mat();
-    // 3. Run inpainting using Telea's propagation algorithm (radius 3px)
-    cv.inpaint(srcRGB, maskGray, dstRGB, 3, cv.INPAINT_TELEA);
+    // 3. Run inpainting using Navier-Stokes (NS) algorithm (radius 2px) to keep background sharp
+    cv.inpaint(srcRGB, maskGray, dstRGB, 2, cv.INPAINT_NS);
 
     // 4. Show 3-channel output on srcCanvas
     cv.imshow(srcCanvas, dstRGB);
@@ -390,7 +390,7 @@
     }
 
     cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
-    const dilatedMask = dilateMask(binaryMask, w, h, 3);
+    const dilatedMask = dilateMask(binaryMask, w, h, 1); // Tight 1px dilation to prevent blurring surrounding background
 
     // Draw black and white mask image
     const maskImageData = ctx.createImageData(w, h);
@@ -490,7 +490,7 @@
     }
 
     cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
-    const dilatedMask = dilateMask(binaryMask, w, h, 3);
+    const dilatedMask = dilateMask(binaryMask, w, h, 1); // Tight 1px dilation to prevent blurring surrounding background
 
     // ---- STEP 4: Inpaint - replace watermark pixels ----
     const outputData = new Uint8ClampedArray(data);
@@ -931,8 +931,8 @@
         cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
 
         const dstRGB = new cv.Mat();
-        // 3. Inpaint using Telea's propagation algorithm (radius 4px is great for manual brushes)
-        cv.inpaint(srcRGB, maskGray, dstRGB, 4, cv.INPAINT_TELEA);
+        // 3. Inpaint using Navier-Stokes (NS) algorithm (radius 2px) to preserve sharp textures
+        cv.inpaint(srcRGB, maskGray, dstRGB, 2, cv.INPAINT_NS);
 
         // 4. Show back to brushCanvas
         cv.imshow(brushCanvas, dstRGB);
@@ -975,7 +975,7 @@
           paintMask[i] = maskData[i * 4] > 128 ? 1 : 0;
         }
 
-        const dilatedPaint = dilateMask(paintMask, bw, bh, 2);
+        const dilatedPaint = dilateMask(paintMask, bw, bh, 1); // Tight 1px dilation for manual brush to prevent background distortion
 
         for (let y = 0; y < bh; y++) {
           for (let x = 0; x < bw; x++) {
