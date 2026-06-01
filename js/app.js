@@ -254,7 +254,8 @@
       showToast('✨ Watermark removed seamlessly!');
     } catch (err) {
       console.error('OpenCV Inpainting failed, falling back to local interpolation:', err);
-      showToast('⚠️ Mathematical engine warning. Using average fallback.');
+      console.error('Error details:', err.message, err.stack);
+      showToast('⚠️ OpenCV error: ' + (err.message || err).toString().substring(0, 80));
       processedCanvas = processImageLocal(img);
     } finally {
       clearInterval(progressInterval);
@@ -345,6 +346,13 @@
     let combinedMask = new cv.Mat();
     cv.add(redMask, blueMask, combinedMask);
     cv.add(combinedMask, finalWhiteMask, combinedMask);
+
+    // DEBUG: Count detected pixels
+    let maskPixelCount = cv.countNonZero(combinedMask);
+    let totalPixels = w * h;
+    console.log(`[WMR v3] Mask detection: ${maskPixelCount} / ${totalPixels} pixels (${(maskPixelCount/totalPixels*100).toFixed(2)}%)`);
+    console.log(`[WMR v3] Image size: ${w}x${h}`);
+    showToast(`🔍 Detected ${maskPixelCount} watermark pixels (${(maskPixelCount/totalPixels*100).toFixed(1)}%)`, 4000);
 
     // ============================================
     // 7. Morphological CLOSING to fill gaps in text strokes
@@ -1369,6 +1377,6 @@
   // ============================================
   window.openBrushTool = initBrushMode;
 
-  console.log('✨ WatermarkRemover v2 initialized — with colored watermark support');
+  console.log('✨ WatermarkRemover v3 initialized — pure inpainting engine');
 
 })();
