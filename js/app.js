@@ -364,32 +364,21 @@
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        // Red overlay detection (e.g. Stock watermark)
-        if (redShift > 15 && r > g + 10 && r > b + 10) {
+        // 1. Red overlay detection (Vibrant red watermarks)
+        if (redShift > 20 && r > g + 25 && r > b + 25 && r > 100) {
           score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
-        // Blue overlay detection
-        if (blueShift > 15 && b > r + 10 && b > g + 10) {
+        // 2. Blue overlay detection (Vibrant blue watermarks)
+        if (blueShift > 20 && b > r + 25 && b > g + 25 && b > 100) {
           score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
-        // White/Gray overlay detection
-        if (whiteShift > 20 && saturation < 0.2) {
-          score = Math.max(score, Math.min(whiteShift / 50, 1.0));
+        // 3. White/Gray overlay detection (Bright low-saturation watermarks)
+        if (whiteShift > 30 && saturation < 0.15 && r > 140 && g > 140 && b > 140) {
+          score = Math.max(score, Math.min(whiteShift / 60, 1.0));
         }
 
-        // 3. Fallback standard semi-transparent overlay detection
-        const dr = r - mr, dg = g - mg, db = b - mb;
-        const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
-        if (pullMagnitude > 15) {
-          const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
-          const directionality = maxPull / (pullMagnitude + 1);
-          if (directionality > 0.45) {
-            const overlayScore = Math.min(pullMagnitude / 60, 1.0) * directionality;
-            score = Math.max(score, overlayScore);
-          }
-        }
         watermarkMask[idx] = score;
       }
     }
@@ -473,31 +462,19 @@
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        // Red overlay detection (e.g. Stock watermark)
-        if (redShift > 15 && r > g + 10 && r > b + 10) {
+        // 1. Red overlay detection (Vibrant red watermarks)
+        if (redShift > 20 && r > g + 25 && r > b + 25 && r > 100) {
           score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
-        // Blue overlay detection
-        if (blueShift > 15 && b > r + 10 && b > g + 10) {
+        // 2. Blue overlay detection (Vibrant blue watermarks)
+        if (blueShift > 20 && b > r + 25 && b > g + 25 && b > 100) {
           score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
-        // White/Gray overlay detection
-        if (whiteShift > 20 && saturation < 0.2) {
-          score = Math.max(score, Math.min(whiteShift / 50, 1.0));
-        }
-
-        // 3. Fallback standard semi-transparent overlay detection
-        const dr = r - mr, dg = g - mg, db = b - mb;
-        const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
-        if (pullMagnitude > 15) {
-          const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
-          const directionality = maxPull / (pullMagnitude + 1);
-          if (directionality > 0.45) {
-            const overlayScore = Math.min(pullMagnitude / 60, 1.0) * directionality;
-            score = Math.max(score, overlayScore);
-          }
+        // 3. White/Gray overlay detection (Bright low-saturation watermarks)
+        if (whiteShift > 30 && saturation < 0.15 && r > 140 && g > 140 && b > 140) {
+          score = Math.max(score, Math.min(whiteShift / 60, 1.0));
         }
 
         watermarkMask[idx] = score;
