@@ -25,6 +25,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
 
     <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.5.4/opencv.js" async></script>
 </head>
 <body>
 
@@ -45,9 +46,6 @@
             </nav>
 
             <div class="header__actions">
-                <button class="btn btn--settings" id="settingsBtn" title="AI Settings" aria-label="AI Settings">
-                    ⚙️
-                </button>
                 <a href="#hero" class="btn btn--primary" id="headerCta">Try Free</a>
                 <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
                     <span class="hamburger__line"></span>
@@ -540,50 +538,6 @@
             </div>
         </div>
     </footer>
-
-    <!-- ========== SETTINGS MODAL ========== -->
-    <div class="modal" id="settingsModal" aria-hidden="true">
-        <div class="modal__overlay" id="modalOverlay"></div>
-        <div class="modal__card">
-            <button class="modal__close" id="modalCloseBtn" aria-label="Close Settings">✕</button>
-            
-            <h3 class="modal__title">⚙️ AI Settings (Cloudflare Workers)</h3>
-            <p class="modal__subtitle">Enable flawless, deep-learning watermark removal powered by Stable Diffusion AI for free!</p>
-
-            <div class="modal__form-group">
-                <label class="modal__label" for="workerUrlInput">Cloudflare Worker API URL:</label>
-                <input type="url" class="modal__input" id="workerUrlInput" placeholder="https://watermark-remover-ai.your-subdomain.workers.dev" />
-                <p class="modal__input-help">Leave empty to use the fast, local client-side mathematical fallback.</p>
-            </div>
-
-            <div class="modal__form-group" style="margin-top: 20px;">
-                <label class="modal__label" style="display: flex; justify-content: space-between; align-items: center;">
-                    <span>AI Inpainting Strength:</span>
-                    <span id="aiStrengthValue" style="color: #F9D423; font-weight: bold;">0.45</span>
-                </label>
-                <input type="range" min="0.1" max="1.0" step="0.05" value="0.45" class="modal__input" id="aiStrengthInput" style="padding: 0; height: 6px; accent-color: #F9D423;" />
-                <p class="modal__input-help">Low (0.2 - 0.4): Restores original details (best for faces/complex shapes). High (0.7 - 0.9): Overwrites background entirely.</p>
-            </div>
-
-            <div class="modal__divider"></div>
-
-            <div class="modal__guide">
-                <h4 class="modal__guide-title">🛠️ Cloudflare Worker Kaise Deploy Karein? (Step-by-Step)</h4>
-                <ol class="modal__guide-list">
-                    <li>Aapke project folder me ek <code>worker</code> folder banaya gaya hai jisme AI backend code hai.</li>
-                    <li>Sabhse pehle computer me terminal/PowerShell kholein aur Wrangler install karein: <br><code class="modal__code">npm install -g wrangler</code></li>
-                    <li>Cloudflare account me login karein: <br><code class="modal__code">npx wrangler login</code></li>
-                    <li>Worker folder ke andar jayein aur deploy command chalayein: <br><code class="modal__code">cd "d:\Water mark remover\worker"</code> <br><code class="modal__code">npx wrangler deploy</code></li>
-                    <li>Deployment ke baad terminal me ek <strong>*.workers.dev</strong> ka URL milega. Us URL ko copy karke upar box me paste kar ke <strong>Save</strong> kar dein!</li>
-                </ol>
-            </div>
-
-            <div class="modal__actions">
-                <button class="btn btn--outline" id="modalCancelBtn">Cancel</button>
-                <button class="btn btn--primary" id="modalSaveBtn">💾 Save Config</button>
-            </div>
-        </div>
-    </div>
 
     <script src="js/app.js"></script>
 </body>

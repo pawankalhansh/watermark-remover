@@ -45,26 +45,25 @@
   // Tabs
   const tabBtns = $$('.tabs__btn');
 
-  // Settings Modal
-  const settingsBtn = $('#settingsBtn');
-  const settingsModal = $('#settingsModal');
-  const modalCloseBtn = $('#modalCloseBtn');
-  const modalCancelBtn = $('#modalCancelBtn');
-  const modalSaveBtn = $('#modalSaveBtn');
-  const workerUrlInput = $('#workerUrlInput');
-  const modalOverlay = $('#modalOverlay');
-  const aiStrengthInput = $('#aiStrengthInput');
-  const aiStrengthValue = $('#aiStrengthValue');
+  // OpenCV.js State
+  let openCvReady = false;
 
-  // Cloudflare Worker URL storage
-  let workerUrl = localStorage.getItem('cloudflare_worker_url') || 'https://watermark-remover-ai.pawankalhansh.workers.dev';
-  if (workerUrlInput) workerUrlInput.value = workerUrl;
-
-  // Cloudflare Inpainting Strength storage (default 0.45)
-  let aiStrength = parseFloat(localStorage.getItem('cloudflare_ai_strength')) || 0.45;
-  if (aiStrengthInput) {
-    aiStrengthInput.value = aiStrength;
-    if (aiStrengthValue) aiStrengthValue.textContent = aiStrength.toFixed(2);
+  function waitForOpenCV() {
+    return new Promise((resolve) => {
+      if (typeof cv !== 'undefined' && cv.Mat) {
+        openCvReady = true;
+        resolve();
+        return;
+      }
+      showToast('⏳ Loading AI Inpainting Engine... please wait a moment.');
+      const interval = setInterval(() => {
+        if (typeof cv !== 'undefined' && cv.Mat) {
+          clearInterval(interval);
+          openCvReady = true;
+          resolve();
+        }
+      }, 300);
+    });
   }
 
   // ============================================
@@ -85,53 +84,7 @@
     });
   });
 
-  // ============================================
-  // SETTINGS MODAL INTERACTIONS
-  // ============================================
-  const openSettingsModal = () => {
-    settingsModal.classList.add('active');
-    settingsModal.setAttribute('aria-hidden', 'false');
-    if (workerUrlInput) workerUrlInput.value = workerUrl;
-    if (aiStrengthInput) aiStrengthInput.value = aiStrength;
-    if (aiStrengthValue) aiStrengthValue.textContent = aiStrength.toFixed(2);
-  };
 
-  const closeSettingsModal = () => {
-    settingsModal.classList.remove('active');
-    settingsModal.setAttribute('aria-hidden', 'true');
-  };
-
-  if (settingsBtn) settingsBtn.addEventListener('click', openSettingsModal);
-  if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeSettingsModal);
-  if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeSettingsModal);
-  if (modalOverlay) modalOverlay.addEventListener('click', closeSettingsModal);
-
-  // Sync range slider text value in real-time
-  if (aiStrengthInput) {
-    aiStrengthInput.addEventListener('input', () => {
-      if (aiStrengthValue) aiStrengthValue.textContent = parseFloat(aiStrengthInput.value).toFixed(2);
-    });
-  }
-
-  if (modalSaveBtn) {
-    modalSaveBtn.addEventListener('click', () => {
-      const url = workerUrlInput.value.trim();
-      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
-        showToast('❌ Please enter a valid HTTP or HTTPS URL.');
-        return;
-      }
-      workerUrl = url;
-      localStorage.setItem('cloudflare_worker_url', url);
-
-      if (aiStrengthInput) {
-        aiStrength = parseFloat(aiStrengthInput.value);
-        localStorage.setItem('cloudflare_ai_strength', aiStrength);
-      }
-
-      closeSettingsModal();
-      showToast('💾 Settings saved successfully!');
-    });
-  }
 
   // Header scroll effect
   let lastScroll = 0;
@@ -277,62 +230,24 @@
 
     let progress = 0;
     const progressInterval = setInterval(() => {
-      progress += Math.random() * 6;
-      if (progress > 90) progress = 90;
+      progress += Math.random() * 8;
+      if (progress > 85) progress = 85;
       progressFill.style.width = progress + '%';
-    }, 150);
+    }, 100);
 
     try {
-      if (workerUrl) {
-        showToast('🚀 Running AI Inpainting on Cloudflare...', 2500);
-        // Create the mask canvas to get the binary mask for the worker
-        const maskCanvas = generateDetectedMaskCanvas(img);
-        
-        // Convert original image and mask canvas to blobs
-        const originalBlob = await getCanvasBlob(createResizedCanvas(img, 1600));
-        const maskBlob = await getCanvasBlob(maskCanvas);
+      // 1. Wait for OpenCV.js to load
+      await waitForOpenCV();
+      progressFill.style.width = '90%';
 
-        // Send to Cloudflare Worker
-        const formData = new FormData();
-        formData.append('image', originalBlob, 'image.png');
-        formData.append('mask', maskBlob, 'mask.png');
-        formData.append('strength', aiStrength.toString());
+      // 2. Process image with OpenCV inpainting
+      processedCanvas = processImageWithOpenCV(img);
 
-        const response = await fetch(workerUrl, {
-          method: 'POST',
-          body: formData
-        });
-
-        if (!response.ok) {
-          throw new Error(`Worker returned status ${response.status}`);
-        }
-
-        const resultBlob = await response.blob();
-        const resultUrl = URL.createObjectURL(resultBlob);
-
-        // Load the resulting image back into processedCanvas
-        const resultImg = new Image();
-        await new Promise((resolve, reject) => {
-          resultImg.onload = () => {
-            processedCanvas = document.createElement('canvas');
-            processedCanvas.width = resultImg.width;
-            processedCanvas.height = resultImg.height;
-            const pCtx = processedCanvas.getContext('2d');
-            pCtx.drawImage(resultImg, 0, 0);
-            resolve();
-          };
-          resultImg.onerror = reject;
-          resultImg.src = resultUrl;
-        });
-
-        showToast('✨ Flawless AI Inpainting Completed!');
-      } else {
-        // Standard mathematical client-side fallback
-        processedCanvas = processImageLocal(img);
-      }
+      progressFill.style.width = '100%';
+      showToast('✨ Watermark removed seamlessly!');
     } catch (err) {
-      console.error('AI inpainting failed, falling back to mathematical method:', err);
-      showToast('⚠️ AI Worker failed. Falling back to local inpainting.');
+      console.error('OpenCV Inpainting failed, falling back to local interpolation:', err);
+      showToast('⚠️ Mathematical engine warning. Using average fallback.');
       processedCanvas = processImageLocal(img);
     } finally {
       clearInterval(progressInterval);
@@ -344,12 +259,37 @@
   }
 
   // ============================================
-  // CLOUDFLARE AI HELPER FUNCTIONS
+  // OPENCV.JS WATERMARK INPAINTING ENGINE
   // ============================================
-  function getCanvasBlob(canvas) {
-    return new Promise((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), 'image/png');
-    });
+  function processImageWithOpenCV(img) {
+    // Generate the detected mask canvas
+    const maskCanvas = generateDetectedMaskCanvas(img);
+
+    // Create the resized source image canvas (max 1600px)
+    const srcCanvas = createResizedCanvas(img, 1600);
+    
+    // Convert to OpenCV Mats
+    const srcMat = cv.imread(srcCanvas);
+    const maskMat = cv.imread(maskCanvas);
+
+    // Convert mask to grayscale (1 channel)
+    const maskGray = new cv.Mat();
+    cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
+
+    const dstMat = new cv.Mat();
+    // Run inpainting using Telea's propagation algorithm (radius 3px)
+    cv.inpaint(srcMat, maskGray, dstMat, 3, cv.INPAINT_TELEA);
+
+    // Show output on srcCanvas
+    cv.imshow(srcCanvas, dstMat);
+
+    // Deallocate Mats to prevent memory leaks in WebAssembly heap
+    srcMat.delete();
+    maskMat.delete();
+    maskGray.delete();
+    dstMat.delete();
+
+    return srcCanvas;
   }
 
   function createResizedCanvas(img, maxDim) {
@@ -978,76 +918,55 @@
 
     // Apply button — inpaint the painted areas
     $('#brushApplyBtn').addEventListener('click', async () => {
-      showToast('Processing painted areas...', 3000);
+      showToast('Processing painted areas...', 2000);
 
-      // Create a canvas for the mask to convert to blob
-      const maskBlobCanvas = document.createElement('canvas');
-      maskBlobCanvas.width = brushCanvas.width;
-      maskBlobCanvas.height = brushCanvas.height;
-      const maskBlobCtx = maskBlobCanvas.getContext('2d');
-      // Draw the user mask onto it as black and white
-      maskBlobCtx.fillStyle = 'black';
-      maskBlobCtx.fillRect(0, 0, brushCanvas.width, brushCanvas.height);
-      maskBlobCtx.drawImage(maskCanvas, 0, 0);
+      // Create a mask canvas with black background and white painted areas
+      const brushMaskCanvas = document.createElement('canvas');
+      brushMaskCanvas.width = brushCanvas.width;
+      brushMaskCanvas.height = brushCanvas.height;
+      const bmCtx = brushMaskCanvas.getContext('2d');
+      bmCtx.fillStyle = 'black';
+      bmCtx.fillRect(0, 0, brushCanvas.width, brushCanvas.height);
+      bmCtx.drawImage(maskCanvas, 0, 0);
 
       try {
-        if (workerUrl) {
-          showToast('🚀 Running AI Touch-up on Cloudflare...', 2500);
-          
-          const origCanvas = document.createElement('canvas');
-          origCanvas.width = brushCanvas.width;
-          origCanvas.height = brushCanvas.height;
-          const origCtx = origCanvas.getContext('2d');
-          origCtx.drawImage(sourceImage, 0, 0, brushCanvas.width, brushCanvas.height);
+        await waitForOpenCV();
 
-          const originalBlob = await getCanvasBlob(origCanvas);
-          const maskBlob = await getCanvasBlob(maskBlobCanvas);
+        // Convert canvases to OpenCV Mat
+        const srcMat = cv.imread(brushCanvas);
+        const maskMat = cv.imread(brushMaskCanvas);
 
-          const formData = new FormData();
-          formData.append('image', originalBlob, 'image.png');
-          formData.append('mask', maskBlob, 'mask.png');
-          formData.append('strength', aiStrength.toString());
+        const maskGray = new cv.Mat();
+        cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
 
-          const response = await fetch(workerUrl, {
-            method: 'POST',
-            body: formData
-          });
+        const dstMat = new cv.Mat();
+        // Inpaint using Telea's propagation algorithm (radius 4px is great for manual brushes)
+        cv.inpaint(srcMat, maskGray, dstMat, 4, cv.INPAINT_TELEA);
 
-          if (!response.ok) {
-            throw new Error(`Worker returned status ${response.status}`);
-          }
+        // Show back to brushCanvas
+        cv.imshow(brushCanvas, dstMat);
 
-          const resultBlob = await response.blob();
-          const resultUrl = URL.createObjectURL(resultBlob);
+        // Clean up memory
+        srcMat.delete();
+        maskMat.delete();
+        maskGray.delete();
+        dstMat.delete();
 
-          const resultImg = new Image();
-          await new Promise((resolve, reject) => {
-            resultImg.onload = () => {
-              brushCtx.drawImage(resultImg, 0, 0);
-              resolve();
-            };
-            resultImg.onerror = reject;
-            resultImg.src = resultUrl;
-          });
+        // Update processed canvas
+        const pCtx = processedCanvas.getContext('2d');
+        pCtx.drawImage(brushCanvas, 0, 0);
 
-          // Update processed canvas
-          const pCtx = processedCanvas.getContext('2d');
-          pCtx.drawImage(brushCanvas, 0, 0);
+        // Update result image
+        resultAfter.src = processedCanvas.toDataURL('image/png');
 
-          // Update result image
-          resultAfter.src = processedCanvas.toDataURL('image/png');
+        // Clear paint overlays
+        paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+        maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
-          // Clear paint overlay
-          paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
-          maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-
-          showToast('✨ AI Touch-up applied successfully!', 3000);
-        } else {
-          runLocalBrushInpaint();
-        }
+        showToast('✅ Touch-up applied! Paint more or close when done.', 3000);
       } catch (err) {
-        console.error('AI manual inpainting failed, using local fallback:', err);
-        showToast('⚠️ AI worker error. Using local fallback.');
+        console.error('Local brush inpaint failed:', err);
+        showToast('⚠️ Local engine warning. Using fallback.');
         runLocalBrushInpaint();
       }
 
