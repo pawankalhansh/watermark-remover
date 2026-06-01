@@ -349,38 +349,39 @@
         const mr = medianR[idx], mg = medianG[idx], mb = medianB[idx];
         let score = 0;
 
-        const brightness = (r + g + b) / 3;
+        // 1. Color Shift Contrast (Relative redness/blueness shifts compared to background)
+        const redShift = (r - mr) - (g - mg);
+        const blueShift = (b - mb) - (r - mr);
+        
+        // 2. White/Gray Contrast with low-saturation
+        const whiteShift = (r + g + b)/3 - (mr + mg + mb)/3;
         const maxC = Math.max(r, g, b);
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        if (brightness > 180 && saturation < 0.15) {
-          const medBrightness = (mr + mg + mb) / 3;
-          const contrast = brightness - medBrightness;
-          if (contrast > 30) {
-            score = Math.max(score, Math.min(contrast / 80, 1.0));
-          }
+        // Red overlay detection (e.g. Stock watermark)
+        if (redShift > 15 && r > g + 10 && r > b + 10) {
+          score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
-        const pixHue = rgbToHue(r, g, b);
-        const medHue = rgbToHue(mr, mg, mb);
-        const hueDiff = hueDistance(pixHue, medHue);
-        const colorDiff = Math.sqrt(
-          Math.pow(r - mr, 2) + Math.pow(g - mg, 2) + Math.pow(b - mb, 2)
-        );
-
-        if (hueDiff > 15 && colorDiff > 25) {
-          const colorScore = Math.min((hueDiff / 60) * (colorDiff / 60), 1.0);
-          score = Math.max(score, colorScore);
+        // Blue overlay detection
+        if (blueShift > 15 && b > r + 10 && b > g + 10) {
+          score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
+        // White/Gray overlay detection
+        if (whiteShift > 20 && saturation < 0.2) {
+          score = Math.max(score, Math.min(whiteShift / 50, 1.0));
+        }
+
+        // 3. Fallback standard semi-transparent overlay detection
         const dr = r - mr, dg = g - mg, db = b - mb;
         const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
-        if (pullMagnitude > 20) {
+        if (pullMagnitude > 15) {
           const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
           const directionality = maxPull / (pullMagnitude + 1);
-          if (directionality > 0.5) {
-            const overlayScore = Math.min(pullMagnitude / 80, 1.0) * directionality;
+          if (directionality > 0.45) {
+            const overlayScore = Math.min(pullMagnitude / 60, 1.0) * directionality;
             score = Math.max(score, overlayScore);
           }
         }
@@ -389,12 +390,12 @@
     }
 
     const binaryMask = new Uint8Array(w * h);
-    const threshold = 0.25;
+    const threshold = 0.20; // Lower threshold to capture fine text lines
     for (let i = 0; i < w * h; i++) {
       binaryMask[i] = watermarkMask[i] > threshold ? 1 : 0;
     }
 
-    cleanMask(binaryMask, w, h, 3, 4);
+    cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
     const dilatedMask = dilateMask(binaryMask, w, h, 3);
 
     // Draw black and white mask image
@@ -457,43 +458,39 @@
 
         let score = 0;
 
-        // Strategy 1: White/gray watermark detection (bright, low-sat, contrast with neighbors)
-        const brightness = (r + g + b) / 3;
+        // 1. Color Shift Contrast (Relative redness/blueness shifts compared to background)
+        const redShift = (r - mr) - (g - mg);
+        const blueShift = (b - mb) - (r - mr);
+        
+        // 2. White/Gray Contrast with low-saturation
+        const whiteShift = (r + g + b)/3 - (mr + mg + mb)/3;
         const maxC = Math.max(r, g, b);
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        if (brightness > 180 && saturation < 0.15) {
-          const medBrightness = (mr + mg + mb) / 3;
-          const contrast = brightness - medBrightness;
-          if (contrast > 30) {
-            score = Math.max(score, Math.min(contrast / 80, 1.0));
-          }
+        // Red overlay detection (e.g. Stock watermark)
+        if (redShift > 15 && r > g + 10 && r > b + 10) {
+          score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
-        // Strategy 2: Colored watermark detection (abnormal hue shift from local median)
-        const pixHue = rgbToHue(r, g, b);
-        const medHue = rgbToHue(mr, mg, mb);
-        const hueDiff = hueDistance(pixHue, medHue);
-        const colorDiff = Math.sqrt(
-          Math.pow(r - mr, 2) + Math.pow(g - mg, 2) + Math.pow(b - mb, 2)
-        );
-
-        // Detect if this pixel has a different hue than its neighborhood
-        if (hueDiff > 15 && colorDiff > 25) {
-          const colorScore = Math.min((hueDiff / 60) * (colorDiff / 60), 1.0);
-          score = Math.max(score, colorScore);
+        // Blue overlay detection
+        if (blueShift > 15 && b > r + 10 && b > g + 10) {
+          score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
-        // Strategy 3: Semi-transparent overlay detection
+        // White/Gray overlay detection
+        if (whiteShift > 20 && saturation < 0.2) {
+          score = Math.max(score, Math.min(whiteShift / 50, 1.0));
+        }
+
+        // 3. Fallback standard semi-transparent overlay detection
         const dr = r - mr, dg = g - mg, db = b - mb;
         const pullMagnitude = Math.sqrt(dr * dr + dg * dg + db * db);
-
-        if (pullMagnitude > 20) {
+        if (pullMagnitude > 15) {
           const maxPull = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
           const directionality = maxPull / (pullMagnitude + 1);
-          if (directionality > 0.5) {
-            const overlayScore = Math.min(pullMagnitude / 80, 1.0) * directionality;
+          if (directionality > 0.45) {
+            const overlayScore = Math.min(pullMagnitude / 60, 1.0) * directionality;
             score = Math.max(score, overlayScore);
           }
         }
@@ -504,13 +501,13 @@
 
     // ---- STEP 3: Refine mask - threshold, dilate, smooth ----
     const binaryMask = new Uint8Array(w * h);
-    const threshold = 0.25;
+    const threshold = 0.20; // Lower threshold to capture fine text lines
 
     for (let i = 0; i < w * h; i++) {
       binaryMask[i] = watermarkMask[i] > threshold ? 1 : 0;
     }
 
-    cleanMask(binaryMask, w, h, 3, 4);
+    cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
     const dilatedMask = dilateMask(binaryMask, w, h, 3);
 
     // ---- STEP 4: Inpaint - replace watermark pixels ----
