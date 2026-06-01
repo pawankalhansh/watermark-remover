@@ -339,11 +339,102 @@
     let dilatedMask = new cv.Mat();
     cv.dilate(combinedMask, dilatedMask, M, new cv.Point(-1, -1), 1);
 
-    // 8. Run Telea's inpainting algorithm (radius 1px) to keep wood grains and backgrounds extremely sharp
-    const dstRGB = new cv.Mat();
-    cv.inpaint(srcRGB, dilatedMask, dstRGB, 1, cv.INPAINT_TELEA);
+    // 8. Compute blurred background for Color-Ratio Reverse Alpha Blending estimation
+    let blurredRGB = new cv.Mat();
+    cv.boxFilter(srcRGB, blurredRGB, -1, new cv.Size(15, 15));
 
-    // 9. Show output back on the canvas
+    let imgData = srcRGB.data;
+    let blurData = blurredRGB.data;
+    let maskData = dilatedMask.data;
+
+    // Create selective inpaintMask (grayscale, same size as dilatedMask, initialized to 0)
+    let inpaintMask = cv.Mat.zeros(h, w, cv.CV_8UC1);
+    let inpaintMaskData = inpaintMask.data;
+
+    // 9. Run Dynamic Color-Ratio Reverse Alpha Blending directly in memory (zero-copy performance)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (maskData[idx] === 255) {
+          const i = idx * 3;
+          const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
+          const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
+
+          // Determine watermark color type
+          const isRed = (r > g * 1.15 && r > b * 1.15);
+          const isBlue = (b > r * 1.15 && b > g * 1.15);
+
+          if (isRed) {
+            // Calculate local background redness ratio K = R_blur / (0.5 * (G_blur + B_blur))
+            const avg_gb = 0.5 * (gb + bb);
+            const K = avg_gb > 5 ? rb / avg_gb : 1.2; // default ratio 1.2 if extremely dark
+
+            // Estimate alpha = (R_blended - K * 0.5 * (G_blended + B_blended)) / 255
+            const avg_g_b = 0.5 * (g + b);
+            const alpha = Math.max(0.0, Math.min(0.25, (r - K * avg_g_b) / 255.0));
+            const oneMinusAlpha = 1.0 - alpha;
+
+            if (oneMinusAlpha > 0.70 && avg_gb > 8) {
+              // Restore channels losslessly (wood grains and details remain perfectly crisp!)
+              let r_orig = Math.round((r - alpha * 255) / oneMinusAlpha);
+              let g_orig = Math.round(g / oneMinusAlpha);
+              let b_orig = Math.round(b / oneMinusAlpha);
+
+              imgData[i] = Math.max(0, Math.min(255, r_orig));
+              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            } else {
+              // If background is too dark, flag for Wasm Telea inpaint
+              inpaintMaskData[idx] = 255;
+            }
+          }
+          else if (isBlue) {
+            // Blue watermark: K = B_blur / (0.5 * (R_blur + G_blur))
+            const avg_rg = 0.5 * (rb + gb);
+            const K = avg_rg > 5 ? bb / avg_rg : 1.2;
+
+            const avg_r_g = 0.5 * (r + g);
+            const alpha = Math.max(0.0, Math.min(0.25, (b - K * avg_r_g) / 255.0));
+            const oneMinusAlpha = 1.0 - alpha;
+
+            if (oneMinusAlpha > 0.70 && avg_rg > 8) {
+              let r_orig = Math.round(r / oneMinusAlpha);
+              let g_orig = Math.round(g / oneMinusAlpha);
+              let b_orig = Math.round((b - alpha * 255) / oneMinusAlpha);
+
+              imgData[i] = Math.max(0, Math.min(255, r_orig));
+              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            } else {
+              inpaintMaskData[idx] = 255;
+            }
+          }
+          else {
+            // White/Gray watermark: fixed alpha 0.15 estimate
+            const alpha = 0.15;
+            const oneMinusAlpha = 0.85;
+
+            if (gb + bb > 25) {
+              let r_orig = Math.round((r - alpha * 255) / oneMinusAlpha);
+              let g_orig = Math.round((g - alpha * 255) / oneMinusAlpha);
+              let b_orig = Math.round((b - alpha * 255) / oneMinusAlpha);
+
+              imgData[i] = Math.max(0, Math.min(255, r_orig));
+              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            } else {
+              inpaintMaskData[idx] = 255;
+            }
+          }
+        }
+      }
+    }
+
+    // 10. Run Telea's inpainting algorithm (radius 1px) ONLY on remaining un-restored dark/shadowed pixels
+    const dstRGB = new cv.Mat();
+    cv.inpaint(srcRGB, inpaintMask, dstRGB, 1, cv.INPAINT_TELEA);
+
+    // 11. Show output back on the canvas
     cv.imshow(srcCanvas, dstRGB);
 
     // Deallocate Wasm memory to prevent heap leaks
@@ -370,6 +461,8 @@
     combinedMask.delete();
     M.delete();
     dilatedMask.delete();
+    blurredRGB.delete();
+    inpaintMask.delete();
     dstRGB.delete();
 
     return srcCanvas;
