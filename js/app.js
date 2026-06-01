@@ -65,7 +65,7 @@
           return;
         }
         secondsPassed += 0.3;
-        if (secondsPassed >= 5.0) {
+        if (secondsPassed >= 30.0) {
           clearInterval(interval);
           reject(new Error('OpenCV.js load timeout'));
         }
@@ -317,14 +317,14 @@
     cv.subtract(gray, blurredGray, localContrast);
 
     let whiteMask = new cv.Mat();
-    cv.threshold(localContrast, whiteMask, 35, 255, cv.THRESH_BINARY); // High local contrast threshold (35) to protect natural chair edges
+    cv.threshold(localContrast, whiteMask, 18, 255, cv.THRESH_BINARY); // Lower contrast threshold (18) to reliably capture faint white watermarks
 
     // Extract Saturation channel to ensure extremely low saturation (white/gray/silver)
     let saturationChannel = new cv.Mat();
     cv.extractChannel(hsv, saturationChannel, 1); // 1 is Saturation channel
 
     let lowSatMask = new cv.Mat();
-    cv.threshold(saturationChannel, lowSatMask, 20, 255, cv.THRESH_BINARY_INV); // Tight low saturation threshold (20) to completely protect wood grains
+    cv.threshold(saturationChannel, lowSatMask, 25, 255, cv.THRESH_BINARY_INV); // Low saturation threshold (25) to protect colored details while capturing white text
 
     let finalWhiteMask = new cv.Mat();
     cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -531,9 +531,9 @@
         const hsv = new cv.Mat();
         cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 40, 25, 0]);
-        let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
-        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 40, 25, 0]);
+        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 15, 15, 0]);
+        let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
+        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 15, 15, 0]);
         let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
         let maskRed1 = new cv.Mat();
@@ -544,7 +544,7 @@
         let redMask = new cv.Mat();
         cv.add(maskRed1, maskRed2, redMask);
 
-        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 40, 25, 0]);
+        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 15, 15, 0]);
         let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
         let blueMask = new cv.Mat();
         cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
@@ -559,13 +559,13 @@
         cv.subtract(gray, blurredGray, localContrast);
 
         let whiteMask = new cv.Mat();
-        cv.threshold(localContrast, whiteMask, 35, 255, cv.THRESH_BINARY);
+        cv.threshold(localContrast, whiteMask, 18, 255, cv.THRESH_BINARY);
 
         let saturationChannel = new cv.Mat();
         cv.extractChannel(hsv, saturationChannel, 1);
 
         let lowSatMask = new cv.Mat();
-        cv.threshold(saturationChannel, lowSatMask, 20, 255, cv.THRESH_BINARY_INV);
+        cv.threshold(saturationChannel, lowSatMask, 25, 255, cv.THRESH_BINARY_INV);
 
         let finalWhiteMask = new cv.Mat();
         cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -632,128 +632,158 @@
     canvas.height = h;
     ctx.drawImage(img, 0, 0, w, h);
 
-
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // ---- STEP 1: Compute local median color for each pixel using block sampling ----
-    const blockSize = 12;
-    const medianR = new Float32Array(w * h);
-    const medianG = new Float32Array(w * h);
-    const medianB = new Float32Array(w * h);
+    // ---- STEP 1: Compute local blurred background color using block sampling ----
+    const blockSize = 15; // 15x15 average matches boxFilter(15,15)
+    const blurR = new Float32Array(w * h);
+    const blurG = new Float32Array(w * h);
+    const blurB = new Float32Array(w * h);
 
-    computeLocalMedian(data, w, h, blockSize, medianR, medianG, medianB);
+    computeLocalMedian(data, w, h, blockSize, blurR, blurG, blurB);
 
-    // ---- STEP 2: Detect watermark pixels (multi-strategy) ----
-    const watermarkMask = new Float32Array(w * h); // 0..1 confidence
+    // ---- STEP 2: Detect watermark pixels (using Wasm equivalent HSV segmentation) ----
+    const redMask = new Uint8Array(w * h);
+    const blueMask = new Uint8Array(w * h);
+    const whiteMask = new Uint8Array(w * h);
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const idx = y * w + x;
         const i = idx * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2];
-        const mr = medianR[idx], mg = medianG[idx], mb = medianB[idx];
+        const hsv = rgbToHsv(r, g, b);
 
-        let score = 0;
-
-        // 1. Color Shift Contrast (Relative redness/blueness shifts compared to background)
-        const redShift = (r - mr) - (g - mg);
-        const blueShift = (b - mb) - (r - mr);
-        
-        // 2. White/Gray Contrast with low-saturation
-        const whiteShift = (r + g + b)/3 - (mr + mg + mb)/3;
-        const maxC = Math.max(r, g, b);
-        const minC = Math.min(r, g, b);
-        const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
-
-        // 1. Red overlay detection (Vibrant red watermarks on both light and dark backgrounds)
-        if (redShift > 15 && r > g * 1.35 && r > b * 1.45 && r > 70) {
-          score = Math.max(score, Math.min(redShift / 40, 1.0));
+        // 1. Red detection: Hue 0-10 or 170-180, S > 15, V > 15
+        if ((hsv.h <= 10 || hsv.h >= 170) && hsv.s > 15 && hsv.v > 15) {
+          redMask[idx] = 255;
         }
 
-        // 2. Blue overlay detection (Vibrant blue watermarks)
-        if (blueShift > 15 && b > r * 1.35 && b > g * 1.35 && b > 70) {
-          score = Math.max(score, Math.min(blueShift / 40, 1.0));
+        // 2. Blue detection: Hue 100-130, S > 15, V > 15
+        if (hsv.h >= 100 && hsv.h <= 130 && hsv.s > 15 && hsv.v > 15) {
+          blueMask[idx] = 255;
         }
 
-        // 3. White/Gray overlay detection (Bright low-saturation watermarks)
-        if (whiteShift > 30 && saturation < 0.12 && r > 160 && g > 160 && b > 160) {
-          score = Math.max(score, Math.min(whiteShift / 60, 1.0));
+        // 3. White detection: local contrast > 18, S <= 25
+        const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
+        const grayVal = 0.299 * r + 0.587 * g + 0.114 * b;
+        const grayBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
+        if (grayVal - grayBlur > 18 && hsv.s <= 25) {
+          whiteMask[idx] = 255;
         }
-
-        watermarkMask[idx] = score;
       }
     }
 
-    // ---- STEP 3: Refine mask - threshold, dilate, smooth ----
-    const binaryMask = new Uint8Array(w * h);
-    const threshold = 0.20; // Lower threshold to capture fine text lines
+    // ---- STEP 3: Dilate all masks smoothly by 2px (5x5 structured dilation) ----
+    const dilatedRed = dilateMask(redMask, w, h, 2);
+    const dilatedBlue = dilateMask(blueMask, w, h, 2);
+    const dilatedWhite = dilateMask(whiteMask, w, h, 2);
 
+    const combinedDilated = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
-      binaryMask[i] = watermarkMask[i] > threshold ? 1 : 0;
+      if (dilatedRed[i] || dilatedBlue[i] || dilatedWhite[i]) {
+        combinedDilated[i] = 1;
+      }
     }
 
-    cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
-    const dilatedMask = dilateMask(binaryMask, w, h, 2); // Extremely clean 2px dilation to prevent reddish halos while keeping background sharp
-
-    // ---- STEP 4: Inpaint - replace watermark pixels ----
+    // ---- STEP 4: Run Dynamic Color-Ratio Restoration & Inpaint Hybrid ----
     const outputData = new Uint8ClampedArray(data);
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const idx = y * w + x;
-        if (dilatedMask[idx]) {
-          const i = idx * 4;
-          const confidence = watermarkMask[idx];
+        const i = idx * 4;
 
-          const clean = getCleanNeighborWeighted(data, dilatedMask, x, y, w, h);
+        if (dilatedRed[idx]) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
 
-          if (confidence > 0.6) {
+          const avg_gb = 0.5 * (gb + bb);
+          const K = avg_gb > 2 ? Math.max(0.5, Math.min(2.5, rb / avg_gb)) : 1.2;
+
+          const avg_g_b = 0.5 * (g + b);
+          const alpha = Math.max(0.0, Math.min(0.85, (r - K * avg_g_b) / 255.0));
+
+          if (alpha > 0.75 && avg_gb > 12) {
+            // High-opacity core: use weighted average inpainting
+            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
             outputData[i] = clean.r;
             outputData[i + 1] = clean.g;
             outputData[i + 2] = clean.b;
           } else {
-            const blend = Math.min(confidence * 2, 1.0);
-            outputData[i] = Math.round(data[i] * (1 - blend) + clean.r * blend);
-            outputData[i + 1] = Math.round(data[i + 1] * (1 - blend) + clean.g * blend);
-            outputData[i + 2] = Math.round(data[i + 2] * (1 - blend) + clean.b * blend);
+            const oneMinusAlpha = 1.0 - alpha;
+            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+
+            let g_orig = Math.round(g * correction);
+            let b_orig = Math.round(b * correction);
+            let r_orig = Math.round(K * 0.5 * (g_orig + b_orig));
+
+            outputData[i] = Math.max(0, Math.min(255, r_orig));
+            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
+            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
+          }
+        }
+        else if (dilatedBlue[idx]) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
+
+          const avg_rg = 0.5 * (rb + gb);
+          const K = avg_rg > 2 ? Math.max(0.5, Math.min(2.5, bb / avg_rg)) : 1.2;
+
+          const avg_r_g = 0.5 * (r + g);
+          const alpha = Math.max(0.0, Math.min(0.85, (b - K * avg_r_g) / 255.0));
+
+          if (alpha > 0.75 && avg_rg > 12) {
+            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
+            outputData[i] = clean.r;
+            outputData[i + 1] = clean.g;
+            outputData[i + 2] = clean.b;
+          } else {
+            const oneMinusAlpha = 1.0 - alpha;
+            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+
+            let r_orig = Math.round(r * correction);
+            let g_orig = Math.round(g * correction);
+            let b_orig = Math.round(K * 0.5 * (r_orig + g_orig));
+
+            outputData[i] = Math.max(0, Math.min(255, r_orig));
+            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
+            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
+          }
+        }
+        else if (dilatedWhite[idx]) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
+
+          const lp = 0.299 * r + 0.587 * g + 0.114 * b;
+          const lb = 0.299 * rb + 0.587 * gb + 0.114 * bb;
+
+          const denom = 255.0 - lb;
+          const alpha = denom > 10 ? Math.max(0.0, Math.min(0.80, (lp - lb) / denom)) : 0.15;
+
+          if (alpha > 0.70 && lb > 25) {
+            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
+            outputData[i] = clean.r;
+            outputData[i + 1] = clean.g;
+            outputData[i + 2] = clean.b;
+          } else {
+            const oneMinusAlpha = 1.0 - alpha;
+            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+
+            let r_orig = Math.round((r - alpha * 255) * correction);
+            let g_orig = Math.round((g - alpha * 255) * correction);
+            let b_orig = Math.round((b - alpha * 255) * correction);
+
+            outputData[i] = Math.max(0, Math.min(255, r_orig));
+            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
+            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
           }
         }
       }
     }
 
-    // ---- STEP 5: Smoothing pass on inpainted regions ----
-    const finalData = new Uint8ClampedArray(outputData);
-    for (let pass = 0; pass < 2; pass++) {
-      for (let y = 2; y < h - 2; y++) {
-        for (let x = 2; x < w - 2; x++) {
-          const idx = y * w + x;
-          if (dilatedMask[idx]) {
-            const i = idx * 4;
-            let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
-            for (let dy = -2; dy <= 2; dy++) {
-              for (let dx = -2; dx <= 2; dx++) {
-                const ni = ((y + dy) * w + (x + dx)) * 4;
-                const dist = Math.abs(dx) + Math.abs(dy);
-                const weight = dist === 0 ? 6 : dist === 1 ? 4 : dist === 2 ? 2 : 1;
-                rSum += outputData[ni] * weight;
-                gSum += outputData[ni + 1] * weight;
-                bSum += outputData[ni + 2] * weight;
-                wSum += weight;
-              }
-            }
-            finalData[i] = rSum / wSum;
-            finalData[i + 1] = gSum / wSum;
-            finalData[i + 2] = bSum / wSum;
-          }
-        }
-      }
-      for (let i = 0; i < finalData.length; i++) {
-        outputData[i] = finalData[i];
-      }
-    }
-
-    const newImageData = new ImageData(finalData, w, h);
+    const newImageData = new ImageData(outputData, w, h);
     ctx.putImageData(newImageData, 0, 0);
 
     return canvas;
@@ -800,25 +830,29 @@
     }
   }
 
-  // ---- Helper: RGB to Hue (0-360) ----
-  function rgbToHue(r, g, b) {
-    r /= 255; g /= 255; b /= 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  // ---- Helper: RGB to HSV (matches OpenCV HSV format: H 0-180, S 0-255, V 0-255) ----
+  function rgbToHsv(r, g, b) {
+    const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+    const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm);
     const d = max - min;
-    if (d === 0) return 0;
-    let h;
-    if (max === r) h = ((g - b) / d) % 6;
-    else if (max === g) h = (b - r) / d + 2;
-    else h = (r - g) / d + 4;
-    h = Math.round(h * 60);
-    if (h < 0) h += 360;
-    return h;
-  }
-
-  // ---- Helper: Hue distance (circular) ----
-  function hueDistance(h1, h2) {
-    const d = Math.abs(h1 - h2);
-    return Math.min(d, 360 - d);
+    const v = max;
+    const s = max === 0 ? 0 : d / max;
+    let h = 0;
+    if (d !== 0) {
+      if (max === rNorm) {
+        h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0);
+      } else if (max === gNorm) {
+        h = (bNorm - rNorm) / d + 2;
+      } else {
+        h = (rNorm - gNorm) / d + 4;
+      }
+      h /= 6;
+    }
+    return {
+      h: Math.round(h * 180),
+      s: Math.round(s * 255),
+      v: Math.round(v * 255)
+    };
   }
 
   // ---- Helper: Clean mask - remove isolated pixels ----
