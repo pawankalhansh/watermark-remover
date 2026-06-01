@@ -274,7 +274,6 @@
     
     // Convert to OpenCV Mats
     const srcMat = cv.imread(srcCanvas); // 4 channels RGBA
-
     const w = srcMat.cols;
     const h = srcMat.rows;
 
@@ -287,13 +286,14 @@
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
     // 3. Red watermark detection (Hue 0-10 and 170-180, S > 45, V > 30)
+    // In OpenCV.js, bounds must be full-size Mats of matching type filled with Scalar [H, S, V, A]
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 45, 30, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 45, 30, 0]);
+    let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
+
     let maskRed1 = new cv.Mat();
     let maskRed2 = new cv.Mat();
-    let lowerRed1 = cv.matFromArray(1, 3, cv.CV_8U, [0, 45, 30]);
-    let upperRed1 = cv.matFromArray(1, 3, cv.CV_8U, [10, 255, 255]); // 10 instead of 8 to capture edge red transitions
-    let lowerRed2 = cv.matFromArray(1, 3, cv.CV_8U, [170, 45, 30]);
-    let upperRed2 = cv.matFromArray(1, 3, cv.CV_8U, [180, 255, 255]);
-
     cv.inRange(hsv, lowerRed1, upperRed1, maskRed1);
     cv.inRange(hsv, lowerRed2, upperRed2, maskRed2);
 
@@ -301,9 +301,9 @@
     cv.add(maskRed1, maskRed2, redMask);
 
     // 4. Blue watermark detection (Hue 100-130, S > 45, V > 30)
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 45, 30, 0]);
+    let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
     let blueMask = new cv.Mat();
-    let lowerBlue = cv.matFromArray(1, 3, cv.CV_8U, [100, 45, 30]);
-    let upperBlue = cv.matFromArray(1, 3, cv.CV_8U, [130, 255, 255]);
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
     // 5. White/Gray watermark detection (Very conservative local contrast + Low Saturation)
@@ -320,9 +320,8 @@
     cv.threshold(localContrast, whiteMask, 35, 255, cv.THRESH_BINARY); // High local contrast threshold (35) to protect natural chair edges
 
     // Extract Saturation channel to ensure extremely low saturation (white/gray/silver)
-    let hsvChannels = new cv.MatVector();
-    cv.split(hsv, hsvChannels);
-    let saturationChannel = hsvChannels.get(1);
+    let saturationChannel = new cv.Mat();
+    cv.extractChannel(hsv, saturationChannel, 1); // 1 is Saturation channel
 
     let lowSatMask = new cv.Mat();
     cv.threshold(saturationChannel, lowSatMask, 20, 255, cv.THRESH_BINARY_INV); // Tight low saturation threshold (20) to completely protect wood grains
@@ -351,21 +350,20 @@
     srcMat.delete();
     srcRGB.delete();
     hsv.delete();
-    maskRed1.delete();
-    maskRed2.delete();
     lowerRed1.delete();
     upperRed1.delete();
     lowerRed2.delete();
     upperRed2.delete();
+    maskRed1.delete();
+    maskRed2.delete();
     redMask.delete();
-    blueMask.delete();
     lowerBlue.delete();
     upperBlue.delete();
+    blueMask.delete();
     gray.delete();
     blurredGray.delete();
     localContrast.delete();
     whiteMask.delete();
-    hsvChannels.delete();
     saturationChannel.delete();
     lowSatMask.delete();
     finalWhiteMask.delete();
@@ -399,28 +397,32 @@
     try {
       if (typeof cv !== 'undefined' && cv.Mat) {
         const srcMat = cv.imread(canvas);
+        
+        const w = srcMat.cols;
+        const h = srcMat.rows;
+
         const srcRGB = new cv.Mat();
         cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
 
         const hsv = new cv.Mat();
         cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
+        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 45, 30, 0]);
+        let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
+        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 45, 30, 0]);
+        let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
+
         let maskRed1 = new cv.Mat();
         let maskRed2 = new cv.Mat();
-        let lowerRed1 = cv.matFromArray(1, 3, cv.CV_8U, [0, 45, 30]);
-        let upperRed1 = cv.matFromArray(1, 3, cv.CV_8U, [8, 255, 255]);
-        let lowerRed2 = cv.matFromArray(1, 3, cv.CV_8U, [172, 45, 30]);
-        let upperRed2 = cv.matFromArray(1, 3, cv.CV_8U, [180, 255, 255]);
-
         cv.inRange(hsv, lowerRed1, upperRed1, maskRed1);
         cv.inRange(hsv, lowerRed2, upperRed2, maskRed2);
 
         let redMask = new cv.Mat();
         cv.add(maskRed1, maskRed2, redMask);
 
+        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 45, 30, 0]);
+        let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
         let blueMask = new cv.Mat();
-        let lowerBlue = cv.matFromArray(1, 3, cv.CV_8U, [100, 45, 30]);
-        let upperBlue = cv.matFromArray(1, 3, cv.CV_8U, [130, 255, 255]);
         cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
         let gray = new cv.Mat();
@@ -433,14 +435,13 @@
         cv.subtract(gray, blurredGray, localContrast);
 
         let whiteMask = new cv.Mat();
-        cv.threshold(localContrast, whiteMask, 20, 255, cv.THRESH_BINARY);
+        cv.threshold(localContrast, whiteMask, 35, 255, cv.THRESH_BINARY);
 
-        let hsvChannels = new cv.MatVector();
-        cv.split(hsv, hsvChannels);
-        let saturationChannel = hsvChannels.get(1);
+        let saturationChannel = new cv.Mat();
+        cv.extractChannel(hsv, saturationChannel, 1);
 
         let lowSatMask = new cv.Mat();
-        cv.threshold(saturationChannel, lowSatMask, 40, 255, cv.THRESH_BINARY_INV);
+        cv.threshold(saturationChannel, lowSatMask, 20, 255, cv.THRESH_BINARY_INV);
 
         let finalWhiteMask = new cv.Mat();
         cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -449,7 +450,7 @@
         cv.add(redMask, blueMask, combinedMask);
         cv.add(combinedMask, finalWhiteMask, combinedMask);
 
-        let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+        let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
         let dilatedMask = new cv.Mat();
         cv.dilate(combinedMask, dilatedMask, M, new cv.Point(-1, -1), 1);
 
@@ -458,21 +459,20 @@
         srcMat.delete();
         srcRGB.delete();
         hsv.delete();
-        maskRed1.delete();
-        maskRed2.delete();
         lowerRed1.delete();
         upperRed1.delete();
         lowerRed2.delete();
         upperRed2.delete();
+        maskRed1.delete();
+        maskRed2.delete();
         redMask.delete();
-        blueMask.delete();
         lowerBlue.delete();
         upperBlue.delete();
+        blueMask.delete();
         gray.delete();
         blurredGray.delete();
         localContrast.delete();
         whiteMask.delete();
-        hsvChannels.delete();
         saturationChannel.delete();
         lowSatMask.delete();
         finalWhiteMask.delete();
