@@ -267,6 +267,7 @@
 
   // ============================================
   // OPENCV.JS WATERMARK INPAINTING ENGINE
+  // Pure inpainting approach — no reverse alpha blending
   // ============================================
   function processImageWithOpenCV(img) {
     // 1. Create the full-resolution source image canvas (max 4096px to preserve details!)
@@ -285,11 +286,13 @@
     const hsv = new cv.Mat();
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-    // 3. Red watermark detection (Hue 0-15 and 165-180, S > 10, V > 10)
-    // Extremely sensitive bounds to capture pink/orange-red and all anti-aliased borders
-    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 10, 10, 0]);
-    let upperRed1 = new cv.Mat(h, w, hsv.type(), [15, 255, 255, 255]);
-    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [165, 10, 10, 0]);
+    // ============================================
+    // 3. RED watermark detection (Hue 0-12 and 168-180, S > 25, V > 25)
+    //    Tighter saturation/value floors to avoid false positives on skin tones
+    // ============================================
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 25, 25, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 25, 25, 0]);
     let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
     let maskRed1 = new cv.Mat();
@@ -300,193 +303,109 @@
     let redMask = new cv.Mat();
     cv.add(maskRed1, maskRed2, redMask);
 
-    // 4. Blue watermark detection (Hue 100-135, S > 10, V > 10)
-    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 10, 10, 0]);
+    // ============================================
+    // 4. BLUE watermark detection (Hue 100-135, S > 25, V > 25)
+    // ============================================
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 25, 25, 0]);
     let upperBlue = new cv.Mat(h, w, hsv.type(), [135, 255, 255, 255]);
     let blueMask = new cv.Mat();
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
-    // 5. White/Gray watermark detection (Extremely sensitive absolute local contrast + Low Saturation)
+    // ============================================
+    // 5. WHITE/GRAY watermark detection
+    //    Uses absolute local contrast + low saturation
+    // ============================================
     let gray = new cv.Mat();
     cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
 
     let blurredGray = new cv.Mat();
-    cv.boxFilter(gray, blurredGray, -1, new cv.Size(25, 25));
+    cv.GaussianBlur(gray, blurredGray, new cv.Size(31, 31), 0);
 
     let localContrast = new cv.Mat();
-    cv.absdiff(gray, blurredGray, localContrast); // Use absolute difference to capture both light and dark watermarks!
+    cv.absdiff(gray, blurredGray, localContrast);
 
     let whiteMask = new cv.Mat();
-    cv.threshold(localContrast, whiteMask, 10, 255, cv.THRESH_BINARY); // Lower contrast threshold (10) to capture extremely faint gray text
+    cv.threshold(localContrast, whiteMask, 8, 255, cv.THRESH_BINARY);
 
-    // Extract Saturation channel to ensure extremely low saturation (white/gray/silver)
+    // Extract Saturation channel — white/gray text has very low saturation
     let saturationChannel = new cv.Mat();
-    cv.extractChannel(hsv, saturationChannel, 1); // 1 is Saturation channel
+    cv.extractChannel(hsv, saturationChannel, 1);
 
     let lowSatMask = new cv.Mat();
-    cv.threshold(saturationChannel, lowSatMask, 25, 255, cv.THRESH_BINARY_INV); // Low saturation threshold (25) to protect colored details while capturing white text
+    cv.threshold(saturationChannel, lowSatMask, 30, 255, cv.THRESH_BINARY_INV);
 
     let finalWhiteMask = new cv.Mat();
     cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
 
-    // 6. Combine all masks
+    // ============================================
+    // 6. Combine all color masks
+    // ============================================
     let combinedMask = new cv.Mat();
     cv.add(redMask, blueMask, combinedMask);
     cv.add(combinedMask, finalWhiteMask, combinedMask);
 
-    // 7. Morphological Dilation (5x5 circular Ellipse kernel for smooth, precise 2px dilation)
-    let M = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
-    
-    let dilatedRed = new cv.Mat();
-    cv.dilate(redMask, dilatedRed, M, new cv.Point(-1, -1), 1);
+    // ============================================
+    // 7. Morphological CLOSING to fill gaps in text strokes
+    //    (small holes inside letters like 'e', 'a', 'o' get filled)
+    // ============================================
+    let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+    let closedMask = new cv.Mat();
+    cv.morphologyEx(combinedMask, closedMask, cv.MORPH_CLOSE, closeKernel);
 
-    let dilatedBlue = new cv.Mat();
-    cv.dilate(blueMask, dilatedBlue, M, new cv.Point(-1, -1), 1);
-
-    let dilatedWhite = new cv.Mat();
-    cv.dilate(finalWhiteMask, dilatedWhite, M, new cv.Point(-1, -1), 1);
-
-    // Create a combined dilated mask for the final inpaint pass
+    // ============================================
+    // 8. Morphological DILATION with 7x7 ellipse kernel
+    //    Expands mask by ~3px to cover anti-aliased text edges
+    // ============================================
+    let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
     let dilatedMask = new cv.Mat();
-    cv.add(dilatedRed, dilatedBlue, dilatedMask);
-    cv.add(dilatedMask, dilatedWhite, dilatedMask);
+    cv.dilate(closedMask, dilatedMask, dilateKernel, new cv.Point(-1, -1), 1);
 
-    // 8. Compute blurred background for Color-Ratio Reverse Alpha Blending estimation
-    let blurredRGB = new cv.Mat();
-    cv.boxFilter(srcRGB, blurredRGB, -1, new cv.Size(15, 15));
+    // ============================================
+    // 9. Pure Inpainting — ALL detected watermark pixels
+    //    Telea algorithm with radius 5 for smooth natural fill
+    //    No reverse alpha blending — inpainting extrapolates from clean neighbors
+    // ============================================
+    const dstRGB = new cv.Mat();
+    cv.inpaint(srcRGB, dilatedMask, dstRGB, 5, cv.INPAINT_TELEA);
 
-    let imgData = srcRGB.data;
-    let blurData = blurredRGB.data;
-    
-    let redData = dilatedRed.data;
-    let blueData = dilatedBlue.data;
-    let whiteData = dilatedWhite.data;
+    // ============================================
+    // 10. Edge blending — smooth transition at mask boundary
+    //     Apply light Gaussian blur, then composite: use blurred result inside
+    //     a 2px eroded boundary ring, original inpaint result everywhere else
+    // ============================================
+    let finalResult = new cv.Mat();
+    dstRGB.copyTo(finalResult);
 
-    // Create selective inpaintMask (grayscale, same size as dilatedMask, initialized to 0)
-    let inpaintMask = cv.Mat.zeros(h, w, cv.CV_8UC1);
-    let inpaintMaskData = inpaintMask.data;
+    // Create a boundary ring mask (dilated - eroded) for soft blending
+    let erodedMask = new cv.Mat();
+    let boundaryKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+    cv.erode(dilatedMask, erodedMask, boundaryKernel, new cv.Point(-1, -1), 1);
 
-    // 9. Run Dynamic Color-Ratio Reverse Alpha Blending directly in memory (zero-copy performance)
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const idx = y * w + x;
+    let boundaryMask = new cv.Mat();
+    cv.subtract(dilatedMask, erodedMask, boundaryMask);
+
+    // Blur the inpainted result lightly
+    let blurredResult = new cv.Mat();
+    cv.GaussianBlur(dstRGB, blurredResult, new cv.Size(5, 5), 0);
+
+    // Blend: on boundary pixels, mix blurred and sharp 50/50 for smooth transition
+    let blurredResultData = blurredResult.data;
+    let finalData = finalResult.data;
+    let boundaryData = boundaryMask.data;
+
+    for (let idx = 0; idx < w * h; idx++) {
+      if (boundaryData[idx] === 255) {
         const i = idx * 3;
-
-        if (redData[idx] === 255) {
-          const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
-          const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
-
-          // Calculate local background redness ratio K = R_blur / (0.5 * (G_blur + B_blur))
-          const avg_gb = 0.5 * (gb + bb);
-          const K = avg_gb > 2 ? Math.max(0.5, Math.min(2.5, rb / avg_gb)) : 1.2;
-
-          // Estimate alpha = (R_blended - K * 0.5 * (G_blended + B_blended)) / 255
-          const avg_g_b = 0.5 * (g + b);
-          const alpha = Math.max(0.0, Math.min(0.85, (r - K * avg_g_b) / 255.0));
-
-          if (alpha > 0.75 && avg_gb > 12) {
-            inpaintMaskData[idx] = 255;
-          } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            // Limit noise amplification in high-opacity areas
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-            let g_orig = Math.round(g * correction);
-            let b_orig = Math.round(b * correction);
-            // Reconstruct red channel directly from corrected green and blue channels to maintain background chromaticity K
-            let r_orig = Math.round(K * 0.5 * (g_orig + b_orig));
-
-            imgData[i] = Math.max(0, Math.min(255, r_orig));
-            imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
-          }
-        }
-        else if (blueData[idx] === 255) {
-          const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
-          const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
-
-          // Calculate local background blueness ratio K = B_blur / (0.5 * (R_blur + G_blur))
-          const avg_rg = 0.5 * (rb + gb);
-          const K = avg_rg > 2 ? Math.max(0.5, Math.min(2.5, bb / avg_rg)) : 1.2;
-
-          // Estimate alpha = (B_blended - K * 0.5 * (R_blended + G_blended)) / 255
-          const avg_r_g = 0.5 * (r + g);
-          const alpha = Math.max(0.0, Math.min(0.85, (b - K * avg_r_g) / 255.0));
-
-          if (alpha > 0.75 && avg_rg > 12) {
-            inpaintMaskData[idx] = 255;
-          } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-            let r_orig = Math.round(r * correction);
-            let g_orig = Math.round(g * correction);
-            // Reconstruct blue channel directly from corrected red and green channels to maintain background chromaticity K
-            let b_orig = Math.round(K * 0.5 * (r_orig + g_orig));
-
-            imgData[i] = Math.max(0, Math.min(255, r_orig));
-            imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
-          }
-        }
-        else if (whiteData[idx] === 255) {
-          const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
-          const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
-
-          // Determine luminance of pixel vs blurred background
-          const lp = 0.299 * r + 0.587 * g + 0.114 * b;
-          const lb = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-
-          if (lp >= lb) {
-            // Bright white watermark overlay
-            const denom = 255.0 - lb;
-            const alpha = denom > 10 ? Math.max(0.0, Math.min(0.85, (lp - lb) / denom)) : 0.15;
-
-            if (alpha > 0.70 && lb > 25) {
-              inpaintMaskData[idx] = 255;
-            } else {
-              const oneMinusAlpha = 1.0 - alpha;
-              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-              let r_orig = Math.round((r - alpha * 255) * correction);
-              let g_orig = Math.round((g - alpha * 255) * correction);
-              let b_orig = Math.round((b - alpha * 255) * correction);
-
-              imgData[i] = Math.max(0, Math.min(255, r_orig));
-              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
-              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
-            }
-          } else {
-            // Dark gray watermark overlay (like Adobe Stock on sky/light buildings)
-            const alpha = lb > 10 ? Math.max(0.0, Math.min(0.85, (lb - lp) / lb)) : 0.15;
-
-            if (alpha > 0.70 && lb > 25) {
-              inpaintMaskData[idx] = 255;
-            } else {
-              const oneMinusAlpha = 1.0 - alpha;
-              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-              let r_orig = Math.round(r * correction);
-              let g_orig = Math.round(g * correction);
-              let b_orig = Math.round(b * correction);
-
-              imgData[i] = Math.max(0, Math.min(255, r_orig));
-              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
-              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
-            }
-          }
-        }
+        finalData[i]     = Math.round(0.5 * finalData[i]     + 0.5 * blurredResultData[i]);
+        finalData[i + 1] = Math.round(0.5 * finalData[i + 1] + 0.5 * blurredResultData[i + 1]);
+        finalData[i + 2] = Math.round(0.5 * finalData[i + 2] + 0.5 * blurredResultData[i + 2]);
       }
     }
 
-    // 10. Run Telea's inpainting algorithm (radius 1px) ONLY on remaining un-restored dark/shadowed pixels
-    const dstRGB = new cv.Mat();
-    cv.inpaint(srcRGB, inpaintMask, dstRGB, 1, cv.INPAINT_TELEA);
-
     // 11. Show output back on the canvas
-    cv.imshow(srcCanvas, dstRGB);
+    cv.imshow(srcCanvas, finalResult);
 
-    // Deallocate Wasm memory to prevent heap leaks
+    // Deallocate ALL Wasm memory
     srcMat.delete();
     srcRGB.delete();
     hsv.delete();
@@ -508,14 +427,16 @@
     lowSatMask.delete();
     finalWhiteMask.delete();
     combinedMask.delete();
-    M.delete();
-    dilatedRed.delete();
-    dilatedBlue.delete();
-    dilatedWhite.delete();
+    closeKernel.delete();
+    closedMask.delete();
+    dilateKernel.delete();
     dilatedMask.delete();
-    blurredRGB.delete();
-    inpaintMask.delete();
     dstRGB.delete();
+    finalResult.delete();
+    erodedMask.delete();
+    boundaryKernel.delete();
+    boundaryMask.delete();
+    blurredResult.delete();
 
     return srcCanvas;
   }
@@ -552,9 +473,9 @@
         const hsv = new cv.Mat();
         cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 15, 15, 0]);
-        let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
-        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 15, 15, 0]);
+        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 25, 25, 0]);
+        let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
+        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 25, 25, 0]);
         let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
         let maskRed1 = new cv.Mat();
@@ -565,8 +486,8 @@
         let redMask = new cv.Mat();
         cv.add(maskRed1, maskRed2, redMask);
 
-        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 15, 15, 0]);
-        let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
+        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 25, 25, 0]);
+        let upperBlue = new cv.Mat(h, w, hsv.type(), [135, 255, 255, 255]);
         let blueMask = new cv.Mat();
         cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
@@ -574,19 +495,19 @@
         cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
 
         let blurredGray = new cv.Mat();
-        cv.boxFilter(gray, blurredGray, -1, new cv.Size(25, 25));
+        cv.GaussianBlur(gray, blurredGray, new cv.Size(31, 31), 0);
 
         let localContrast = new cv.Mat();
-        cv.subtract(gray, blurredGray, localContrast);
+        cv.absdiff(gray, blurredGray, localContrast);
 
         let whiteMask = new cv.Mat();
-        cv.threshold(localContrast, whiteMask, 18, 255, cv.THRESH_BINARY);
+        cv.threshold(localContrast, whiteMask, 8, 255, cv.THRESH_BINARY);
 
         let saturationChannel = new cv.Mat();
         cv.extractChannel(hsv, saturationChannel, 1);
 
         let lowSatMask = new cv.Mat();
-        cv.threshold(saturationChannel, lowSatMask, 25, 255, cv.THRESH_BINARY_INV);
+        cv.threshold(saturationChannel, lowSatMask, 30, 255, cv.THRESH_BINARY_INV);
 
         let finalWhiteMask = new cv.Mat();
         cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
@@ -595,9 +516,14 @@
         cv.add(redMask, blueMask, combinedMask);
         cv.add(combinedMask, finalWhiteMask, combinedMask);
 
-        let M = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+        // Morphological closing + dilation (same as main engine)
+        let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+        let closedMask = new cv.Mat();
+        cv.morphologyEx(combinedMask, closedMask, cv.MORPH_CLOSE, closeKernel);
+
+        let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
         let dilatedMask = new cv.Mat();
-        cv.dilate(combinedMask, dilatedMask, M, new cv.Point(-1, -1), 1);
+        cv.dilate(closedMask, dilatedMask, dilateKernel, new cv.Point(-1, -1), 1);
 
         cv.imshow(canvas, dilatedMask);
 
@@ -622,7 +548,9 @@
         lowSatMask.delete();
         finalWhiteMask.delete();
         combinedMask.delete();
-        M.delete();
+        closeKernel.delete();
+        closedMask.delete();
+        dilateKernel.delete();
         dilatedMask.delete();
       }
     } catch (e) {
@@ -633,7 +561,7 @@
 
   // ============================================
   // ADVANCED CLIENT-SIDE WATERMARK REMOVAL (FALLBACK)
-  // Handles: White/gray, colored (red/blue/etc), semi-transparent overlays
+  // Pure inpainting approach — replaces watermark pixels with clean neighbor averages
   // ============================================
   function processImageLocal(img) {
     const canvas = document.createElement('canvas');
@@ -656,15 +584,15 @@
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // ---- STEP 1: Compute local blurred background color using block sampling ----
-    const blockSize = 15; // 15x15 average matches boxFilter(15,15)
+    // ---- STEP 1: Compute local blurred background for white detection ----
+    const blockSize = 15;
     const blurR = new Float32Array(w * h);
     const blurG = new Float32Array(w * h);
     const blurB = new Float32Array(w * h);
 
     computeLocalMedian(data, w, h, blockSize, blurR, blurG, blurB);
 
-    // ---- STEP 2: Detect watermark pixels (using Wasm equivalent HSV segmentation) ----
+    // ---- STEP 2: Detect watermark pixels ----
     const redMask = new Uint8Array(w * h);
     const blueMask = new Uint8Array(w * h);
     const whiteMask = new Uint8Array(w * h);
@@ -676,30 +604,30 @@
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const hsv = rgbToHsv(r, g, b);
 
-        // 1. Red detection: Hue 0-15 or 165-180, S > 10, V > 10
-        if ((hsv.h <= 15 || hsv.h >= 165) && hsv.s > 10 && hsv.v > 10) {
-          redMask[idx] = 255;
+        // Red: Hue 0-12 or 168-180, S > 25, V > 25
+        if ((hsv.h <= 12 || hsv.h >= 168) && hsv.s > 25 && hsv.v > 25) {
+          redMask[idx] = 1;
         }
 
-        // 2. Blue detection: Hue 100-135, S > 10, V > 10
-        if (hsv.h >= 100 && hsv.h <= 135 && hsv.s > 10 && hsv.v > 10) {
-          blueMask[idx] = 255;
+        // Blue: Hue 100-135, S > 25, V > 25
+        if (hsv.h >= 100 && hsv.h <= 135 && hsv.s > 25 && hsv.v > 25) {
+          blueMask[idx] = 1;
         }
 
-        // 3. White detection: absolute local contrast > 10, S <= 25 (captures both light & dark watermarks!)
+        // White: absolute local contrast > 8, S <= 30
         const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
         const grayVal = 0.299 * r + 0.587 * g + 0.114 * b;
         const grayBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-        if (Math.abs(grayVal - grayBlur) > 10 && hsv.s <= 25) {
-          whiteMask[idx] = 255;
+        if (Math.abs(grayVal - grayBlur) > 8 && hsv.s <= 30) {
+          whiteMask[idx] = 1;
         }
       }
     }
 
-    // ---- STEP 3: Dilate all masks smoothly by 2px (5x5 structured dilation) ----
-    const dilatedRed = dilateMask(redMask, w, h, 2);
-    const dilatedBlue = dilateMask(blueMask, w, h, 2);
-    const dilatedWhite = dilateMask(whiteMask, w, h, 2);
+    // ---- STEP 3: Dilate all masks by 3px (7x7 equivalent) ----
+    const dilatedRed = dilateMask(redMask, w, h, 3);
+    const dilatedBlue = dilateMask(blueMask, w, h, 3);
+    const dilatedWhite = dilateMask(whiteMask, w, h, 3);
 
     const combinedDilated = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
@@ -708,127 +636,49 @@
       }
     }
 
-    // ---- STEP 4: Run Dynamic Color-Ratio Restoration & Inpaint Hybrid ----
+    // ---- STEP 4: Pure inpainting — replace ALL watermark pixels with clean neighbors ----
     const outputData = new Uint8ClampedArray(data);
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const idx = y * w + x;
-        const i = idx * 4;
-
-        if (dilatedRed[idx]) {
-          const r = data[i], g = data[i + 1], b = data[i + 2];
-          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
-
-          const avg_gb = 0.5 * (gb + bb);
-          const K = avg_gb > 2 ? Math.max(0.5, Math.min(2.5, rb / avg_gb)) : 1.2;
-
-          const avg_g_b = 0.5 * (g + b);
-          const alpha = Math.max(0.0, Math.min(0.85, (r - K * avg_g_b) / 255.0));
-
-          if (alpha > 0.75 && avg_gb > 12) {
-            // High-opacity core: use weighted average inpainting
-            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
-            outputData[i] = clean.r;
-            outputData[i + 1] = clean.g;
-            outputData[i + 2] = clean.b;
-          } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-            let g_orig = Math.round(g * correction);
-            let b_orig = Math.round(b * correction);
-            let r_orig = Math.round(K * 0.5 * (g_orig + b_orig));
-
-            outputData[i] = Math.max(0, Math.min(255, r_orig));
-            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
-          }
-        }
-        else if (dilatedBlue[idx]) {
-          const r = data[i], g = data[i + 1], b = data[i + 2];
-          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
-
-          const avg_rg = 0.5 * (rb + gb);
-          const K = avg_rg > 2 ? Math.max(0.5, Math.min(2.5, bb / avg_rg)) : 1.2;
-
-          const avg_r_g = 0.5 * (r + g);
-          const alpha = Math.max(0.0, Math.min(0.85, (b - K * avg_r_g) / 255.0));
-
-          if (alpha > 0.75 && avg_rg > 12) {
-            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
-            outputData[i] = clean.r;
-            outputData[i + 1] = clean.g;
-            outputData[i + 2] = clean.b;
-          } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-            let r_orig = Math.round(r * correction);
-            let g_orig = Math.round(g * correction);
-            let b_orig = Math.round(K * 0.5 * (r_orig + g_orig));
-
-            outputData[i] = Math.max(0, Math.min(255, r_orig));
-            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
-          }
-        }
-        else if (dilatedWhite[idx]) {
-          const r = data[i], g = data[i + 1], b = data[i + 2];
-          const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
-
-          const lp = 0.299 * r + 0.587 * g + 0.114 * b;
-          const lb = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-
-          if (lp >= lb) {
-            // Bright white watermark
-            const denom = 255.0 - lb;
-            const alpha = denom > 10 ? Math.max(0.0, Math.min(0.85, (lp - lb) / denom)) : 0.15;
-
-            if (alpha > 0.70 && lb > 25) {
-              const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
-              outputData[i] = clean.r;
-              outputData[i + 1] = clean.g;
-              outputData[i + 2] = clean.b;
-            } else {
-              const oneMinusAlpha = 1.0 - alpha;
-              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-              let r_orig = Math.round((r - alpha * 255) * correction);
-              let g_orig = Math.round((g - alpha * 255) * correction);
-              let b_orig = Math.round((b - alpha * 255) * correction);
-
-              outputData[i] = Math.max(0, Math.min(255, r_orig));
-              outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
-              outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
-            }
-          } else {
-            // Dark gray watermark (like Adobe Stock)
-            const alpha = lb > 10 ? Math.max(0.0, Math.min(0.85, (lb - lp) / lb)) : 0.15;
-
-            if (alpha > 0.70 && lb > 25) {
-              const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
-              outputData[i] = clean.r;
-              outputData[i + 1] = clean.g;
-              outputData[i + 2] = clean.b;
-            } else {
-              const oneMinusAlpha = 1.0 - alpha;
-              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
-
-              let r_orig = Math.round(r * correction);
-              let g_orig = Math.round(g * correction);
-              let b_orig = Math.round(b * correction);
-
-              outputData[i] = Math.max(0, Math.min(255, r_orig));
-              outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
-              outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
-            }
-          }
+        if (combinedDilated[idx]) {
+          const i = idx * 4;
+          const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
+          outputData[i] = clean.r;
+          outputData[i + 1] = clean.g;
+          outputData[i + 2] = clean.b;
         }
       }
     }
 
-    const newImageData = new ImageData(outputData, w, h);
+    // ---- STEP 5: Smoothing pass on boundary pixels for natural blending ----
+    const finalData = new Uint8ClampedArray(outputData);
+    for (let y = 2; y < h - 2; y++) {
+      for (let x = 2; x < w - 2; x++) {
+        const idx = y * w + x;
+        if (combinedDilated[idx]) {
+          const i = idx * 4;
+          let rS = 0, gS = 0, bS = 0, wS = 0;
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+              const ni = ((y + dy) * w + (x + dx)) * 4;
+              const d = Math.abs(dx) + Math.abs(dy);
+              const wt = d === 0 ? 6 : d <= 1 ? 4 : d <= 2 ? 2 : 1;
+              rS += outputData[ni] * wt;
+              gS += outputData[ni + 1] * wt;
+              bS += outputData[ni + 2] * wt;
+              wS += wt;
+            }
+          }
+          finalData[i] = Math.round(rS / wS);
+          finalData[i + 1] = Math.round(gS / wS);
+          finalData[i + 2] = Math.round(bS / wS);
+        }
+      }
+    }
+
+    const newImageData = new ImageData(finalData, w, h);
     ctx.putImageData(newImageData, 0, 0);
 
     return canvas;
