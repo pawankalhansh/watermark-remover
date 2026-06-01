@@ -276,25 +276,30 @@
     const srcCanvas = createResizedCanvas(img, 1600);
     
     // Convert to OpenCV Mats
-    const srcMat = cv.imread(srcCanvas);
+    const srcMat = cv.imread(srcCanvas); // 4 channels RGBA
     const maskMat = cv.imread(maskCanvas);
 
-    // Convert mask to grayscale (1 channel)
+    // 1. Convert source image to 3 channels RGB (cv.inpaint requires 1 or 3 channels)
+    const srcRGB = new cv.Mat();
+    cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
+
+    // 2. Convert mask to grayscale (1 channel)
     const maskGray = new cv.Mat();
     cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
 
-    const dstMat = new cv.Mat();
-    // Run inpainting using Telea's propagation algorithm (radius 3px)
-    cv.inpaint(srcMat, maskGray, dstMat, 3, cv.INPAINT_TELEA);
+    const dstRGB = new cv.Mat();
+    // 3. Run inpainting using Telea's propagation algorithm (radius 3px)
+    cv.inpaint(srcRGB, maskGray, dstRGB, 3, cv.INPAINT_TELEA);
 
-    // Show output on srcCanvas
-    cv.imshow(srcCanvas, dstMat);
+    // 4. Show 3-channel output on srcCanvas
+    cv.imshow(srcCanvas, dstRGB);
 
     // Deallocate Mats to prevent memory leaks in WebAssembly heap
     srcMat.delete();
     maskMat.delete();
+    srcRGB.delete();
     maskGray.delete();
-    dstMat.delete();
+    dstRGB.delete();
 
     return srcCanvas;
   }
@@ -937,24 +942,30 @@
         await waitForOpenCV();
 
         // Convert canvases to OpenCV Mat
-        const srcMat = cv.imread(brushCanvas);
+        const srcMat = cv.imread(brushCanvas); // 4 channels RGBA
         const maskMat = cv.imread(brushMaskCanvas);
 
+        // 1. Convert source to 3 channels RGB (cv.inpaint requires 1 or 3 channels)
+        const srcRGB = new cv.Mat();
+        cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
+
+        // 2. Convert mask to grayscale (1 channel)
         const maskGray = new cv.Mat();
         cv.cvtColor(maskMat, maskGray, cv.COLOR_RGBA2GRAY);
 
-        const dstMat = new cv.Mat();
-        // Inpaint using Telea's propagation algorithm (radius 4px is great for manual brushes)
-        cv.inpaint(srcMat, maskGray, dstMat, 4, cv.INPAINT_TELEA);
+        const dstRGB = new cv.Mat();
+        // 3. Inpaint using Telea's propagation algorithm (radius 4px is great for manual brushes)
+        cv.inpaint(srcRGB, maskGray, dstRGB, 4, cv.INPAINT_TELEA);
 
-        // Show back to brushCanvas
-        cv.imshow(brushCanvas, dstMat);
+        // 4. Show back to brushCanvas
+        cv.imshow(brushCanvas, dstRGB);
 
         // Clean up memory
         srcMat.delete();
         maskMat.delete();
+        srcRGB.delete();
         maskGray.delete();
-        dstMat.delete();
+        dstRGB.delete();
 
         // Update processed canvas
         const pCtx = processedCanvas.getContext('2d');
