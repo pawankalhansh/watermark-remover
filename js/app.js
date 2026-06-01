@@ -329,10 +329,10 @@
     let whiteMask = new cv.Mat();
     cv.threshold(localContrast, whiteMask, 3, 255, cv.THRESH_BINARY);
 
-    // Extract Saturation channel — white/gray text has low saturation
-    // Allow up to 50 to catch slightly tinted watermarks too
-    let saturationChannel = new cv.Mat();
-    cv.extractChannel(hsv, saturationChannel, 1);
+    // Extract Saturation channel using cv.split (extractChannel not available in this build)
+    let hsvChannels = new cv.MatVector();
+    cv.split(hsv, hsvChannels);
+    let saturationChannel = hsvChannels.get(1); // S channel
 
     let lowSatMask = new cv.Mat();
     cv.threshold(saturationChannel, lowSatMask, 50, 255, cv.THRESH_BINARY_INV);
@@ -359,8 +359,12 @@
     //    (small holes inside letters like 'e', 'a', 'o' get filled)
     // ============================================
     let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+    // MORPH_CLOSE = dilate then erode (manual implementation for compatibility)
+    let tempDilated = new cv.Mat();
+    cv.dilate(combinedMask, tempDilated, closeKernel, new cv.Point(-1, -1), 1);
     let closedMask = new cv.Mat();
-    cv.morphologyEx(combinedMask, closedMask, cv.MORPH_CLOSE, closeKernel);
+    cv.erode(tempDilated, closedMask, closeKernel, new cv.Point(-1, -1), 1);
+    tempDilated.delete();
 
     // ============================================
     // 8. Morphological DILATION with 7x7 ellipse kernel
@@ -447,6 +451,7 @@
     boundaryKernel.delete();
     boundaryMask.delete();
     blurredResult.delete();
+    hsvChannels.delete();
 
     return srcCanvas;
   }
@@ -513,8 +518,9 @@
         let whiteMask = new cv.Mat();
         cv.threshold(localContrast, whiteMask, 3, 255, cv.THRESH_BINARY);
 
-        let saturationChannel = new cv.Mat();
-        cv.extractChannel(hsv, saturationChannel, 1);
+        let hsvChannels2 = new cv.MatVector();
+        cv.split(hsv, hsvChannels2);
+        let saturationChannel = hsvChannels2.get(1);
 
         let lowSatMask = new cv.Mat();
         cv.threshold(saturationChannel, lowSatMask, 50, 255, cv.THRESH_BINARY_INV);
@@ -528,8 +534,11 @@
 
         // Morphological closing + dilation (same as main engine)
         let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+        let tempDilated2 = new cv.Mat();
+        cv.dilate(combinedMask, tempDilated2, closeKernel, new cv.Point(-1, -1), 1);
         let closedMask = new cv.Mat();
-        cv.morphologyEx(combinedMask, closedMask, cv.MORPH_CLOSE, closeKernel);
+        cv.erode(tempDilated2, closedMask, closeKernel, new cv.Point(-1, -1), 1);
+        tempDilated2.delete();
 
         let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
         let dilatedMask = new cv.Mat();
@@ -555,6 +564,7 @@
         localContrast.delete();
         whiteMask.delete();
         saturationChannel.delete();
+        hsvChannels2.delete();
         lowSatMask.delete();
         finalWhiteMask.delete();
         combinedMask.delete();
