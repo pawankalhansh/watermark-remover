@@ -285,11 +285,11 @@
     const hsv = new cv.Mat();
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-    // 3. Red watermark detection (Hue 0-12 and 168-180, S > 40, V > 25)
-    // Lowered saturation and value thresholds to capture faint red outlines, widened Hue range
-    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 40, 25, 0]);
-    let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
-    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 40, 25, 0]);
+    // 3. Red watermark detection (Hue 0-10 and 170-180, S > 15, V > 15)
+    // Extremely sensitive thresholds to capture pale pink edges and dark shadowed red text
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 15, 15, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 15, 15, 0]);
     let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
     let maskRed1 = new cv.Mat();
@@ -300,8 +300,8 @@
     let redMask = new cv.Mat();
     cv.add(maskRed1, maskRed2, redMask);
 
-    // 4. Blue watermark detection (Hue 100-130, S > 40, V > 25)
-    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 40, 25, 0]);
+    // 4. Blue watermark detection (Hue 100-130, S > 15, V > 15)
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 15, 15, 0]);
     let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
     let blueMask = new cv.Mat();
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
@@ -370,11 +370,12 @@
             const K = avg_gb > 5 ? rb / avg_gb : 1.2; // default ratio 1.2 if extremely dark
 
             // Estimate alpha = (R_blended - K * 0.5 * (G_blended + B_blended)) / 255
+            // Increased alpha cap to 0.50 to handle more opaque red watermark elements
             const avg_g_b = 0.5 * (g + b);
-            const alpha = Math.max(0.0, Math.min(0.25, (r - K * avg_g_b) / 255.0));
+            const alpha = Math.max(0.0, Math.min(0.50, (r - K * avg_g_b) / 255.0));
             const oneMinusAlpha = 1.0 - alpha;
 
-            if (oneMinusAlpha > 0.70 && avg_gb > 8) {
+            if (oneMinusAlpha > 0.50 && avg_gb > 12) {
               // Restore channels losslessly (wood grains and details remain perfectly crisp!)
               let r_orig = Math.round((r - alpha * 255) / oneMinusAlpha);
               let g_orig = Math.round(g / oneMinusAlpha);
