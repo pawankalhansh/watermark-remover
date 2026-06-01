@@ -57,7 +57,7 @@
   const aiStrengthValue = $('#aiStrengthValue');
 
   // Cloudflare Worker URL storage
-  let workerUrl = localStorage.getItem('cloudflare_worker_url') || '';
+  let workerUrl = localStorage.getItem('cloudflare_worker_url') || 'https://watermark-remover-ai.pawankalhansh.workers.dev';
   if (workerUrlInput) workerUrlInput.value = workerUrl;
 
   // Cloudflare Inpainting Strength storage (default 0.45)
