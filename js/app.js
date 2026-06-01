@@ -285,11 +285,11 @@
     const hsv = new cv.Mat();
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-    // 3. Red watermark detection (Hue 0-10 and 170-180, S > 15, V > 15)
-    // Extremely sensitive thresholds to capture pale pink edges and dark shadowed red text
-    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 15, 15, 0]);
-    let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
-    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 15, 15, 0]);
+    // 3. Red watermark detection (Hue 0-15 and 165-180, S > 10, V > 10)
+    // Extremely sensitive bounds to capture pink/orange-red and all anti-aliased borders
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 10, 10, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [15, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [165, 10, 10, 0]);
     let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
     let maskRed1 = new cv.Mat();
@@ -300,13 +300,13 @@
     let redMask = new cv.Mat();
     cv.add(maskRed1, maskRed2, redMask);
 
-    // 4. Blue watermark detection (Hue 100-130, S > 15, V > 15)
-    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 15, 15, 0]);
-    let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
+    // 4. Blue watermark detection (Hue 100-135, S > 10, V > 10)
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 10, 10, 0]);
+    let upperBlue = new cv.Mat(h, w, hsv.type(), [135, 255, 255, 255]);
     let blueMask = new cv.Mat();
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
 
-    // 5. White/Gray watermark detection (Very conservative local contrast + Low Saturation)
+    // 5. White/Gray watermark detection (Extremely sensitive absolute local contrast + Low Saturation)
     let gray = new cv.Mat();
     cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
 
@@ -314,10 +314,10 @@
     cv.boxFilter(gray, blurredGray, -1, new cv.Size(25, 25));
 
     let localContrast = new cv.Mat();
-    cv.subtract(gray, blurredGray, localContrast);
+    cv.absdiff(gray, blurredGray, localContrast); // Use absolute difference to capture both light and dark watermarks!
 
     let whiteMask = new cv.Mat();
-    cv.threshold(localContrast, whiteMask, 18, 255, cv.THRESH_BINARY); // Lower contrast threshold (18) to reliably capture faint white watermarks
+    cv.threshold(localContrast, whiteMask, 10, 255, cv.THRESH_BINARY); // Lower contrast threshold (10) to capture extremely faint gray text
 
     // Extract Saturation channel to ensure extremely low saturation (white/gray/silver)
     let saturationChannel = new cv.Mat();
@@ -433,26 +433,47 @@
           const r = imgData[i], g = imgData[i + 1], b = imgData[i + 2];
           const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
 
-          // For white watermarks, estimate added brightness (luminance shift)
+          // Determine luminance of pixel vs blurred background
           const lp = 0.299 * r + 0.587 * g + 0.114 * b;
           const lb = 0.299 * rb + 0.587 * gb + 0.114 * bb;
 
-          const denom = 255.0 - lb;
-          const alpha = denom > 10 ? Math.max(0.0, Math.min(0.80, (lp - lb) / denom)) : 0.15;
+          if (lp >= lb) {
+            // Bright white watermark overlay
+            const denom = 255.0 - lb;
+            const alpha = denom > 10 ? Math.max(0.0, Math.min(0.85, (lp - lb) / denom)) : 0.15;
 
-          if (alpha > 0.70 && lb > 25) {
-            inpaintMaskData[idx] = 255;
+            if (alpha > 0.70 && lb > 25) {
+              inpaintMaskData[idx] = 255;
+            } else {
+              const oneMinusAlpha = 1.0 - alpha;
+              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+
+              let r_orig = Math.round((r - alpha * 255) * correction);
+              let g_orig = Math.round((g - alpha * 255) * correction);
+              let b_orig = Math.round((b - alpha * 255) * correction);
+
+              imgData[i] = Math.max(0, Math.min(255, r_orig));
+              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            }
           } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+            // Dark gray watermark overlay (like Adobe Stock on sky/light buildings)
+            const alpha = lb > 10 ? Math.max(0.0, Math.min(0.85, (lb - lp) / lb)) : 0.15;
 
-            let r_orig = Math.round((r - alpha * 255) * correction);
-            let g_orig = Math.round((g - alpha * 255) * correction);
-            let b_orig = Math.round((b - alpha * 255) * correction);
+            if (alpha > 0.70 && lb > 25) {
+              inpaintMaskData[idx] = 255;
+            } else {
+              const oneMinusAlpha = 1.0 - alpha;
+              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
 
-            imgData[i] = Math.max(0, Math.min(255, r_orig));
-            imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+              let r_orig = Math.round(r * correction);
+              let g_orig = Math.round(g * correction);
+              let b_orig = Math.round(b * correction);
+
+              imgData[i] = Math.max(0, Math.min(255, r_orig));
+              imgData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              imgData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            }
           }
         }
       }
@@ -655,21 +676,21 @@
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const hsv = rgbToHsv(r, g, b);
 
-        // 1. Red detection: Hue 0-10 or 170-180, S > 15, V > 15
-        if ((hsv.h <= 10 || hsv.h >= 170) && hsv.s > 15 && hsv.v > 15) {
+        // 1. Red detection: Hue 0-15 or 165-180, S > 10, V > 10
+        if ((hsv.h <= 15 || hsv.h >= 165) && hsv.s > 10 && hsv.v > 10) {
           redMask[idx] = 255;
         }
 
-        // 2. Blue detection: Hue 100-130, S > 15, V > 15
-        if (hsv.h >= 100 && hsv.h <= 130 && hsv.s > 15 && hsv.v > 15) {
+        // 2. Blue detection: Hue 100-135, S > 10, V > 10
+        if (hsv.h >= 100 && hsv.h <= 135 && hsv.s > 10 && hsv.v > 10) {
           blueMask[idx] = 255;
         }
 
-        // 3. White detection: local contrast > 18, S <= 25
+        // 3. White detection: absolute local contrast > 10, S <= 25 (captures both light & dark watermarks!)
         const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
         const grayVal = 0.299 * r + 0.587 * g + 0.114 * b;
         const grayBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-        if (grayVal - grayBlur > 18 && hsv.s <= 25) {
+        if (Math.abs(grayVal - grayBlur) > 10 && hsv.s <= 25) {
           whiteMask[idx] = 255;
         }
       }
@@ -759,25 +780,49 @@
           const lp = 0.299 * r + 0.587 * g + 0.114 * b;
           const lb = 0.299 * rb + 0.587 * gb + 0.114 * bb;
 
-          const denom = 255.0 - lb;
-          const alpha = denom > 10 ? Math.max(0.0, Math.min(0.80, (lp - lb) / denom)) : 0.15;
+          if (lp >= lb) {
+            // Bright white watermark
+            const denom = 255.0 - lb;
+            const alpha = denom > 10 ? Math.max(0.0, Math.min(0.85, (lp - lb) / denom)) : 0.15;
 
-          if (alpha > 0.70 && lb > 25) {
-            const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
-            outputData[i] = clean.r;
-            outputData[i + 1] = clean.g;
-            outputData[i + 2] = clean.b;
+            if (alpha > 0.70 && lb > 25) {
+              const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
+              outputData[i] = clean.r;
+              outputData[i + 1] = clean.g;
+              outputData[i + 2] = clean.b;
+            } else {
+              const oneMinusAlpha = 1.0 - alpha;
+              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+
+              let r_orig = Math.round((r - alpha * 255) * correction);
+              let g_orig = Math.round((g - alpha * 255) * correction);
+              let b_orig = Math.round((b - alpha * 255) * correction);
+
+              outputData[i] = Math.max(0, Math.min(255, r_orig));
+              outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            }
           } else {
-            const oneMinusAlpha = 1.0 - alpha;
-            const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
+            // Dark gray watermark (like Adobe Stock)
+            const alpha = lb > 10 ? Math.max(0.0, Math.min(0.85, (lb - lp) / lb)) : 0.15;
 
-            let r_orig = Math.round((r - alpha * 255) * correction);
-            let g_orig = Math.round((g - alpha * 255) * correction);
-            let b_orig = Math.round((b - alpha * 255) * correction);
+            if (alpha > 0.70 && lb > 25) {
+              const clean = getCleanNeighborWeighted(data, combinedDilated, x, y, w, h);
+              outputData[i] = clean.r;
+              outputData[i + 1] = clean.g;
+              outputData[i + 2] = clean.b;
+            } else {
+              const oneMinusAlpha = 1.0 - alpha;
+              const correction = oneMinusAlpha > 0.25 ? 1.0 / oneMinusAlpha : 4.0;
 
-            outputData[i] = Math.max(0, Math.min(255, r_orig));
-            outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
-            outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
+              let r_orig = Math.round(r * correction);
+              let g_orig = Math.round(g * correction);
+              let b_orig = Math.round(b * correction);
+
+              outputData[i] = Math.max(0, Math.min(255, r_orig));
+              outputData[i + 1] = Math.max(0, Math.min(255, g_orig));
+              outputData[i + 2] = Math.max(0, Math.min(255, b_orig));
+            }
           }
         }
       }
