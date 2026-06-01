@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Watermark Remover — Remove Watermarks from Images with AI</title>
+    <meta name="description" content="Remove watermarks from your images instantly using AI technology. Free, no signup required. Supports JPG, PNG, WEBP formats. Get clean, watermark-free images in seconds." />
+    <meta name="keywords" content="remove watermark, watermark remover, remove watermark from image, watermark free, watermark removal tool, AI watermark remover" />
+    <meta name="author" content="Watermark Remover" />
+    <meta name="robots" content="index, follow" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Watermark Remover — Remove Watermarks from Images with AI" />
+    <meta property="og:description" content="Remove watermarks from your images instantly using AI. Free, no signup, high quality results." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://yourusername.github.io/watermark-remover/" />
+    <meta property="og:site_name" content="Watermark Remover" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Watermark Remover — Remove Watermarks from Images with AI" />
+    <meta name="twitter:description" content="Remove watermarks from your images instantly using AI. Free, no signup." />
+
+    <meta name="theme-color" content="#0a0d12" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
+
+    <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+    <!-- ========== HEADER ========== -->
+    <header class="header" id="header">
+        <div class="container header__inner">
+            <a href="#" class="header__logo" id="logo">
+                <span class="header__logo-icon">✨</span>
+                WatermarkRemover
+            </a>
+
+            <nav class="header__nav" id="desktopNav">
+                <a href="#how-it-works" class="header__nav-link">How it Works</a>
+                <a href="#features" class="header__nav-link">Features</a>
+                <a href="#demo" class="header__nav-link">Demo</a>
+                <a href="#reviews" class="header__nav-link">Reviews</a>
+                <a href="#faq" class="header__nav-link">FAQ</a>
+            </nav>
+
+            <div class="header__actions">
+                <a href="#hero" class="btn btn--primary" id="headerCta">Try Free</a>
+                <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
+                    <span class="hamburger__line"></span>
+                    <span class="hamburger__line"></span>
+                    <span class="hamburger__line"></span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Mobile Navigation -->
+        <nav class="mobile-nav" id="mobileNav">
+            <a href="#how-it-works" class="mobile-nav__link">How it Works</a>
+            <a href="#features" class="mobile-nav__link">Features</a>
+            <a href="#demo" class="mobile-nav__link">Demo</a>
+            <a href="#reviews" class="mobile-nav__link">Reviews</a>
+            <a href="#faq" class="mobile-nav__link">FAQ</a>
+            <div class="mobile-nav__actions">
+                <a href="#hero" class="btn btn--primary btn--large">Try Free Now</a>
+            </div>
+        </nav>
+    </header>
+
+    <!-- ========== HERO SECTION ========== -->
+    <section class="hero" id="hero">
+        <div class="container">
+            <div class="hero__content">
+                <div class="hero__badge">
+                    <span class="hero__badge-dot"></span>
+                    Free AI-Powered Tool — No Signup Required
+                </div>
+
+                <h1 class="hero__title">
+                    Remove <span class="gradient-text">Watermarks</span> from Images with AI
+                </h1>
+
+                <p class="hero__subtitle">
+                    Remove watermarks in seconds without any editing or touch-ups, preserving image quality. All of it without a sign-up or subscription fee.
+                </p>
+
+                <!-- Tabs -->
+                <div class="tabs" id="typeTabs">
+                    <div class="tabs__container">
+                        <button class="tabs__btn active" data-tab="image" id="tabImage">
+                            🖼️ Image
+                        </button>
+                        <button class="tabs__btn" data-tab="video" id="tabVideo">
+                            🎬 Video
+                            <span class="tabs__badge">Soon</span>
+                        </button>
+                        <button class="tabs__btn" data-tab="pdf" id="tabPdf">
+                            📄 PDF
+                            <span class="tabs__badge">Soon</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Upload Area -->
+                <div class="upload" id="uploadArea">
+                    <div class="upload__zone" id="uploadZone">
+                        <div class="upload__icon">📤</div>
+                        <h2 class="upload__title">Drag & drop your image here</h2>
+                        <p class="upload__subtitle">or click to browse from your device</p>
+                        <button class="upload__btn" id="uploadBtn" type="button">
+                            Upload Image
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
+                        <div class="upload__formats">
+                            <span>Supported:</span>
+                            <span class="upload__format-tag">JPG</span>
+                            <span class="upload__format-tag">JPEG</span>
+                            <span class="upload__format-tag">PNG</span>
+                            <span class="upload__format-tag">WEBP</span>
+                        </div>
+                        <input type="file" class="upload__input" id="fileInput" accept="image/jpeg,image/jpg,image/png,image/webp" />
+                    </div>
+                    <p class="upload__consent">
+                        By uploading, you agree to our <a href="#">Terms of Use</a> and <a href="#">Privacy Policy</a>.
+                    </p>
+                </div>
+
+                <!-- Processing State -->
+                <div class="processing" id="processingState">
+                    <div class="processing__spinner"></div>
+                    <h3 class="processing__title">Removing watermark...</h3>
+                    <p class="processing__subtitle">Our AI is analyzing and processing your image</p>
+                    <div class="progress-bar">
+                        <div class="progress-bar__fill" id="progressFill"></div>
+                    </div>
+                </div>
+
+                <!-- Result State -->
+                <div class="result" id="resultState">
+                    <div class="result__header">
+                        <h3 class="result__title">✅ Watermark Removed!</h3>
+                        <p class="result__subtitle">Drag the slider to compare before and after</p>
+                    </div>
+                    <div class="result__comparison" id="resultComparison">
+                        <img class="result__image result__image--before" id="resultBefore" alt="Original image with watermark" />
+                        <img class="result__image result__image--after" id="resultAfter" alt="Image with watermark removed" />
+                        <div class="result__slider" id="resultSlider">
+                            <div class="result__slider-handle">⟺</div>
+                        </div>
+                        <div class="result__labels">
+                            <span class="result__label">Before</span>
+                            <span class="result__label">After</span>
+                        </div>
+                    </div>
+                    <div class="result__actions">
+                        <button class="btn btn--primary btn--large" id="downloadBtn">
+                            ⬇️ Download Image
+                        </button>
+                        <button class="btn btn--outline btn--large" id="resetBtn">
+                            🔄 Process Another
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== HOW IT WORKS ========== -->
+    <section class="how-it-works" id="how-it-works">
+        <div class="container">
+            <div class="section-header reveal">
+                <div class="section-header__label">⚡ Simple Process</div>
+                <h2 class="section-header__title">How It Works</h2>
+                <p class="section-header__subtitle">
+                    Remove watermarks in three simple steps. No technical skills needed — our AI handles everything automatically.
+                </p>
+            </div>
+
+            <div class="steps">
+                <div class="step reveal reveal-delay-1">
+                    <div class="step__number">📤</div>
+                    <h3 class="step__title">Upload Image</h3>
+                    <p class="step__desc">
+                        Drag and drop or browse to upload your watermarked image. We support JPG, PNG, and WEBP formats.
+                    </p>
+                </div>
+                <div class="step reveal reveal-delay-2">
+                    <div class="step__number">🤖</div>
+                    <h3 class="step__title">AI Processing</h3>
+                    <p class="step__desc">
+                        Our AI analyzes and detects the watermark, then intelligently removes it while preserving image quality.
+                    </p>
+                </div>
+                <div class="step reveal reveal-delay-3">
+                    <div class="step__number">⬇️</div>
+                    <h3 class="step__title">Download Result</h3>
+                    <p class="step__desc">
+                        Preview the before and after comparison, then download your clean, watermark-free image instantly.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== BEFORE/AFTER DEMO ========== -->
+    <section class="demo" id="demo">
+        <div class="container">
+            <div class="section-header reveal">
+                <div class="section-header__label">🎯 See the Difference</div>
+                <h2 class="section-header__title">Before & After</h2>
+                <p class="section-header__subtitle">
+                    Drag the slider to see the watermark removal in action. Our AI preserves every detail of the original image.
+                </p>
+            </div>
+
+            <div class="demo__slider-container reveal" id="demoSlider">
+                <img class="demo__image demo__image--before" src="assets/images/demo-before.png" alt="Image with watermark" id="demoBefore" />
+                <img class="demo__image demo__image--after" src="assets/images/demo-after.png" alt="Image without watermark" id="demoAfter" />
+                <div class="demo__divider" id="demoDivider"></div>
+                <div class="demo__handle" id="demoHandle">⟺</div>
+                <div class="demo__labels">
+                    <span class="demo__label">Before</span>
+                    <span class="demo__label">After</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FEATURES ========== -->
+    <section class="features" id="features">
+        <div class="container">
+            <div class="section-header reveal">
+                <div class="section-header__label">🚀 Why Choose Us</div>
+                <h2 class="section-header__title">Powerful Features</h2>
+                <p class="section-header__subtitle">
+                    Everything you need to remove watermarks efficiently, powered by advanced AI technology.
+                </p>
+            </div>
+
+            <div class="features__grid">
+                <div class="feature-card reveal reveal-delay-1" id="feature1">
+                    <div class="feature-card__icon">🆓</div>
+                    <h3 class="feature-card__title">100% Free</h3>
+                    <p class="feature-card__desc">
+                        No hidden fees, no subscriptions. Remove watermarks from your images completely free of charge.
+                    </p>
+                </div>
+                <div class="feature-card reveal reveal-delay-2" id="feature2">
+                    <div class="feature-card__icon">🔒</div>
+                    <h3 class="feature-card__title">No Signup Required</h3>
+                    <p class="feature-card__desc">
+                        Start removing watermarks instantly. No account creation, no email verification — just upload and go.
+                    </p>
+                </div>
+                <div class="feature-card reveal reveal-delay-3" id="feature3">
+                    <div class="feature-card__icon">🤖</div>
+                    <h3 class="feature-card__title">AI-Powered</h3>
+                    <p class="feature-card__desc">
+                        Advanced artificial intelligence detects and removes watermarks intelligently, preserving image details.
+                    </p>
+                </div>
+                <div class="feature-card reveal reveal-delay-1" id="feature4">
+                    <div class="feature-card__icon">⚡</div>
+                    <h3 class="feature-card__title">Instant Results</h3>
+                    <p class="feature-card__desc">
+                        Get your watermark-free image in seconds. No waiting, no queues — results are delivered instantly.
+                    </p>
+                </div>
+                <div class="feature-card reveal reveal-delay-2" id="feature5">
+                    <div class="feature-card__icon">🖼️</div>
+                    <h3 class="feature-card__title">Multiple Formats</h3>
+                    <p class="feature-card__desc">
+                        Support for all major image formats including JPG, JPEG, PNG, and WEBP. Upload any image type.
+                    </p>
+                </div>
+                <div class="feature-card reveal reveal-delay-3" id="feature6">
+                    <div class="feature-card__icon">✨</div>
+                    <h3 class="feature-card__title">High Quality Output</h3>
+                    <p class="feature-card__desc">
+                        Preserve original image resolution and quality. Our AI ensures the output looks natural and professional.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== REVIEWS ========== -->
+    <section class="reviews" id="reviews">
+        <div class="container">
+            <div class="reviews__top reveal">
+                <div>
+                    <div class="section-header__label">💬 Testimonials</div>
+                    <h2 class="section-header__title" style="text-align:left;">What Users Say</h2>
+                </div>
+                <div class="reviews__rating">
+                    <span class="reviews__rating-number gradient-text">4.6</span>
+                    <div class="reviews__rating-info">
+                        <div class="reviews__stars">★★★★★</div>
+                        <span class="reviews__rating-count">Based on 100+ reviews</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="reviews__carousel reveal" id="reviewsCarousel">
+                <div class="review-card" id="review1">
+                    <div class="review-card__stars">★★★★★</div>
+                    <p class="review-card__text">
+                        This online tool is a time-saver! It allowed me to quickly remove watermarks from a batch of images without compromising on quality. Absolutely amazing!
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">W</div>
+                        <div>
+                            <div class="review-card__name">Wyatt Cormier</div>
+                            <div class="review-card__role">Photographer</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="review-card" id="review2">
+                    <div class="review-card__stars">★★★★★</div>
+                    <p class="review-card__text">
+                        This website saved me hours of manual editing. It's efficient, and the clean, watermark-free images speak for themselves. Highly recommended tool!
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">S</div>
+                        <div>
+                            <div class="review-card__name">Scarlett Reynolds</div>
+                            <div class="review-card__role">Designer</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="review-card" id="review3">
+                    <div class="review-card__stars">★★★★★</div>
+                    <p class="review-card__text">
+                        The results are impressive. It made my photos look as if the watermark was never there. Best watermark removal tool I've ever used online.
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">C</div>
+                        <div>
+                            <div class="review-card__name">Carter Johnson</div>
+                            <div class="review-card__role">Content Creator</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="review-card" id="review4">
+                    <div class="review-card__stars">★★★★★</div>
+                    <p class="review-card__text">
+                        I was pleasantly surprised by the speed and quality. It's a powerful tool for anyone dealing with watermarked images on a regular basis.
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">E</div>
+                        <div>
+                            <div class="review-card__name">Emily Fraser</div>
+                            <div class="review-card__role">Marketing Manager</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="review-card" id="review5">
+                    <div class="review-card__stars">★★★★☆</div>
+                    <p class="review-card__text">
+                        The effectiveness is unmatched. It handled complex watermarks with ease, and the clarity in the final images was beyond my expectations.
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">L</div>
+                        <div>
+                            <div class="review-card__name">Logan Tremblay</div>
+                            <div class="review-card__role">Freelancer</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="review-card" id="review6">
+                    <div class="review-card__stars">★★★★★</div>
+                    <p class="review-card__text">
+                        I've tried a few online watermark removers, and this is the best by far. It's fast, reliable, and the final images look professionally edited.
+                    </p>
+                    <div class="review-card__author">
+                        <div class="review-card__avatar">A</div>
+                        <div>
+                            <div class="review-card__name">Abigail Harper</div>
+                            <div class="review-card__role">Blogger</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FAQ ========== -->
+    <section class="faq" id="faq">
+        <div class="container">
+            <div class="section-header reveal">
+                <div class="section-header__label">❓ Got Questions</div>
+                <h2 class="section-header__title">Frequently Asked Questions</h2>
+                <p class="section-header__subtitle">
+                    Find answers to the most common questions about our watermark removal tool.
+                </p>
+            </div>
+
+            <div class="faq__list">
+                <div class="faq__item reveal reveal-delay-1" id="faq1">
+                    <button class="faq__question" aria-expanded="false" id="faq1Btn">
+                        <span>What is a watermark remover?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            A watermark remover is a tool that removes overlays, text, or logos from digital photos. Our AI-powered tool detects watermark regions and intelligently fills them with surrounding pixel data, restoring the original image appearance.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="faq__item reveal reveal-delay-2" id="faq2">
+                    <button class="faq__question" aria-expanded="false" id="faq2Btn">
+                        <span>Is it free to use?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            Yes! Processing images directly on the website is completely free for individual use. No subscription or payment required. Simply upload your image and download the result.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="faq__item reveal reveal-delay-3" id="faq3">
+                    <button class="faq__question" aria-expanded="false" id="faq3Btn">
+                        <span>Which image formats are supported?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            We support the most common image formats: JPG, JPEG, PNG, and WEBP. You can upload images of any size, and our tool will process them while maintaining the original resolution.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="faq__item reveal reveal-delay-4" id="faq4">
+                    <button class="faq__question" aria-expanded="false" id="faq4Btn">
+                        <span>How does the watermark removal process work?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            Our AI-powered tool analyzes your image to detect watermark regions. It then uses advanced inpainting algorithms to reconstruct the pixels underneath the watermark, effectively removing it while preserving the surrounding image quality. The entire process takes just a few seconds.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="faq__item reveal reveal-delay-5" id="faq5">
+                    <button class="faq__question" aria-expanded="false" id="faq5Btn">
+                        <span>Is my data safe and private?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            Absolutely! All image processing happens entirely in your browser. Your images are never uploaded to any server. We take privacy seriously — your data stays on your device at all times.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="faq__item reveal" id="faq6">
+                    <button class="faq__question" aria-expanded="false" id="faq6Btn">
+                        <span>Is watermark removal legal?</span>
+                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                    <div class="faq__answer">
+                        <div class="faq__answer-inner">
+                            Watermark removal can be legal depending on the context. It's perfectly fine to remove watermarks from your own images or images you have rights to. However, watermark-free images should not be used for commercial purposes without the copyright owner's consent. Always respect intellectual property rights.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FOOTER ========== -->
+    <footer class="footer" id="footer">
+        <div class="container">
+            <a href="#" class="footer__logo">
+                <span class="footer__logo-icon">✨</span>
+                WatermarkRemover
+            </a>
+
+            <p class="footer__desc">
+                Remove watermarks from your images using our AI technology. Get your images watermark-free instantly, without signup or subscription.
+            </p>
+
+            <div class="footer__links">
+                <a href="#" class="footer__link">Privacy Policy</a>
+                <a href="#" class="footer__link">Terms of Use</a>
+                <a href="#how-it-works" class="footer__link">How it Works</a>
+                <a href="#features" class="footer__link">Features</a>
+                <a href="#faq" class="footer__link">FAQ</a>
+                <a href="#" class="footer__link">About Us</a>
+            </div>
+
+            <div class="footer__social">
+                <a href="#" class="footer__social-link" aria-label="Facebook" id="socialFacebook">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                </a>
+                <a href="#" class="footer__social-link" aria-label="Twitter" id="socialTwitter">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                </a>
+                <a href="#" class="footer__social-link" aria-label="Instagram" id="socialInstagram">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>
+                </a>
+                <a href="#" class="footer__social-link" aria-label="LinkedIn" id="socialLinkedin">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                </a>
+                <a href="#" class="footer__social-link" aria-label="YouTube" id="socialYoutube">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                </a>
+            </div>
+
+            <div class="footer__bottom">
+                <p>© 2024 WatermarkRemover. All rights reserved. Built with ❤️</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
