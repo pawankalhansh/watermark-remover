@@ -53,10 +53,19 @@
   const modalSaveBtn = $('#modalSaveBtn');
   const workerUrlInput = $('#workerUrlInput');
   const modalOverlay = $('#modalOverlay');
+  const aiStrengthInput = $('#aiStrengthInput');
+  const aiStrengthValue = $('#aiStrengthValue');
 
   // Cloudflare Worker URL storage
   let workerUrl = localStorage.getItem('cloudflare_worker_url') || '';
   if (workerUrlInput) workerUrlInput.value = workerUrl;
+
+  // Cloudflare Inpainting Strength storage (default 0.45)
+  let aiStrength = parseFloat(localStorage.getItem('cloudflare_ai_strength')) || 0.45;
+  if (aiStrengthInput) {
+    aiStrengthInput.value = aiStrength;
+    if (aiStrengthValue) aiStrengthValue.textContent = aiStrength.toFixed(2);
+  }
 
   // ============================================
   // MOBILE NAVIGATION
@@ -83,6 +92,8 @@
     settingsModal.classList.add('active');
     settingsModal.setAttribute('aria-hidden', 'false');
     if (workerUrlInput) workerUrlInput.value = workerUrl;
+    if (aiStrengthInput) aiStrengthInput.value = aiStrength;
+    if (aiStrengthValue) aiStrengthValue.textContent = aiStrength.toFixed(2);
   };
 
   const closeSettingsModal = () => {
@@ -95,6 +106,13 @@
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeSettingsModal);
   if (modalOverlay) modalOverlay.addEventListener('click', closeSettingsModal);
 
+  // Sync range slider text value in real-time
+  if (aiStrengthInput) {
+    aiStrengthInput.addEventListener('input', () => {
+      if (aiStrengthValue) aiStrengthValue.textContent = parseFloat(aiStrengthInput.value).toFixed(2);
+    });
+  }
+
   if (modalSaveBtn) {
     modalSaveBtn.addEventListener('click', () => {
       const url = workerUrlInput.value.trim();
@@ -104,6 +122,12 @@
       }
       workerUrl = url;
       localStorage.setItem('cloudflare_worker_url', url);
+
+      if (aiStrengthInput) {
+        aiStrength = parseFloat(aiStrengthInput.value);
+        localStorage.setItem('cloudflare_ai_strength', aiStrength);
+      }
+
       closeSettingsModal();
       showToast('💾 Settings saved successfully!');
     });
@@ -272,6 +296,7 @@
         const formData = new FormData();
         formData.append('image', originalBlob, 'image.png');
         formData.append('mask', maskBlob, 'mask.png');
+        formData.append('strength', aiStrength.toString());
 
         const response = await fetch(workerUrl, {
           method: 'POST',
@@ -981,6 +1006,7 @@
           const formData = new FormData();
           formData.append('image', originalBlob, 'image.png');
           formData.append('mask', maskBlob, 'mask.png');
+          formData.append('strength', aiStrength.toString());
 
           const response = await fetch(workerUrl, {
             method: 'POST',

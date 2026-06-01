@@ -556,6 +556,15 @@
                 <p class="modal__input-help">Leave empty to use the fast, local client-side mathematical fallback.</p>
             </div>
 
+            <div class="modal__form-group" style="margin-top: 20px;">
+                <label class="modal__label" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>AI Inpainting Strength:</span>
+                    <span id="aiStrengthValue" style="color: #F9D423; font-weight: bold;">0.45</span>
+                </label>
+                <input type="range" min="0.1" max="1.0" step="0.05" value="0.45" class="modal__input" id="aiStrengthInput" style="padding: 0; height: 6px; accent-color: #F9D423;" />
+                <p class="modal__input-help">Low (0.2 - 0.4): Restores original details (best for faces/complex shapes). High (0.7 - 0.9): Overwrites background entirely.</p>
+            </div>
+
             <div class="modal__divider"></div>
 
             <div class="modal__guide">

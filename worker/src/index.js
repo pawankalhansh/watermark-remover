@@ -45,14 +45,24 @@ export default {
       const imageArray = [...new Uint8Array(imageBuffer)];
       const maskArray = [...new Uint8Array(maskBuffer)];
 
-      // 5. Build AI Model Inputs
+      // 5. Read optional dynamic parameters from form-data (with high-precision defaults)
+      const promptParam = formData.get("prompt") || "seamless photo restoration, remove watermark, highly detailed";
+      const negativePromptParam = formData.get("negative_prompt") || "watermark, text, letters, words, logo, signature, digits, numbers, blur, distorted, artifacts, deformed, ugly, mutated";
+      
+      const rawStrength = formData.get("strength");
+      const strengthParam = rawStrength ? parseFloat(rawStrength) : 0.45;
+
+      const rawSteps = formData.get("num_steps");
+      const stepsParam = rawSteps ? parseInt(rawSteps) : 20;
+
+      // Build AI Model Inputs
       const inputs = {
-        prompt: "clean background, seamless texture, high resolution, no watermark, watermark removed, restore image background",
-        negative_prompt: "watermark, text, letters, words, logo, signature, digits, numbers, blur, distorted, artifacts",
+        prompt: promptParam,
+        negative_prompt: negativePromptParam,
         image: imageArray,
         mask: maskArray,
-        strength: 0.95,     // High strength ensures watermark is completely replaced
-        num_steps: 20      // 20 steps provide a great balance between quality and speed
+        strength: strengthParam,
+        num_steps: stepsParam
       };
 
       // 6. Run Stable Diffusion Inpainting on Cloudflare GPUs
