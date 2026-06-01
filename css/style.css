@@ -758,7 +758,7 @@ ul, ol {
 }
 
 .result__image--after {
-  clip-path: inset(0 50% 0 0);
+  clip-path: inset(0 0 0 50%);
 }
 
 .result__slider {
@@ -980,7 +980,7 @@ ul, ol {
 }
 
 .demo__image--after {
-  clip-path: inset(0 50% 0 0);
+  clip-path: inset(0 0 0 50%);
   transition: none;
 }
 

@@ -1052,7 +1052,7 @@
   function updateResultSlider(percent) {
     percent = Math.max(0, Math.min(100, percent));
     resultSlider.style.left = percent + '%';
-    resultAfter.style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
+    resultAfter.style.clipPath = `inset(0 0 0 ${percent}%)`;
   }
 
   let isResultDragging = false;
@@ -1118,7 +1118,7 @@
   // ============================================
   function updateDemoSlider(percent) {
     percent = Math.max(0, Math.min(100, percent));
-    demoAfter.style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
+    demoAfter.style.clipPath = `inset(0 0 0 ${percent}%)`;
     demoDivider.style.left = percent + '%';
     demoHandle.style.left = percent + '%';
   }
