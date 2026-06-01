@@ -285,11 +285,11 @@
     const hsv = new cv.Mat();
     cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-    // 3. Red watermark detection (Hue 0-10 and 170-180, S > 45, V > 30)
-    // In OpenCV.js, bounds must be full-size Mats of matching type filled with Scalar [H, S, V, A]
-    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 45, 30, 0]);
-    let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
-    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 45, 30, 0]);
+    // 3. Red watermark detection (Hue 0-12 and 168-180, S > 40, V > 25)
+    // Lowered saturation and value thresholds to capture faint red outlines, widened Hue range
+    let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 40, 25, 0]);
+    let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
+    let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 40, 25, 0]);
     let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
     let maskRed1 = new cv.Mat();
@@ -300,8 +300,8 @@
     let redMask = new cv.Mat();
     cv.add(maskRed1, maskRed2, redMask);
 
-    // 4. Blue watermark detection (Hue 100-130, S > 45, V > 30)
-    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 45, 30, 0]);
+    // 4. Blue watermark detection (Hue 100-130, S > 40, V > 25)
+    let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 40, 25, 0]);
     let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
     let blueMask = new cv.Mat();
     cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
@@ -334,14 +334,14 @@
     cv.add(redMask, blueMask, combinedMask);
     cv.add(combinedMask, finalWhiteMask, combinedMask);
 
-    // 7. Morphological Dilation (3x3 kernel for clean, tight 1px dilation to cover anti-aliased boundaries without bleeding)
-    let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    // 7. Morphological Dilation (5x5 circular Ellipse kernel for smooth, precise 2px dilation to cover all anti-aliasing outlines)
+    let M = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
     let dilatedMask = new cv.Mat();
     cv.dilate(combinedMask, dilatedMask, M, new cv.Point(-1, -1), 1);
 
-    // 8. Run Navier-Stokes (NS) inpainting on full 4096px canvas
+    // 8. Run Telea's inpainting algorithm (radius 1px) to keep wood grains and backgrounds extremely sharp
     const dstRGB = new cv.Mat();
-    cv.inpaint(srcRGB, dilatedMask, dstRGB, 2, cv.INPAINT_NS);
+    cv.inpaint(srcRGB, dilatedMask, dstRGB, 1, cv.INPAINT_TELEA);
 
     // 9. Show output back on the canvas
     cv.imshow(srcCanvas, dstRGB);
@@ -407,9 +407,9 @@
         const hsv = new cv.Mat();
         cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
 
-        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 45, 30, 0]);
-        let upperRed1 = new cv.Mat(h, w, hsv.type(), [10, 255, 255, 255]);
-        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [170, 45, 30, 0]);
+        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 40, 25, 0]);
+        let upperRed1 = new cv.Mat(h, w, hsv.type(), [12, 255, 255, 255]);
+        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [168, 40, 25, 0]);
         let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
 
         let maskRed1 = new cv.Mat();
@@ -420,7 +420,7 @@
         let redMask = new cv.Mat();
         cv.add(maskRed1, maskRed2, redMask);
 
-        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 45, 30, 0]);
+        let lowerBlue = new cv.Mat(h, w, hsv.type(), [100, 40, 25, 0]);
         let upperBlue = new cv.Mat(h, w, hsv.type(), [130, 255, 255, 255]);
         let blueMask = new cv.Mat();
         cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
@@ -450,7 +450,7 @@
         cv.add(redMask, blueMask, combinedMask);
         cv.add(combinedMask, finalWhiteMask, combinedMask);
 
-        let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        let M = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
         let dilatedMask = new cv.Mat();
         cv.dilate(combinedMask, dilatedMask, M, new cv.Point(-1, -1), 1);
 
