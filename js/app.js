@@ -49,18 +49,25 @@
   let openCvReady = false;
 
   function waitForOpenCV() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (typeof cv !== 'undefined' && cv.Mat) {
         openCvReady = true;
         resolve();
         return;
       }
       showToast('⏳ Loading AI Inpainting Engine... please wait a moment.');
+      let secondsPassed = 0;
       const interval = setInterval(() => {
         if (typeof cv !== 'undefined' && cv.Mat) {
           clearInterval(interval);
           openCvReady = true;
           resolve();
+          return;
+        }
+        secondsPassed += 0.3;
+        if (secondsPassed >= 5.0) {
+          clearInterval(interval);
+          reject(new Error('OpenCV.js load timeout'));
         }
       }, 300);
     });
