@@ -364,18 +364,18 @@
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        // 1. Red overlay detection (Vibrant red watermarks)
-        if (redShift > 20 && r > g + 25 && r > b + 25 && r > 100) {
+        // 1. Red overlay detection (Vibrant red watermarks on both light and dark backgrounds)
+        if (redShift > 15 && r > g * 1.35 && r > b * 1.45 && r > 70) {
           score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
         // 2. Blue overlay detection (Vibrant blue watermarks)
-        if (blueShift > 20 && b > r + 25 && b > g + 25 && b > 100) {
+        if (blueShift > 15 && b > r * 1.35 && b > g * 1.35 && b > 70) {
           score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
         // 3. White/Gray overlay detection (Bright low-saturation watermarks)
-        if (whiteShift > 30 && saturation < 0.15 && r > 140 && g > 140 && b > 140) {
+        if (whiteShift > 30 && saturation < 0.12 && r > 160 && g > 160 && b > 160) {
           score = Math.max(score, Math.min(whiteShift / 60, 1.0));
         }
 
@@ -390,7 +390,7 @@
     }
 
     cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
-    const dilatedMask = dilateMask(binaryMask, w, h, 1); // Tight 1px dilation to prevent blurring surrounding background
+    const dilatedMask = dilateMask(binaryMask, w, h, 2); // Extremely clean 2px dilation to prevent reddish halos while keeping background sharp
 
     // Draw black and white mask image
     const maskImageData = ctx.createImageData(w, h);
@@ -462,18 +462,18 @@
         const minC = Math.min(r, g, b);
         const saturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
 
-        // 1. Red overlay detection (Vibrant red watermarks)
-        if (redShift > 20 && r > g + 25 && r > b + 25 && r > 100) {
+        // 1. Red overlay detection (Vibrant red watermarks on both light and dark backgrounds)
+        if (redShift > 15 && r > g * 1.35 && r > b * 1.45 && r > 70) {
           score = Math.max(score, Math.min(redShift / 40, 1.0));
         }
 
         // 2. Blue overlay detection (Vibrant blue watermarks)
-        if (blueShift > 20 && b > r + 25 && b > g + 25 && b > 100) {
+        if (blueShift > 15 && b > r * 1.35 && b > g * 1.35 && b > 70) {
           score = Math.max(score, Math.min(blueShift / 40, 1.0));
         }
 
         // 3. White/Gray overlay detection (Bright low-saturation watermarks)
-        if (whiteShift > 30 && saturation < 0.15 && r > 140 && g > 140 && b > 140) {
+        if (whiteShift > 30 && saturation < 0.12 && r > 160 && g > 160 && b > 160) {
           score = Math.max(score, Math.min(whiteShift / 60, 1.0));
         }
 
@@ -490,7 +490,7 @@
     }
 
     cleanMask(binaryMask, w, h, 2, 2); // Lower constraints to preserve text lines
-    const dilatedMask = dilateMask(binaryMask, w, h, 1); // Tight 1px dilation to prevent blurring surrounding background
+    const dilatedMask = dilateMask(binaryMask, w, h, 2); // Extremely clean 2px dilation to prevent reddish halos while keeping background sharp
 
     // ---- STEP 4: Inpaint - replace watermark pixels ----
     const outputData = new Uint8ClampedArray(data);
