@@ -20,8 +20,6 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Watermark Remover — Remove Watermarks from Images with AI" />
     <meta name="twitter:description" content="Remove watermarks from your images instantly using AI. Free, no signup." />
-
-    <meta name="theme-color" content="#0a0d12" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
 
     <link rel="stylesheet" href="css/style.css" />
@@ -46,7 +44,8 @@
             </nav>
 
             <div class="header__actions">
-                <a href="#hero" class="btn btn--primary" id="headerCta">Try Free</a>
+                <a href="#" class="btn btn--ghost">Login</a>
+                <a href="#hero" class="btn btn--primary btn--large" id="headerCta">Register</a>
                 <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
                     <span class="hamburger__line"></span>
                     <span class="hamburger__line"></span>
@@ -78,54 +77,56 @@
                 </div>
 
                 <h1 class="hero__title">
-                    Remove <span class="gradient-text">Watermarks</span> from Images with AI
+                    Image <span class="gradient-text">Watermark</span> Remover
                 </h1>
 
                 <p class="hero__subtitle">
-                    Remove watermarks in seconds without any editing or touch-ups, preserving image quality. All of it without a sign-up or subscription fee.
+                    Remove watermarks and repair covered faces, textures, and details with a single upload.
                 </p>
 
-                <!-- Tabs -->
-                <div class="tabs" id="typeTabs">
-                    <div class="tabs__container">
-                        <button class="tabs__btn active" data-tab="image" id="tabImage">
-                            🖼️ Image
-                        </button>
-                        <button class="tabs__btn" data-tab="video" id="tabVideo">
-                            🎬 Video
-                            <span class="tabs__badge">Soon</span>
-                        </button>
-                        <button class="tabs__btn" data-tab="pdf" id="tabPdf">
-                            📄 PDF
-                            <span class="tabs__badge">Soon</span>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Upload Area -->
-                <div class="upload" id="uploadArea">
-                    <div class="upload__zone" id="uploadZone">
-                        <div class="upload__icon">📤</div>
-                        <h2 class="upload__title">Drag & drop your image here</h2>
-                        <p class="upload__subtitle">or click to browse from your device</p>
-                        <button class="upload__btn" id="uploadBtn" type="button">
-                            Upload Image
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                        </button>
-                        <div class="upload__formats">
-                            <span>Supported:</span>
-                            <span class="upload__format-tag">JPG</span>
-                            <span class="upload__format-tag">JPEG</span>
-                            <span class="upload__format-tag">PNG</span>
-                            <span class="upload__format-tag">WEBP</span>
+                <div class="hero__panel">
+                    <div class="hero__panel-preview">
+                        <div class="hero__panel-card">
+                            <div class="hero__panel-image">IMG</div>
+                            <div>
+                                <p class="hero__panel-label">Original</p>
+                                <p class="hero__panel-text">Upload your image with a watermark.</p>
+                            </div>
                         </div>
-                        <input type="file" class="upload__input" id="fileInput" accept="image/jpeg,image/jpg,image/png,image/webp" />
+                        <div class="hero__panel-arrow">→</div>
+                        <div class="hero__panel-card">
+                            <div class="hero__panel-image hero__panel-image--accent">IMG</div>
+                            <div>
+                                <p class="hero__panel-label">Output</p>
+                                <p class="hero__panel-text">Get a clean, watermark-free version instantly.</p>
+                            </div>
+                        </div>
                     </div>
-                    <p class="upload__consent">
-                        By uploading, you agree to our <a href="#">Terms of Use</a> and <a href="#">Privacy Policy</a>.
-                    </p>
+
+                    <div class="upload" id="uploadArea">
+                        <div class="upload__zone" id="uploadZone">
+                            <div class="upload__icon">📤</div>
+                            <h2 class="upload__title">Choose Files</h2>
+                            <p class="upload__subtitle">Or drag and drop files here</p>
+                            <button class="upload__btn" id="uploadBtn" type="button">
+                                Upload Image
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
+                            <div class="upload__formats">
+                                <span>Supported:</span>
+                                <span class="upload__format-tag">JPG</span>
+                                <span class="upload__format-tag">JPEG</span>
+                                <span class="upload__format-tag">PNG</span>
+                                <span class="upload__format-tag">WEBP</span>
+                            </div>
+                            <input type="file" class="upload__input" id="fileInput" aria-label="Choose image file" accept="image/jpeg,image/jpg,image/png,image/webp" />
+                        </div>
+                        <p class="upload__consent">
+                            By uploading, you agree to our <a href="#">Terms of Use</a> and <a href="#">Privacy Policy</a>.
+                        </p>
+                    </div>
                 </div>
 
                 <!-- Processing State -->
@@ -159,7 +160,7 @@
                         <button class="btn btn--primary btn--large" id="downloadBtn">
                             ⬇️ Download Image
                         </button>
-                        <button class="btn btn--outline btn--large" id="touchUpBtn" onclick="window.openBrushTool()">
+                        <button class="btn btn--outline btn--large" id="touchUpBtn">
                             🖌️ Touch Up
                         </button>
                         <button class="btn btn--outline btn--large" id="resetBtn">
@@ -296,7 +297,7 @@
             <div class="reviews__top reveal">
                 <div>
                     <div class="section-header__label">💬 Testimonials</div>
-                    <h2 class="section-header__title" style="text-align:left;">What Users Say</h2>
+                    <h2 class="section-header__title">What Users Say</h2>
                 </div>
                 <div class="reviews__rating">
                     <span class="reviews__rating-number gradient-text">4.6</span>

@@ -34,6 +34,7 @@
   const resultSlider = $('#resultSlider');
   const resultComparison = $('#resultComparison');
   const downloadBtn = $('#downloadBtn');
+  const touchUpBtn = $('#touchUpBtn');
   const resetBtn = $('#resetBtn');
 
   // Demo slider
@@ -1226,6 +1227,15 @@
     link.click();
     showToast('Image downloaded successfully! 🎉');
   });
+
+  // ============================================
+  // TOUCH-UP BUTTON
+  // ============================================
+  if (touchUpBtn) {
+    touchUpBtn.addEventListener('click', () => {
+      initBrushMode();
+    });
+  }
 
   // ============================================
   // RESET / PROCESS ANOTHER
