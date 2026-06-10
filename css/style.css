@@ -971,13 +971,14 @@ ul, ol {
 .result__comparison {
   position: relative;
   width: 100%;
+  margin: 0 auto;
   border-radius: var(--radius-lg);
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  aspect-ratio: 16/10;
+  aspect-ratio: var(--result-aspect-ratio, 16 / 10);
 }
 
 .result__image {
