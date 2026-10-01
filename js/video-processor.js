@@ -229,7 +229,8 @@
                 width: this.videoTrack.track_width || this.videoTrack.width,
                 height: this.videoTrack.track_height || this.videoTrack.height,
                 bitrate: this.videoTrack.bitrate || 2000000,
-                framerate: this.videoTrack.nb_samples / (this.videoTrack.duration / this.videoTrack.timescale) || 30
+                framerate: this.videoTrack.nb_samples / (this.videoTrack.duration / this.videoTrack.timescale) || 30,
+                avc: { format: 'avc' }
             };
             
             this.encoder.configure(config);
@@ -250,7 +251,12 @@
                 
                 // Add original audio samples
                 for (const sample of this.audioSamples) {
-                    this.muxer.addSample(this.outAudioTrackId, sample.data, {
+                    // Ensure sample.data is passed as a pure ArrayBuffer
+                    const buffer = sample.data.buffer.slice(
+                        sample.data.byteOffset, 
+                        sample.data.byteOffset + sample.data.byteLength
+                    );
+                    this.muxer.addSample(this.outAudioTrackId, buffer, {
                         dts: sample.dts,
                         cts: sample.cts,
                         duration: sample.duration,
@@ -474,6 +480,7 @@
                 }
 
                 this.outVideoTrackId = this.muxer.addTrack({
+                    type: 'avc1',
                     timescale: this.videoTrack.timescale,
                     width: this.videoTrack.track_width || this.videoTrack.width,
                     height: this.videoTrack.track_height || this.videoTrack.height,
@@ -505,6 +512,7 @@
                 this._reportProgress('muxing', 0, 0, 0);
                 
                 try {
+                    this.muxer.flush(); // ensure all boxes (like moov) are properly finalized
                     this.muxer.onReady = null; 
                     
                     // Use the globally exposed DataStream to properly serialize the ISO file
