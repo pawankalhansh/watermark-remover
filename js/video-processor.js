@@ -490,52 +490,31 @@
          * Finalizes the MP4Box file and creates a Blob.
          */
         _finalizeMuxing() {
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 this._reportProgress('muxing', 0, 0, 0);
                 
-                this.muxer.onReady = () => {};
-                // Overriding save method to get the buffer
-                this.muxer.save = (fileName) => {
-                    // MP4Box doesn't provide a direct getBuffer in all builds, but when save is called, 
-                    // it usually relies on saving the output array buffer. We intercept it if possible.
-                };
-                
-                // Using FileSink or similar approach if available, or just get the buffer.
-                // Mp4box.js handles saving asynchronously or synchronously.
-                // We will collect buffers manually if needed or use mp4box's save.
-                
-                let resultBuffer = null;
-                // MP4Box.js provides a flush or getBuffer.
-                // Actually the safest way with mp4box.js to get the file is to override the FileSystem API 
-                // or just hook into standard functions. Let's use standard approach:
-                
-                this.muxer.onReady = null; 
-                // We've been adding samples, now we finish.
-                
-                // Since MP4Box js doesn't have a direct "give me a blob" for newly created files,
-                // we often use its stream output or hook into the save mechanism.
-                // Simple workaround:
-                // MP4Box createFile provides `save(filename)` which triggers download.
-                // We can redefine DataStream's save to intercept it.
-                const originalSave = DataStream.prototype.save;
-                DataStream.prototype.save = function(filename) {
-                    resultBuffer = this.buffer.slice(0, this.position);
-                    DataStream.prototype.save = originalSave; // restore
-                };
-                
                 try {
-                    this.muxer.save('output.mp4');
+                    this.muxer.onReady = null; 
+                    
+                    // Use MP4Box's DataStream to properly serialize the ISO file
+                    const stream = new MP4Box.DataStream();
+                    stream.endianness = MP4Box.DataStream.BIG_ENDIAN;
+                    
+                    // Write the muxed file into the stream
+                    this.muxer.write(stream);
+                    
+                    // Extract the final buffer
+                    const resultBuffer = stream.buffer.slice(0, stream.position);
+                    
+                    if (resultBuffer && resultBuffer.byteLength > 0) {
+                        const blob = new Blob([resultBuffer], { type: 'video/mp4' });
+                        resolve(blob);
+                    } else {
+                        reject(new Error("Failed to write muxed MP4 file."));
+                    }
                 } catch(e) {
                     console.error("Muxer save error", e);
-                }
-                
-                if (resultBuffer) {
-                    const blob = new Blob([resultBuffer], { type: 'video/mp4' });
-                    resolve(blob);
-                } else {
-                    // Fallback if the hack fails
-                    console.warn("Could not intercept DataStream save. Muxing might have failed.");
-                    resolve(new Blob([], { type: 'video/mp4' }));
+                    reject(e);
                 }
             });
         }
