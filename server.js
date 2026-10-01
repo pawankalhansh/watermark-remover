@@ -25,7 +25,12 @@ const MIME_TYPES = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
+  '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.onnx': 'application/octet-stream',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm'
 };
 
 const MASKED_WATERMARK_REPAIR_PROMPT = [

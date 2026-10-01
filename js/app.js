@@ -59,6 +59,11 @@
   const btnChooseAnotherVideo = $('btnChooseAnotherVideo');
   const btnResetVideo = $('btnResetVideo');
   const btnDownloadVideo = $('btnDownloadVideo');
+  const videoPreviewLiveImg = $('videoPreviewLiveImg');
+  const studioStatusBox = $('studioStatusBox');
+  const studioStatusSpinner = $('studioStatusSpinner');
+  const studioStatusText = $('studioStatusText');
+  const videoRuntimeIframe = $('videoRuntimeIframe');
 
   // Toast
   const toast = $('toast');
@@ -67,9 +72,13 @@
   let currentMode = 'image'; // 'image' | 'video'
   let currentOriginalVideoUrl = null;
   let currentProcessedVideoUrl = null;
+  let currentLiveFrameUrl = null;
   let currentOriginalImageUrl = null;
   let currentProcessedImageUrl = null;
   let activeVideoRemover = null;
+  let selectedVideoBytes = null;
+  let iframePollInterval = null;
+  let isVideoProcessing = false;
 
   // ============================================
   // MODE SWITCHING
@@ -281,7 +290,7 @@
   }
 
   // ============================================
-  // VIDEO WATERMARK REMOVAL (WEBCODECS + MP4BOX)
+  // VIDEO WATERMARK REMOVAL (AUTHENTIC ENGINE & LIVE PREVIEW)
   // ============================================
   let selectedVideoFile = null;
 
@@ -320,6 +329,71 @@
     return `${m}:${rem < 10 ? '0' : ''}${rem}`;
   }
 
+  // Listen for real-time cleaned frame preview messages from the authentic video runtime
+  window.addEventListener('message', (e) => {
+    if (videoRuntimeIframe && e.source === videoRuntimeIframe.contentWindow) {
+      const data = e.data;
+      if (!data) return;
+
+      if (data.type === 'gwr-video-preview-frame' && data.blob) {
+        try {
+          const frameUrl = URL.createObjectURL(data.blob);
+          if (currentLiveFrameUrl) URL.revokeObjectURL(currentLiveFrameUrl);
+          currentLiveFrameUrl = frameUrl;
+
+          if (videoPreviewLiveImg) {
+            videoPreviewLiveImg.src = frameUrl;
+            videoPreviewLiveImg.style.display = 'block';
+          }
+          if (readyToProcessView) readyToProcessView.style.display = 'none';
+          if (cleaningProgressView) cleaningProgressView.style.display = 'none';
+          if (videoProcessedPlayer) videoProcessedPlayer.style.display = 'none';
+          if (tagProcessedBadge) tagProcessedBadge.style.display = 'block';
+
+          // Sync original video currentTime with elapsedSeconds from runtime
+          const elapsed = Number(data.elapsedSeconds);
+          if (Number.isFinite(elapsed) && elapsed >= 0) {
+            if (Math.abs(videoOriginalPlayer.currentTime - elapsed) > 0.04) {
+              videoOriginalPlayer.currentTime = elapsed;
+            }
+            syncTimelineScrubber.value = elapsed;
+            const dur = videoOriginalPlayer.duration || elapsed;
+            syncTimeDisplay.textContent = `${formatTime(elapsed)} / ${formatTime(dur)}`;
+          }
+
+          // Update status box matching user reference: "Exporting video, processed 143 frames."
+          if (studioStatusBox) studioStatusBox.style.display = 'flex';
+          if (studioStatusSpinner) studioStatusSpinner.style.display = 'inline-block';
+          if (studioStatusText) {
+            studioStatusText.textContent = `Exporting video, processed ${data.processedFrames} frames.`;
+          }
+        } catch (previewErr) {
+          console.warn('Live preview frame display error:', previewErr);
+        }
+      }
+    }
+  });
+
+  function waitForCondition(fn, timeoutMs, timeoutMsg) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const interval = setInterval(() => {
+        try {
+          if (fn()) {
+            clearInterval(interval);
+            resolve();
+          } else if (Date.now() - start > timeoutMs) {
+            clearInterval(interval);
+            reject(new Error(timeoutMsg));
+          }
+        } catch (e) {
+          clearInterval(interval);
+          reject(e);
+        }
+      }, 150);
+    });
+  }
+
   async function handleVideoFile(file) {
     if (typeof VideoDecoder === 'undefined') {
       showToast('⚠️ Video processing requires Chrome 94+ or Edge 94+ (WebCodecs support).', 5000);
@@ -335,14 +409,20 @@
     // Show 'Ready to process' state initially
     readyToProcessView.style.display = 'flex';
     cleaningProgressView.style.display = 'none';
+    if (videoPreviewLiveImg) videoPreviewLiveImg.style.display = 'none';
     videoProcessedPlayer.style.display = 'none';
     tagProcessedBadge.style.display = 'none';
+    if (studioStatusBox) studioStatusBox.style.display = 'none';
 
     btnDownloadVideo.classList.add('disabled');
     btnDownloadVideo.removeAttribute('href');
 
     if (currentOriginalVideoUrl) URL.revokeObjectURL(currentOriginalVideoUrl);
     if (currentProcessedVideoUrl) URL.revokeObjectURL(currentProcessedVideoUrl);
+    if (currentLiveFrameUrl) {
+      URL.revokeObjectURL(currentLiveFrameUrl);
+      currentLiveFrameUrl = null;
+    }
     currentProcessedVideoUrl = null;
 
     currentOriginalVideoUrl = URL.createObjectURL(file);
@@ -353,10 +433,18 @@
 
     videoOriginalPlayer.onloadedmetadata = () => {
       const dur = videoOriginalPlayer.duration || 0;
+      syncTimelineScrubber.max = dur;
       syncTimeDisplay.textContent = `0:00 / ${formatTime(dur)}`;
     };
 
     setupPlaybackControls();
+
+    // Read bytes early
+    try {
+      selectedVideoBytes = await file.arrayBuffer();
+    } catch (e) {
+      console.warn('Could not read video bytes early:', e);
+    }
   }
 
   // Triggered when user clicks '▷ Start local cleanup'
@@ -364,75 +452,253 @@
     if (!selectedVideoFile) return;
 
     readyToProcessView.style.display = 'none';
-    cleaningProgressView.style.display = 'flex';
-    cleaningBarFill.style.width = '0%';
-    cleaningPercent.textContent = '0%';
-    cleaningTitle.textContent = 'Cleaning Video...';
-    cleaningSubtitle.textContent = 'Preparing frames & audio tracks...';
+    if (studioStatusBox) {
+      studioStatusBox.style.display = 'flex';
+      studioStatusSpinner.style.display = 'inline-block';
+      studioStatusText.textContent = 'Loading local video runtime...';
+    }
 
     try {
-      activeVideoRemover = new window.VideoWatermarkRemover({
-        onProgress: ({ phase, current, total, percent }) => {
-          cleaningBarFill.style.width = `${percent}%`;
-          cleaningPercent.textContent = `${percent}%`;
+      if (!selectedVideoBytes) {
+        selectedVideoBytes = await selectedVideoFile.arrayBuffer();
+      }
 
-          if (phase === 'demuxing') {
-            cleaningTitle.textContent = 'Demuxing Video...';
-            cleaningSubtitle.textContent = 'Parsing container & audio tracks';
-          } else if (phase === 'processing') {
-            cleaningTitle.textContent = 'Cleaning Video...';
-            cleaningSubtitle.textContent = `Processing frame ${current} of ${total} (${percent}%)`;
-          } else if (phase === 'muxing') {
-            cleaningTitle.textContent = 'Finalizing MP4...';
-            cleaningSubtitle.textContent = 'Muxing clean video with original audio';
-          }
-        }
-      });
-
-      const cleanBlob = await activeVideoRemover.processVideo(selectedVideoFile);
-
-      currentProcessedVideoUrl = URL.createObjectURL(cleanBlob);
-      videoProcessedPlayer.src = currentProcessedVideoUrl;
-      videoProcessedPlayer.style.display = 'block';
-      tagProcessedBadge.style.display = 'block';
-      cleaningProgressView.style.display = 'none';
-
-      btnDownloadVideo.href = currentProcessedVideoUrl;
-      btnDownloadVideo.download = `gemini-video-cleaned-${Date.now()}.mp4`;
-      btnDownloadVideo.classList.remove('disabled');
-
-      setupPlaybackControls();
-      showToast('✅ Video watermark removed successfully!');
+      await runIframeVideoPipeline(selectedVideoFile, selectedVideoBytes);
     } catch (err) {
-      console.error('Video processing error:', err);
-      cleaningProgressView.style.display = 'none';
-      readyToProcessView.style.display = 'flex';
-      showToast(`⚠️ Video error: ${err.message || 'Processing failed'}`, 5000);
+      console.warn('[Video] Iframe runtime pipeline failed or fell back:', err);
+      // Fallback to internal VideoWatermarkRemover
+      await runFallbackVideoPipeline(selectedVideoFile);
     }
   });
 
+  async function runIframeVideoPipeline(file, bytes) {
+    isVideoProcessing = true;
+    if (iframePollInterval) clearInterval(iframePollInterval);
+
+    let iframe = videoRuntimeIframe;
+    if (!iframe) {
+      throw new Error('Video runtime iframe not found');
+    }
+
+    // Ensure iframe is loaded
+    if (!iframe.contentDocument || !iframe.contentDocument.getElementById('fileInput')) {
+      studioStatusText.textContent = 'Initializing video runtime...';
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Iframe load timeout')), 10000);
+        iframe.onload = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+      });
+    }
+
+    const iframeWin = iframe.contentWindow;
+    const iframeDoc = iframe.contentDocument;
+
+    const fileInput = iframeDoc.getElementById('fileInput');
+    const processBtn = iframeDoc.getElementById('processBtn');
+    const detectBtn = iframeDoc.getElementById('detectBtn');
+
+    if (!fileInput || !processBtn || !detectBtn) {
+      throw new Error('Runtime controls not found inside iframe');
+    }
+
+    // 1. Pass the file to the iframe
+    studioStatusText.textContent = 'Reading video metadata...';
+    const BlobCtor = iframeWin.Blob || window.Blob;
+    const FileCtor = iframeWin.File || window.File;
+    const DTCtor = iframeWin.DataTransfer || window.DataTransfer;
+
+    const innerBlob = new BlobCtor([bytes.slice(0)], { type: file.type || 'video/mp4' });
+    const innerFile = new FileCtor([innerBlob], file.name, {
+      lastModified: file.lastModified,
+      type: file.type || innerBlob.type
+    });
+
+    const dt = new DTCtor();
+    dt.items.add(innerFile);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new (iframeWin.Event || window.Event)('change', { bubbles: true }));
+
+    // 2. Wait for metadata to be parsed
+    await waitForCondition(() => {
+      const meta = iframeDoc.getElementById('metadata');
+      const hasContent = meta && meta.textContent?.trim() && !meta.querySelector('.muted');
+      return hasContent && !processBtn.disabled;
+    }, 12000, 'Video metadata parsing timed out');
+
+    // 3. Trigger watermark detection
+    studioStatusText.textContent = 'Detecting watermark candidates...';
+    detectBtn.click();
+
+    // Wait for detection to complete
+    await waitForCondition(() => {
+      const statusEl = iframeDoc.getElementById('status');
+      const progressText = iframeDoc.getElementById('progressText');
+      const tone = statusEl?.dataset?.tone;
+      const txt = `${statusEl?.textContent || ''} ${progressText?.textContent || ''}`;
+      return tone === 'success' || tone === 'warn' || txt.includes('完成') || txt.includes('低置信');
+    }, 15000, 'Watermark detection timed out');
+
+    // 4. Force allow low confidence so export is never blocked
+    iframeWin.__gwrVideoOverrideAllowLowConfidence = true;
+    const allowCb = iframeDoc.getElementById('allowLowConfidence');
+    if (allowCb) {
+      allowCb.checked = true;
+      allowCb.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    // 5. Start Export
+    studioStatusText.textContent = 'Exporting video, processed 0 frames.';
+    processBtn.click();
+
+    // 6. Monitor export completion
+    await new Promise((resolve, reject) => {
+      iframePollInterval = setInterval(() => {
+        const downloadBtn = iframeDoc.getElementById('downloadBtn');
+        const statusEl = iframeDoc.getElementById('status');
+        const isReady = downloadBtn && downloadBtn.getAttribute('aria-disabled') === 'false' && downloadBtn.href;
+        const tone = statusEl?.dataset?.tone;
+        const statusMsg = statusEl?.textContent?.trim() || '';
+
+        if (isReady) {
+          clearInterval(iframePollInterval);
+          iframePollInterval = null;
+          isVideoProcessing = false;
+
+          const cleanUrl = downloadBtn.href;
+          const cleanName = downloadBtn.download || `gemini-video-cleaned-${Date.now()}.mp4`;
+
+          currentProcessedVideoUrl = cleanUrl;
+          videoProcessedPlayer.src = cleanUrl;
+          videoProcessedPlayer.style.display = 'block';
+          if (videoPreviewLiveImg) videoPreviewLiveImg.style.display = 'none';
+          readyToProcessView.style.display = 'none';
+          cleaningProgressView.style.display = 'none';
+          tagProcessedBadge.style.display = 'block';
+
+          btnDownloadVideo.href = cleanUrl;
+          btnDownloadVideo.download = cleanName;
+          btnDownloadVideo.classList.remove('disabled');
+
+          studioStatusSpinner.style.display = 'none';
+          studioStatusText.textContent = 'Video cleanup completed.';
+
+          videoOriginalPlayer.currentTime = 0;
+          videoProcessedPlayer.currentTime = 0;
+          syncTimelineScrubber.value = 0;
+          const dur = videoOriginalPlayer.duration || 0;
+          syncTimeDisplay.textContent = `0:00 / ${formatTime(dur)}`;
+
+          setupPlaybackControls();
+          showToast('✅ Video watermark removed successfully!');
+          resolve();
+        } else if (tone === 'error') {
+          clearInterval(iframePollInterval);
+          iframePollInterval = null;
+          isVideoProcessing = false;
+          reject(new Error(statusMsg || 'Runtime export failed'));
+        }
+      }, 400);
+    });
+  }
+
+  async function runFallbackVideoPipeline(file) {
+    cleaningProgressView.style.display = 'flex';
+    if (videoPreviewLiveImg) videoPreviewLiveImg.style.display = 'none';
+    cleaningBarFill.style.width = '0%';
+    cleaningPercent.textContent = '0%';
+    cleaningTitle.textContent = 'Cleaning Video...';
+    cleaningSubtitle.textContent = 'Processing frame by frame...';
+
+    activeVideoRemover = new window.VideoWatermarkRemover({
+      onProgress: ({ phase, current, total, percent }) => {
+        cleaningBarFill.style.width = `${percent}%`;
+        cleaningPercent.textContent = `${percent}%`;
+        if (studioStatusText) studioStatusText.textContent = `Exporting video, processed ${current} frames.`;
+
+        if (phase === 'demuxing') {
+          cleaningTitle.textContent = 'Demuxing Video...';
+          cleaningSubtitle.textContent = 'Parsing container & audio tracks';
+        } else if (phase === 'processing') {
+          cleaningTitle.textContent = 'Cleaning Video...';
+          cleaningSubtitle.textContent = `Processing frame ${current} of ${total} (${percent}%)`;
+        } else if (phase === 'muxing') {
+          cleaningTitle.textContent = 'Finalizing MP4...';
+          cleaningSubtitle.textContent = 'Muxing clean video with original audio';
+        }
+      },
+      onFrameProcessed: (canvas) => {
+        if (canvas && videoPreviewLiveImg) {
+          canvas.toBlob((b) => {
+            if (b) {
+              const u = URL.createObjectURL(b);
+              if (currentLiveFrameUrl) URL.revokeObjectURL(currentLiveFrameUrl);
+              currentLiveFrameUrl = u;
+              videoPreviewLiveImg.src = u;
+              videoPreviewLiveImg.style.display = 'block';
+              cleaningProgressView.style.display = 'none';
+            }
+          }, 'image/jpeg', 0.7);
+        }
+      }
+    });
+
+    const cleanBlob = await activeVideoRemover.processVideo(file);
+
+    currentProcessedVideoUrl = URL.createObjectURL(cleanBlob);
+    videoProcessedPlayer.src = currentProcessedVideoUrl;
+    videoProcessedPlayer.style.display = 'block';
+    if (videoPreviewLiveImg) videoPreviewLiveImg.style.display = 'none';
+    tagProcessedBadge.style.display = 'block';
+    cleaningProgressView.style.display = 'none';
+
+    btnDownloadVideo.href = currentProcessedVideoUrl;
+    btnDownloadVideo.download = `gemini-video-cleaned-${Date.now()}.mp4`;
+    btnDownloadVideo.classList.remove('disabled');
+
+    if (studioStatusSpinner) studioStatusSpinner.style.display = 'none';
+    if (studioStatusText) studioStatusText.textContent = 'Video cleanup completed.';
+
+    setupPlaybackControls();
+    showToast('✅ Video watermark removed successfully!');
+  }
+
   btnResetVideo.addEventListener('click', () => {
+    if (iframePollInterval) clearInterval(iframePollInterval);
+    if (activeVideoRemover) activeVideoRemover.cancel();
     videoOriginalPlayer.pause();
     videoProcessedPlayer.pause();
     videoOriginalPlayer.currentTime = 0;
     videoProcessedPlayer.currentTime = 0;
     readyToProcessView.style.display = 'flex';
     cleaningProgressView.style.display = 'none';
+    if (videoPreviewLiveImg) videoPreviewLiveImg.style.display = 'none';
     videoProcessedPlayer.style.display = 'none';
     tagProcessedBadge.style.display = 'none';
+    if (studioStatusBox) studioStatusBox.style.display = 'none';
     btnDownloadVideo.classList.add('disabled');
     btnDownloadVideo.removeAttribute('href');
     syncTimelineScrubber.value = 0;
+    if (videoRuntimeIframe && videoRuntimeIframe.contentWindow) {
+      videoRuntimeIframe.contentWindow.location.reload();
+    }
     showToast('Reset to ready state');
   });
 
   btnChooseAnotherVideo.addEventListener('click', () => {
+    if (iframePollInterval) clearInterval(iframePollInterval);
+    if (activeVideoRemover) activeVideoRemover.cancel();
     videoOriginalPlayer.pause();
     videoProcessedPlayer.pause();
     videoStudioCard.style.display = 'none';
     videoDropCard.style.display = 'block';
     videoFileInput.value = '';
     selectedVideoFile = null;
+    selectedVideoBytes = null;
+    if (videoRuntimeIframe && videoRuntimeIframe.contentWindow) {
+      videoRuntimeIframe.contentWindow.location.reload();
+    }
   });
 
   // ============================================
@@ -441,15 +707,7 @@
   function setupPlaybackControls() {
     let isPlaying = false;
 
-    function getLeadPlayer() {
-      if (videoProcessedPlayer.style.display !== 'none' && videoProcessedPlayer.src) {
-        return videoProcessedPlayer;
-      }
-      return videoOriginalPlayer;
-    }
-
-    btnSyncPlayPause.onclick = () => {
-      const lead = getLeadPlayer();
+    btnSyncPlayPause.onclick = async () => {
       if (isPlaying) {
         videoOriginalPlayer.pause();
         if (videoProcessedPlayer.src) videoProcessedPlayer.pause();
@@ -457,40 +715,45 @@
         pauseIconSvg.style.display = 'none';
         isPlaying = false;
       } else {
-        videoOriginalPlayer.play();
-        if (videoProcessedPlayer.src) videoProcessedPlayer.play();
+        const cur = videoOriginalPlayer.currentTime;
+        if (videoProcessedPlayer.src && videoProcessedPlayer.style.display !== 'none') {
+          videoProcessedPlayer.currentTime = cur;
+          await Promise.allSettled([videoOriginalPlayer.play(), videoProcessedPlayer.play()]);
+        } else {
+          await videoOriginalPlayer.play();
+        }
         playIconSvg.style.display = 'none';
         pauseIconSvg.style.display = 'block';
         isPlaying = true;
       }
     };
 
-    const lead = getLeadPlayer();
-    lead.ontimeupdate = () => {
-      const cur = lead.currentTime;
-      const dur = lead.duration || 1;
-      const pct = (cur / dur) * 100;
-      syncTimelineScrubber.value = pct;
+    videoOriginalPlayer.ontimeupdate = () => {
+      if (isVideoProcessing) return; // Do not override timeline during frame-by-frame export
+      const cur = videoOriginalPlayer.currentTime;
+      const dur = videoOriginalPlayer.duration || 1;
+      syncTimelineScrubber.value = cur;
       syncTimeDisplay.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
 
-      if (lead === videoProcessedPlayer && Math.abs(videoOriginalPlayer.currentTime - cur) > 0.15) {
-        videoOriginalPlayer.currentTime = cur;
+      if (videoProcessedPlayer.src && videoProcessedPlayer.style.display !== 'none' && !videoOriginalPlayer.paused) {
+        if (Math.abs(videoProcessedPlayer.currentTime - cur) > 0.08) {
+          videoProcessedPlayer.currentTime = cur;
+        }
       }
     };
 
     syncTimelineScrubber.oninput = (e) => {
-      const targetPct = parseFloat(e.target.value);
-      const lead = getLeadPlayer();
-      const dur = lead.duration || videoOriginalPlayer.duration || 0;
-      const targetTime = (targetPct / 100) * dur;
-
+      const targetTime = parseFloat(e.target.value);
       videoOriginalPlayer.currentTime = targetTime;
-      if (videoProcessedPlayer.src) {
+      if (videoProcessedPlayer.src && videoProcessedPlayer.style.display !== 'none') {
         videoProcessedPlayer.currentTime = targetTime;
       }
+      const dur = videoOriginalPlayer.duration || targetTime;
+      syncTimeDisplay.textContent = `${formatTime(targetTime)} / ${formatTime(dur)}`;
     };
 
-    lead.onended = () => {
+    videoOriginalPlayer.onended = () => {
+      if (videoProcessedPlayer.src) videoProcessedPlayer.pause();
       playIconSvg.style.display = 'block';
       pauseIconSvg.style.display = 'none';
       isPlaying = false;

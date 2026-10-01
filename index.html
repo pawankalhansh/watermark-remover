@@ -14,7 +14,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- CSS -->
-    <link rel="stylesheet" href="css/style.css?v=13" />
+    <link rel="stylesheet" href="css/style.css?v=15" />
 
     <!-- Core Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js" async></script>
@@ -237,6 +237,9 @@
                                 <span class="cleaning-percent" id="cleaningPercent">0%</span>
                             </div>
 
+                            <!-- 2b. Live Cleaned Frame Preview (shown during processing) -->
+                            <img id="videoPreviewLiveImg" class="video-preview-live" style="display: none;" alt="Processed frame" />
+
                             <!-- 3. Processed Video View -->
                             <video id="videoProcessedPlayer" playsinline preload="auto" style="display: none;"></video>
                         </div>
@@ -252,44 +255,63 @@
                                 <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
                             </svg>
                         </button>
-                        <input type="range" class="studio-scrubber" id="syncTimelineScrubber" min="0" max="100" value="0" step="0.1" />
+                        <input type="range" class="studio-scrubber" id="syncTimelineScrubber" min="0" max="100" value="0" step="0.01" />
                         <span class="studio-time-display" id="syncTimeDisplay">0:00 / 0:10</span>
+                    </div>
+
+                    <!-- Synchronized Status Box matching reference UI (e.g. "Exporting video, processed 143 frames.") -->
+                    <div class="studio-status-box" id="studioStatusBox" style="display: none;">
+                        <span class="studio-status-spinner" id="studioStatusSpinner"></span>
+                        <span class="studio-status-text" id="studioStatusText">Exporting video, processed 0 frames.</span>
                     </div>
 
                     <!-- Bottom Actions Row -->
                     <div class="studio-actions-row">
                         <button class="btn-studio-action" id="btnChooseAnotherVideo" type="button">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                             </svg>
-                            Choose another
+                            <span>Choose another</span>
                         </button>
 
                         <button class="btn-studio-action" id="btnResetVideo" type="button">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                             </svg>
-                            Reset
+                            <span>Reset</span>
                         </button>
 
                         <a href="https://github.com/pawankalhansh/watermark-remover" target="_blank" rel="noopener" class="btn-studio-action">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                                 <polyline points="14 2 14 8 20 8"></polyline>
                                 <line x1="16" y1="13" x2="8" y2="13"></line>
                                 <line x1="16" y1="17" x2="8" y2="17"></line>
                             </svg>
-                            Open CLI guide
+                            <span>Open CLI guide</span>
                         </a>
 
                         <a id="btnDownloadVideo" class="btn-studio-download disabled" download="clean-video.mp4">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                                 <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                             </svg>
-                            Download MP4
+                            <span>Download MP4</span>
+                        </a>
+                    </div>
+
+                    <!-- Studio Meta Link -->
+                    <div class="studio-subfooter">
+                        <a href="https://github.com/pawankalhansh/watermark-remover" target="_blank" rel="noopener noreferrer" class="studio-meta-link">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                            </svg>
+                            <span>Report an issue on GitHub</span>
                         </a>
                     </div>
                 </div>
+
+                <!-- Video Runtime Iframe (100% browser-local WebCodecs + ONNX) -->
+                <iframe id="videoRuntimeIframe" src="video-runtime/video-preview.html" style="position: absolute; width: 1px; height: 1px; opacity: 0.001; pointer-events: none; border: 0; left: -9999px;" title="Gemini Video Runtime"></iframe>
             </div>
 
             <!-- ========== TRUST BADGES ========== -->
@@ -487,8 +509,8 @@
     <div class="toast" id="toast"></div>
 
     <!-- SCRIPTS -->
-    <script src="js/gemini-engine.js?v=13"></script>
-    <script src="js/video-processor.js?v=13"></script>
-    <script src="js/app.js?v=13"></script>
+    <script src="js/gemini-engine.js?v=15"></script>
+    <script src="js/video-processor.js?v=15"></script>
+    <script src="js/app.js?v=15"></script>
 </body>
 </html>
