@@ -40,13 +40,15 @@
   const videoDropCard = $('videoDropCard');
   const videoFileInput = $('videoFileInput');
   const btnUploadVideo = $('btnUploadVideo');
-  const videoProcessingCard = $('videoProcessingCard');
-  const videoProgressBar = $('videoProgressBar');
-  const videoProgressPercent = $('videoProgressPercent');
-  const videoProgressTitle = $('videoProgressTitle');
-  const videoProgressSubtitle = $('videoProgressSubtitle');
-  const videoResultCard = $('videoResultCard');
-  const videoMetaLabel = $('videoMetaLabel');
+  const videoStudioCard = $('videoStudioCard');
+  const readyToProcessView = $('readyToProcessView');
+  const btnStartCleanup = $('btnStartCleanup');
+  const cleaningProgressView = $('cleaningProgressView');
+  const cleaningBarFill = $('cleaningBarFill');
+  const cleaningPercent = $('cleaningPercent');
+  const cleaningTitle = $('cleaningTitle');
+  const cleaningSubtitle = $('cleaningSubtitle');
+  const tagProcessedBadge = $('tagProcessedBadge');
   const videoOriginalPlayer = $('videoOriginalPlayer');
   const videoProcessedPlayer = $('videoProcessedPlayer');
   const btnSyncPlayPause = $('btnSyncPlayPause');
@@ -55,8 +57,7 @@
   const syncTimelineScrubber = $('syncTimelineScrubber');
   const syncTimeDisplay = $('syncTimeDisplay');
   const btnChooseAnotherVideo = $('btnChooseAnotherVideo');
-  const btnSaveVideoQuick = $('btnSaveVideoQuick');
-  const btnOpenOriginalVideo = $('btnOpenOriginalVideo');
+  const btnResetVideo = $('btnResetVideo');
   const btnDownloadVideo = $('btnDownloadVideo');
 
   // Toast
@@ -282,6 +283,8 @@
   // ============================================
   // VIDEO WATERMARK REMOVAL (WEBCODECS + MP4BOX)
   // ============================================
+  let selectedVideoFile = null;
+
   btnUploadVideo.addEventListener('click', () => videoFileInput.click());
 
   videoFileInput.addEventListener('change', (e) => {
@@ -310,145 +313,188 @@
     }
   });
 
+  function formatTime(seconds) {
+    const s = Math.floor(seconds || 0);
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}:${rem < 10 ? '0' : ''}${rem}`;
+  }
+
   async function handleVideoFile(file) {
     if (typeof VideoDecoder === 'undefined') {
       showToast('⚠️ Video processing requires Chrome 94+ or Edge 94+ (WebCodecs support).', 5000);
       return;
     }
 
-    videoDropCard.style.display = 'none';
-    videoProcessingCard.style.display = 'block';
-    videoResultCard.style.display = 'none';
+    selectedVideoFile = file;
 
-    videoProgressBar.style.width = '0%';
-    videoProgressPercent.textContent = '0%';
-    videoProgressTitle.textContent = 'Processing Video...';
-    videoProgressSubtitle.textContent = 'Demuxing audio and video tracks...';
+    // Switch from drop card to studio card
+    videoDropCard.style.display = 'none';
+    videoStudioCard.style.display = 'block';
+
+    // Show 'Ready to process' state initially
+    readyToProcessView.style.display = 'flex';
+    cleaningProgressView.style.display = 'none';
+    videoProcessedPlayer.style.display = 'none';
+    tagProcessedBadge.style.display = 'none';
+
+    btnDownloadVideo.classList.add('disabled');
+    btnDownloadVideo.removeAttribute('href');
 
     if (currentOriginalVideoUrl) URL.revokeObjectURL(currentOriginalVideoUrl);
     if (currentProcessedVideoUrl) URL.revokeObjectURL(currentProcessedVideoUrl);
+    currentProcessedVideoUrl = null;
 
     currentOriginalVideoUrl = URL.createObjectURL(file);
     videoOriginalPlayer.src = currentOriginalVideoUrl;
 
+    syncTimelineScrubber.value = 0;
+    syncTimeDisplay.textContent = '0:00 / 0:00';
+
+    videoOriginalPlayer.onloadedmetadata = () => {
+      const dur = videoOriginalPlayer.duration || 0;
+      syncTimeDisplay.textContent = `0:00 / ${formatTime(dur)}`;
+    };
+
+    setupPlaybackControls();
+  }
+
+  // Triggered when user clicks '▷ Start local cleanup'
+  btnStartCleanup.addEventListener('click', async () => {
+    if (!selectedVideoFile) return;
+
+    readyToProcessView.style.display = 'none';
+    cleaningProgressView.style.display = 'flex';
+    cleaningBarFill.style.width = '0%';
+    cleaningPercent.textContent = '0%';
+    cleaningTitle.textContent = 'Cleaning Video...';
+    cleaningSubtitle.textContent = 'Preparing frames & audio tracks...';
+
     try {
       activeVideoRemover = new window.VideoWatermarkRemover({
         onProgress: ({ phase, current, total, percent }) => {
-          videoProgressBar.style.width = `${percent}%`;
-          videoProgressPercent.textContent = `${percent}%`;
+          cleaningBarFill.style.width = `${percent}%`;
+          cleaningPercent.textContent = `${percent}%`;
 
           if (phase === 'demuxing') {
-            videoProgressTitle.textContent = 'Demuxing Video...';
-            videoProgressSubtitle.textContent = 'Parsing container & audio tracks';
+            cleaningTitle.textContent = 'Demuxing Video...';
+            cleaningSubtitle.textContent = 'Parsing container & audio tracks';
           } else if (phase === 'processing') {
-            videoProgressTitle.textContent = 'Removing Watermarks...';
-            videoProgressSubtitle.textContent = `Cleaning frame ${current} of ${total} (${percent}%)`;
+            cleaningTitle.textContent = 'Cleaning Video...';
+            cleaningSubtitle.textContent = `Processing frame ${current} of ${total} (${percent}%)`;
           } else if (phase === 'muxing') {
-            videoProgressTitle.textContent = 'Finalizing MP4...';
-            videoProgressSubtitle.textContent = 'Muxing clean video with original audio';
+            cleaningTitle.textContent = 'Finalizing MP4...';
+            cleaningSubtitle.textContent = 'Muxing clean video with original audio';
           }
         }
       });
 
-      const cleanBlob = await activeVideoRemover.processVideo(file);
+      const cleanBlob = await activeVideoRemover.processVideo(selectedVideoFile);
 
       currentProcessedVideoUrl = URL.createObjectURL(cleanBlob);
       videoProcessedPlayer.src = currentProcessedVideoUrl;
+      videoProcessedPlayer.style.display = 'block';
+      tagProcessedBadge.style.display = 'block';
+      cleaningProgressView.style.display = 'none';
+
       btnDownloadVideo.href = currentProcessedVideoUrl;
       btnDownloadVideo.download = `gemini-video-cleaned-${Date.now()}.mp4`;
+      btnDownloadVideo.classList.remove('disabled');
 
-      const sizeMB = (cleanBlob.size / (1024 * 1024)).toFixed(1);
-      videoMetaLabel.textContent = `Clean video ready — ${sizeMB} MB`;
-
-      videoProcessingCard.style.display = 'none';
-      videoResultCard.style.display = 'block';
-
-      setupSynchronizedPlayer();
+      setupPlaybackControls();
       showToast('✅ Video watermark removed successfully!');
     } catch (err) {
       console.error('Video processing error:', err);
-      videoProcessingCard.style.display = 'none';
-      videoDropCard.style.display = 'block';
+      cleaningProgressView.style.display = 'none';
+      readyToProcessView.style.display = 'flex';
       showToast(`⚠️ Video error: ${err.message || 'Processing failed'}`, 5000);
     }
-  }
+  });
+
+  btnResetVideo.addEventListener('click', () => {
+    videoOriginalPlayer.pause();
+    videoProcessedPlayer.pause();
+    videoOriginalPlayer.currentTime = 0;
+    videoProcessedPlayer.currentTime = 0;
+    readyToProcessView.style.display = 'flex';
+    cleaningProgressView.style.display = 'none';
+    videoProcessedPlayer.style.display = 'none';
+    tagProcessedBadge.style.display = 'none';
+    btnDownloadVideo.classList.add('disabled');
+    btnDownloadVideo.removeAttribute('href');
+    syncTimelineScrubber.value = 0;
+    showToast('Reset to ready state');
+  });
 
   btnChooseAnotherVideo.addEventListener('click', () => {
     videoOriginalPlayer.pause();
     videoProcessedPlayer.pause();
-    videoResultCard.style.display = 'none';
+    videoStudioCard.style.display = 'none';
     videoDropCard.style.display = 'block';
     videoFileInput.value = '';
-  });
-
-  btnSaveVideoQuick.addEventListener('click', () => {
-    btnDownloadVideo.click();
-  });
-
-  btnOpenOriginalVideo.addEventListener('click', () => {
-    if (currentOriginalVideoUrl) window.open(currentOriginalVideoUrl, '_blank');
+    selectedVideoFile = null;
   });
 
   // ============================================
   // SYNCHRONIZED VIDEO CONTROLS
   // ============================================
-  function setupSynchronizedPlayer() {
+  function setupPlaybackControls() {
     let isPlaying = false;
 
-    function formatTime(seconds) {
-      const s = Math.floor(seconds || 0);
-      const m = Math.floor(s / 60);
-      const rem = s % 60;
-      return `${m}:${rem < 10 ? '0' : ''}${rem}`;
+    function getLeadPlayer() {
+      if (videoProcessedPlayer.style.display !== 'none' && videoProcessedPlayer.src) {
+        return videoProcessedPlayer;
+      }
+      return videoOriginalPlayer;
     }
 
-    videoProcessedPlayer.addEventListener('loadedmetadata', () => {
-      const dur = videoProcessedPlayer.duration || videoOriginalPlayer.duration || 0;
-      syncTimeDisplay.textContent = `0:00 / ${formatTime(dur)}`;
-    });
-
     btnSyncPlayPause.onclick = () => {
+      const lead = getLeadPlayer();
       if (isPlaying) {
         videoOriginalPlayer.pause();
-        videoProcessedPlayer.pause();
+        if (videoProcessedPlayer.src) videoProcessedPlayer.pause();
         playIconSvg.style.display = 'block';
         pauseIconSvg.style.display = 'none';
         isPlaying = false;
       } else {
         videoOriginalPlayer.play();
-        videoProcessedPlayer.play();
+        if (videoProcessedPlayer.src) videoProcessedPlayer.play();
         playIconSvg.style.display = 'none';
         pauseIconSvg.style.display = 'block';
         isPlaying = true;
       }
     };
 
-    videoProcessedPlayer.addEventListener('timeupdate', () => {
-      const cur = videoProcessedPlayer.currentTime;
-      const dur = videoProcessedPlayer.duration || 1;
+    const lead = getLeadPlayer();
+    lead.ontimeupdate = () => {
+      const cur = lead.currentTime;
+      const dur = lead.duration || 1;
       const pct = (cur / dur) * 100;
       syncTimelineScrubber.value = pct;
       syncTimeDisplay.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
 
-      // Sync original video if drift > 0.15s
-      if (Math.abs(videoOriginalPlayer.currentTime - cur) > 0.15) {
+      if (lead === videoProcessedPlayer && Math.abs(videoOriginalPlayer.currentTime - cur) > 0.15) {
         videoOriginalPlayer.currentTime = cur;
       }
-    });
+    };
 
     syncTimelineScrubber.oninput = (e) => {
       const targetPct = parseFloat(e.target.value);
-      const dur = videoProcessedPlayer.duration || videoOriginalPlayer.duration || 0;
+      const lead = getLeadPlayer();
+      const dur = lead.duration || videoOriginalPlayer.duration || 0;
       const targetTime = (targetPct / 100) * dur;
-      videoProcessedPlayer.currentTime = targetTime;
+
       videoOriginalPlayer.currentTime = targetTime;
+      if (videoProcessedPlayer.src) {
+        videoProcessedPlayer.currentTime = targetTime;
+      }
     };
 
-    videoProcessedPlayer.addEventListener('ended', () => {
+    lead.onended = () => {
       playIconSvg.style.display = 'block';
       pauseIconSvg.style.display = 'none';
       isPlaying = false;
-    });
+    };
   }
 
   // ============================================

@@ -14,7 +14,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- CSS -->
-    <link rel="stylesheet" href="css/style.css?v=11" />
+    <link rel="stylesheet" href="css/style.css?v=12" />
 
     <!-- Core Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js" async></script>
@@ -175,7 +175,7 @@
 
             <!-- ========== VIDEO WORKSPACE ========== -->
             <div class="workspace-panel" id="videoWorkspace" style="display: none;">
-                <!-- Video Upload View -->
+                <!-- Video Upload View (shown initially) -->
                 <div class="video-drop-card" id="videoDropCard">
                     <div class="video-drop-content">
                         <div class="video-icon-circle">🎬</div>
@@ -195,67 +195,100 @@
                     </div>
                 </div>
 
-                <!-- Video Processing Progress Card -->
-                <div class="video-processing-card" id="videoProcessingCard" style="display: none;">
-                    <div class="processing-spinner"></div>
-                    <h3 class="processing-title" id="videoProgressTitle">Processing Video...</h3>
-                    <p class="processing-desc" id="videoProgressSubtitle">Demuxing & preparing frames...</p>
-                    <div class="progress-bar-track">
-                        <div class="progress-bar-fill" id="videoProgressBar" style="width: 0%;"></div>
-                    </div>
-                    <span class="progress-percent-label" id="videoProgressPercent">0%</span>
-                </div>
-
-                <!-- Video Result View (Side-by-Side Player) -->
-                <div class="video-result-card" id="videoResultCard" style="display: none;">
-                    <div class="video-result-header">
-                        <span class="result-badge-success">✅ Video Watermark Removed!</span>
-                        <p class="video-meta-label" id="videoMetaLabel">Clean video ready</p>
-                    </div>
-
-                    <!-- Side-by-Side Video Players -->
-                    <div class="video-players-grid">
-                        <div class="video-player-card">
-                            <span class="player-tag tag-original">Original</span>
-                            <video id="videoOriginalPlayer" playsinline muted></video>
+                <!-- Video Interactive Studio (Side-by-Side with 'Ready to process' state) -->
+                <div class="video-studio-card" id="videoStudioCard" style="display: none;">
+                    <!-- Side-by-Side Frames Grid -->
+                    <div class="studio-grid">
+                        <!-- Left: Original Video -->
+                        <div class="studio-box original-box">
+                            <span class="studio-tag tag-original">Original</span>
+                            <video id="videoOriginalPlayer" playsinline muted preload="auto"></video>
                         </div>
-                        <div class="video-player-card">
-                            <span class="player-tag tag-processed">Processed</span>
-                            <video id="videoProcessedPlayer" playsinline></video>
+
+                        <!-- Right: Processed Container -->
+                        <div class="studio-box processed-box" id="processedBox">
+                            <span class="studio-tag tag-processed" id="tagProcessedBadge">Processed</span>
+
+                            <!-- 1. Ready to Process State (Default before cleanup starts) -->
+                            <div class="ready-state-view" id="readyToProcessView">
+                                <div class="ready-doc-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" stroke-width="1.8">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                        <polyline points="14 2 14 8 20 8"></polyline>
+                                        <circle cx="12" cy="14" r="3"></circle>
+                                        <polygon points="11 13 14 14 11 15 11 13" fill="#94A3B8"></polygon>
+                                    </svg>
+                                </div>
+                                <h3 class="ready-title">Ready to process</h3>
+                                <p class="ready-desc">Preview uses a lower-resolution stream to save resources. The export runs locally at the source resolution.</p>
+                                <button class="btn-start-cleanup" id="btnStartCleanup" type="button">
+                                    <span class="play-triangle">▷</span> Start local cleanup
+                                </button>
+                            </div>
+
+                            <!-- 2. Cleaning Progress State -->
+                            <div class="cleaning-progress-view" id="cleaningProgressView" style="display: none;">
+                                <div class="processing-spinner"></div>
+                                <h4 class="cleaning-title" id="cleaningTitle">Cleaning Video...</h4>
+                                <p class="cleaning-subtitle" id="cleaningSubtitle">Analyzing & removing watermarks...</p>
+                                <div class="cleaning-bar-track">
+                                    <div class="cleaning-bar-fill" id="cleaningBarFill" style="width: 0%;"></div>
+                                </div>
+                                <span class="cleaning-percent" id="cleaningPercent">0%</span>
+                            </div>
+
+                            <!-- 3. Processed Video View -->
+                            <video id="videoProcessedPlayer" playsinline preload="auto" style="display: none;"></video>
                         </div>
                     </div>
 
-                    <!-- Unified Playback Scrubber Bar -->
-                    <div class="unified-player-controls">
-                        <button class="player-btn-play" id="btnSyncPlayPause" type="button" aria-label="Play/Pause">
-                            <svg class="play-icon" id="playIconSvg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <!-- Synchronized Timeline Scrubber -->
+                    <div class="studio-timeline-bar">
+                        <button class="btn-timeline-play" id="btnSyncPlayPause" type="button" aria-label="Play/Pause">
+                            <svg class="play-svg" id="playIconSvg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M8 5v14l11-7z"/>
                             </svg>
-                            <svg class="pause-icon" id="pauseIconSvg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none;">
+                            <svg class="pause-svg" id="pauseIconSvg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
                                 <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
                             </svg>
                         </button>
-                        <input type="range" class="player-scrubber" id="syncTimelineScrubber" min="0" max="100" value="0" step="0.1" />
-                        <span class="player-time-display" id="syncTimeDisplay">0:00 / 0:00</span>
+                        <input type="range" class="studio-scrubber" id="syncTimelineScrubber" min="0" max="100" value="0" step="0.1" />
+                        <span class="studio-time-display" id="syncTimeDisplay">0:00 / 0:10</span>
                     </div>
 
-                    <!-- Video Actions Row -->
-                    <div class="video-actions-row">
-                        <button class="btn-action-outline" id="btnChooseAnotherVideo" type="button">
-                            🔄 Choose Another
+                    <!-- Bottom Actions Row -->
+                    <div class="studio-actions-row">
+                        <button class="btn-studio-action" id="btnChooseAnotherVideo" type="button">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                            </svg>
+                            Choose another
                         </button>
-                        <button class="btn-action-outline" id="btnSaveVideoQuick" type="button">
-                            💾 Save
+
+                        <button class="btn-studio-action" id="btnResetVideo" type="button">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            Reset
                         </button>
-                        <button class="btn-action-outline" id="btnOpenOriginalVideo" type="button">
-                            👁️ Open Original
-                        </button>
-                        <a id="btnDownloadVideo" class="btn-action-primary" download="gemini-cleaned.mp4">
-                            ⬇️ Download MP4
+
+                        <a href="https://github.com/pawankalhansh/watermark-remover" target="_blank" rel="noopener" class="btn-studio-action">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="16" y1="13" x2="8" y2="13"></line>
+                                <line x1="16" y1="17" x2="8" y2="17"></line>
+                            </svg>
+                            Open CLI guide
+                        </a>
+
+                        <a id="btnDownloadVideo" class="btn-studio-download disabled" download="clean-video.mp4">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                            </svg>
+                            Download MP4
                         </a>
                     </div>
-
-                    <p class="chrome-edge-note">Supported on Chrome and Edge</p>
                 </div>
             </div>
 
@@ -454,8 +487,8 @@
     <div class="toast" id="toast"></div>
 
     <!-- SCRIPTS -->
-    <script src="js/gemini-engine.js?v=11"></script>
-    <script src="js/video-processor.js?v=11"></script>
-    <script src="js/app.js?v=11"></script>
+    <script src="js/gemini-engine.js?v=12"></script>
+    <script src="js/video-processor.js?v=12"></script>
+    <script src="js/app.js?v=12"></script>
 </body>
 </html>
