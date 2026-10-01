@@ -25,8 +25,11 @@
 
   // States
   const processingState = $('#processingState');
+  const processingTitle = $('.processing__title');
+  const processingSubtitle = $('.processing__subtitle');
   const progressFill = $('#progressFill');
   const resultState = $('#resultState');
+  const resultEngine = $('#resultEngine');
 
   // Result
   const resultBefore = $('#resultBefore');
@@ -34,8 +37,10 @@
   const resultSlider = $('#resultSlider');
   const resultComparison = $('#resultComparison');
   const downloadBtn = $('#downloadBtn');
+  const downloadAllBtn = $('#downloadAllBtn');
   const touchUpBtn = $('#touchUpBtn');
   const resetBtn = $('#resetBtn');
+  const batchResults = $('#batchResults');
 
   // Demo slider
   const demoSlider = $('#demoSlider');
@@ -48,6 +53,7 @@
 
   // OpenCV.js State
   let openCvReady = false;
+  const USE_CLOUD_AI = false;
 
   function waitForOpenCV() {
     return new Promise((resolve, reject) => {
@@ -56,7 +62,7 @@
         resolve();
         return;
       }
-      showToast('⏳ Loading AI Inpainting Engine... please wait a moment.');
+      showToast('Loading free browser repair engine... please wait a moment.');
       let secondsPassed = 0;
       const interval = setInterval(() => {
         if (typeof cv !== 'undefined' && cv.Mat) {
@@ -191,11 +197,11 @@
 
   uploadZone.addEventListener('drop', (e) => {
     const files = e.dataTransfer.files;
-    if (files.length > 0) handleFile(files[0]);
+    if (files.length > 0) handleFiles(files);
   });
 
   fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleFile(e.target.files[0]);
+    if (e.target.files.length > 0) handleFiles(e.target.files);
   });
 
   // ============================================
@@ -204,33 +210,103 @@
   let originalImageData = null;
   let processedCanvas = null;
   let sourceImage = null;
+  let processedItems = [];
+  let activeItemIndex = -1;
+  let currentEngineLabel = '';
 
-  function handleFile(file) {
-    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    if (!validTypes.includes(file.type)) {
-      showToast('Please upload a JPG, PNG, or WEBP image.');
-      return;
-    }
-
-    if (file.size > 20 * 1024 * 1024) {
-      showToast('Image size must be under 20MB.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        originalImageData = e.target.result;
-        sourceImage = img;
-        startProcessing(img);
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+  function isSupportedImageFile(file) {
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    return validTypes.includes(file.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name);
   }
 
-  async function startProcessing(img) {
+  function readImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Could not read this image.'));
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => resolve({ dataUrl: e.target.result, img });
+        img.onerror = () => reject(new Error('This image format is not supported by your browser.'));
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFiles(fileList) {
+    const files = [...fileList];
+    const validFiles = files.filter(file => isSupportedImageFile(file) && file.size <= 20 * 1024 * 1024);
+
+    if (!validFiles.length) {
+      showToast('Please upload JPG, PNG, WEBP, or browser-supported HEIC images under 20MB.');
+      return;
+    }
+
+    if (validFiles.length !== files.length) {
+      showToast('Some files were skipped because they are unsupported or over 20MB.', 4500);
+    }
+
+    exitBrushMode();
+    uploadArea.style.display = 'none';
+    resultState.classList.remove('active');
+    processingState.classList.add('active');
+    processedItems = [];
+    activeItemIndex = -1;
+    renderBatchResults();
+
+    for (let i = 0; i < validFiles.length; i++) {
+      const file = validFiles[i];
+      processingTitle.textContent = `Removing watermark ${i + 1} of ${validFiles.length}...`;
+      processingSubtitle.textContent = file.name;
+      progressFill.style.width = '0%';
+
+      try {
+        const { dataUrl, img } = await readImageFile(file);
+        const item = {
+          id: `${Date.now()}-${i}`,
+          name: file.name,
+          originalData: dataUrl,
+          sourceImage: img,
+          processedCanvas: null,
+          status: 'processing',
+          engine: ''
+        };
+        processedItems.push(item);
+        renderBatchResults();
+        currentEngineLabel = '';
+        item.processedCanvas = await startProcessing(img, i, validFiles.length);
+        item.status = 'done';
+        item.engine = currentEngineLabel;
+        selectResult(processedItems.length - 1);
+      } catch (err) {
+        processedItems.push({
+          id: `${Date.now()}-${i}`,
+          name: file.name,
+          originalData: '',
+          sourceImage: null,
+          processedCanvas: null,
+          status: 'error',
+          error: err.message || 'Could not process this image.'
+        });
+        showToast(`${file.name}: ${err.message || 'Could not process this image.'}`, 5000);
+      }
+
+      renderBatchResults();
+    }
+
+    processingState.classList.remove('active');
+    const finished = processedItems.filter(item => item.status === 'done');
+    if (finished.length) {
+      resultState.classList.add('active');
+      resultState.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      showToast(`${finished.length} image${finished.length === 1 ? '' : 's'} ready for review.`, 3500);
+    } else {
+      uploadArea.style.display = '';
+      showToast('No images could be processed. Try JPG, PNG, or WEBP.', 5000);
+    }
+  }
+
+  async function startProcessing(img, batchIndex = 0, batchTotal = 1) {
     uploadArea.style.display = 'none';
     resultState.classList.remove('active');
     processingState.classList.add('active');
@@ -243,169 +319,239 @@
       progressFill.style.width = progress + '%';
     }, 100);
 
+    currentEngineLabel = 'Free browser repair';
+
+    if (USE_CLOUD_AI) {
+      try {
+        const aiCanvas = await processImageWithBackendAI(img);
+        progressFill.style.width = '100%';
+        currentEngineLabel = 'Cloud AI repair';
+        if (batchTotal === 1) showToast('Cloud repair complete. Review the result and use Touch Up if needed.');
+        return aiCanvas;
+      } catch (aiErr) {
+        console.info('Backend repair unavailable, using browser engine:', aiErr);
+        currentEngineLabel = `Free browser repair: ${aiErr.message || 'Cloud repair unavailable'}`;
+        showToast(currentEngineLabel, 5000);
+      }
+    }
+
     try {
-      // 1. Wait for OpenCV.js to load
       await waitForOpenCV();
       progressFill.style.width = '90%';
 
-      // 2. Process image with OpenCV inpainting
-      processedCanvas = processImageWithOpenCV(img);
+      const canvas = processImageWithOpenCV(img);
 
       progressFill.style.width = '100%';
-      showToast('✨ Watermark removed seamlessly!');
+      if (!currentEngineLabel) currentEngineLabel = 'Free browser repair';
+      if (batchTotal === 1) showToast('Watermark removed. Review the result and use Touch Up if needed.');
+      return canvas;
     } catch (err) {
       console.error('OpenCV Inpainting failed, falling back to local interpolation:', err);
       console.error('Error details:', err.message, err.stack);
-      showToast('⚠️ OpenCV error: ' + (err.message || err).toString().substring(0, 80));
-      processedCanvas = processImageLocal(img);
-        } finally {
+      currentEngineLabel = 'Browser fallback repair';
+      showToast('Local repair mode used for one image.', 3000);
+      return processImageLocal(img);
+    } finally {
       clearInterval(progressInterval);
       progressFill.style.width = '100%';
-      setTimeout(() => {
-        showResult(img);
-      }, 400);
     }
   }
 
   // ============================================
-  // OPENCV.JS WATERMARK INPAINTING ENGINE
+  // OPENCV.JS WATERMARK REPAIR ENGINE
   // Uses relative color deviation detection — not absolute HSV thresholds
   // ============================================
+  function filterSmallComponents(maskData, w, h, minArea) {
+    const parent = new Int32Array(w * h);
+    const size = new Int32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      parent[i] = i;
+      size[i] = 1;
+    }
+
+    function find(i) {
+      let root = i;
+      while (root !== parent[root]) {
+        root = parent[root];
+      }
+      let curr = i;
+      while (curr !== root) {
+        let nxt = parent[curr];
+        parent[curr] = root;
+        curr = nxt;
+      }
+      return root;
+    }
+
+    function union(i, j) {
+      let rootI = find(i);
+      let rootJ = find(j);
+      if (rootI !== rootJ) {
+        if (size[rootI] < size[rootJ]) {
+          parent[rootI] = rootJ;
+          size[rootJ] += size[rootI];
+        } else {
+          parent[rootJ] = rootI;
+          size[rootI] += size[rootJ];
+        }
+      }
+    }
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (maskData[idx]) {
+          if (x > 0 && maskData[idx - 1]) union(idx, idx - 1);
+          if (y > 0 && maskData[idx - w]) union(idx, idx - w);
+        }
+      }
+    }
+
+    let count = 0;
+    for (let i = 0; i < w * h; i++) {
+      if (maskData[i]) {
+        if (size[find(i)] < minArea) {
+          maskData[i] = 0;
+        } else {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  function detectWatermarkMask(srcRGB, w, h, thresholds) {
+    const { RED, BLUE, WHITE, WHITE_SAT_MAX } = thresholds;
+    const blurred = new cv.Mat();
+    cv.GaussianBlur(srcRGB, blurred, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
+    
+    const mask = cv.Mat.zeros(h, w, cv.CV_8UC1);
+    const maskData = mask.data;
+    const srcData = srcRGB.data;
+    const blurData = blurred.data;
+
+    for (let idx = 0; idx < w * h; idx++) {
+      const i = idx * 3;
+      const r = srcData[i], g = srcData[i + 1], b = srcData[i + 2];
+      const br = blurData[i], bg = blurData[i + 1], bb = blurData[i + 2];
+
+      const rDiff = r - br;
+      const gDiff = g - bg;
+      const bDiff = b - bb;
+
+      const redExcess = rDiff - 0.5 * (gDiff + bDiff);
+      const blueExcess = bDiff - 0.5 * (rDiff + gDiff);
+      
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lumBlur = 0.299 * br + 0.587 * bg + 0.114 * bb;
+      
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+      const lightOverlay = Math.abs(lum - lumBlur) > WHITE && sat < WHITE_SAT_MAX;
+      const darkOverlay = Math.abs(lumBlur - lum) > WHITE && sat < WHITE_SAT_MAX;
+
+      if (redExcess > RED || blueExcess > BLUE || lightOverlay || darkOverlay) {
+        maskData[idx] = 255;
+      }
+    }
+    blurred.delete();
+    return mask;
+  }
+
   function processImageWithOpenCV(img) {
     const srcCanvas = createResizedCanvas(img, 4096);
     
     const srcMat = cv.imread(srcCanvas);
     const w = srcMat.cols;
     const h = srcMat.rows;
+    const totalPixels = w * h;
 
     const srcRGB = new cv.Mat();
     cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
 
     // ============================================
-    // 1. Compute local background using Gaussian blur
-    //    21x21 kernel — large enough to average out thin watermark text
-    //    but small enough to follow background color changes
+    // 1. Adaptive Detection
     // ============================================
-    let blurredRGB = new cv.Mat();
-    cv.GaussianBlur(srcRGB, blurredRGB, new cv.Size(21, 21), 0);
+    let thresholds = { RED: 12, BLUE: 12, WHITE: 6, WHITE_SAT_MAX: 0.18 };
+    let combinedMask;
+    let maskPixelCount = 0;
+    let pct = 0;
 
-    let srcData = srcRGB.data;
-    let blurData = blurredRGB.data;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (combinedMask) combinedMask.delete();
+      combinedMask = detectWatermarkMask(srcRGB, w, h, thresholds);
+      
+      // Filter small noise blobs (connected components pure JS)
+      maskPixelCount = filterSmallComponents(combinedMask.data, w, h, 20);
+      pct = maskPixelCount / totalPixels;
 
-    // ============================================
-    // 2. Relative Color Deviation Detection
-    //    For each pixel, check if it deviates from local average
-    //    in a specific color direction (red, blue, or white)
-    // ============================================
-    let inpaintMask = cv.Mat.zeros(h, w, cv.CV_8UC1);
-    let maskData = inpaintMask.data;
-
-    const RED_THRESHOLD = 12;    // Minimum red excess over neighbors
-    const BLUE_THRESHOLD = 12;   // Minimum blue excess over neighbors
-    const WHITE_THRESHOLD = 6;   // Minimum brightness excess for white watermarks
-    const WHITE_SAT_MAX = 0.18;  // Max saturation for white/gray classification
-
-    for (let idx = 0; idx < w * h; idx++) {
-      const i = idx * 3;
-      const r = srcData[i], g = srcData[i + 1], b = srcData[i + 2];
-      const rb = blurData[i], gb = blurData[i + 1], bb = blurData[i + 2];
-
-      // --- RED watermark: pixel is significantly redder than neighborhood ---
-      // redExcess = (R increase) - average of (G increase, B increase)
-      // Positive when red channel rises MORE than green/blue
-      const rDiff = r - rb, gDiff = g - gb, bDiff = b - bb;
-      const redExcess = rDiff - 0.5 * (gDiff + bDiff);
-      if (redExcess > RED_THRESHOLD) {
-        maskData[idx] = 255;
-        continue;
-      }
-
-      // --- BLUE watermark: pixel is significantly bluer than neighborhood ---
-      const blueExcess = bDiff - 0.5 * (rDiff + gDiff);
-      if (blueExcess > BLUE_THRESHOLD) {
-        maskData[idx] = 255;
-        continue;
-      }
-
-      // --- WHITE/GRAY watermark: pixel is brighter than neighborhood with low saturation ---
-      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      const lumBlur = 0.299 * rb + 0.587 * gb + 0.114 * bb;
-      const lumDiff = Math.abs(lum - lumBlur);
-      const maxC = Math.max(r, g, b);
-      const minC = Math.min(r, g, b);
-      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
-
-      if (lumDiff > WHITE_THRESHOLD && sat < WHITE_SAT_MAX) {
-        maskData[idx] = 255;
+      if (pct > 0.25) {
+        if (attempt === 1) {
+          thresholds.RED *= 2; thresholds.BLUE *= 2; thresholds.WHITE *= 2;
+        } else if (attempt === 2) {
+          thresholds.RED *= 2; thresholds.BLUE *= 2; thresholds.WHITE *= 2;
+        } else {
+          console.warn(`[WMR v3] Mask too large (${(pct*100).toFixed(2)}%), skipping inpainting to protect image`);
+          showToast(`⚠️ Watermark detection captured too much (${(pct*100).toFixed(2)}%). Try Touch Up for manual removal.`, 5000);
+          combinedMask.delete();
+          srcRGB.delete();
+          srcMat.delete();
+          return srcCanvas;
+        }
+      } else {
+        break;
       }
     }
 
-    // DEBUG: Count detected pixels
-    let maskPixelCount = cv.countNonZero(inpaintMask);
-    let totalPixels = w * h;
-    let pct = (maskPixelCount / totalPixels * 100).toFixed(2);
-    console.log(`[WMR v3] Mask detection: ${maskPixelCount} / ${totalPixels} pixels (${pct}%)`);
-    console.log(`[WMR v3] Image size: ${w}x${h}`);
-
-    // Safety check: if mask covers > 40% of image, detection went wrong — skip
-    if (maskPixelCount / totalPixels > 0.40) {
-      console.warn(`[WMR v3] Mask too large (${pct}%), skipping inpainting to protect image`);
-      showToast(`⚠️ Watermark detection captured too much (${pct}%). Try Touch Up for manual removal.`, 5000);
-      blurredRGB.delete();
-      inpaintMask.delete();
-      srcRGB.delete();
-      srcMat.delete();
-      return srcCanvas;
-    }
-
-    showToast(`🔍 Detected ${maskPixelCount} watermark pixels (${pct}%)`, 4000);
+    showToast(`🔍 Detected ${maskPixelCount} watermark pixels (${(pct*100).toFixed(2)}%)`, 4000);
 
     // ============================================
-    // 3. Morphological processing: close gaps + dilate edges
+    // 2. Morphological processing: close gaps + dilate edges
     // ============================================
     let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
-    let tempClosed = new cv.Mat();
-    cv.dilate(inpaintMask, tempClosed, closeKernel, new cv.Point(-1, -1), 1);
+    let tempDilated = new cv.Mat();
+    cv.dilate(combinedMask, tempDilated, closeKernel, new cv.Point(-1, -1), 1);
     let closedMask = new cv.Mat();
-    cv.erode(tempClosed, closedMask, closeKernel, new cv.Point(-1, -1), 1);
-    tempClosed.delete();
+    cv.erode(tempDilated, closedMask, closeKernel, new cv.Point(-1, -1), 1);
+    tempDilated.delete();
+    combinedMask.delete();
 
-    let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+    let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
     let dilatedMask = new cv.Mat();
-    cv.dilate(closedMask, dilatedMask, dilateKernel, new cv.Point(-1, -1), 1);
-
+    cv.dilate(closedMask, dilatedMask, dilateKernel, new cv.Point(-1, -1), 2);
+    closedMask.delete();
+    
     // ============================================
-    // 4. Pure Inpainting with Telea algorithm (radius 5)
+    // 3. Content-aware inpainting with better reconstruction
     // ============================================
     const dstRGB = new cv.Mat();
     cv.inpaint(srcRGB, dilatedMask, dstRGB, 5, cv.INPAINT_TELEA);
 
-    // ============================================
-    // 5. Edge blending — smooth boundary transition
-    // ============================================
-    let finalResult = new cv.Mat();
+    // Better Edge Blending
+    const softMask = new cv.Mat();
+    cv.GaussianBlur(dilatedMask, softMask, new cv.Size(15, 15), 0, 0, cv.BORDER_DEFAULT);
+
+    const finalResult = new cv.Mat();
     dstRGB.copyTo(finalResult);
 
-    let erodedMask = new cv.Mat();
-    let boundaryKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
-    cv.erode(dilatedMask, erodedMask, boundaryKernel, new cv.Point(-1, -1), 1);
-
-    let boundaryMask = new cv.Mat();
-    cv.subtract(dilatedMask, erodedMask, boundaryMask);
-
-    let blurredResult = new cv.Mat();
-    cv.GaussianBlur(dstRGB, blurredResult, new cv.Size(5, 5), 0);
-
-    let blurredResultData = blurredResult.data;
     let finalData = finalResult.data;
-    let boundaryData = boundaryMask.data;
+    let srcData = srcRGB.data;
+    let softData = softMask.data;
 
     for (let idx = 0; idx < w * h; idx++) {
-      if (boundaryData[idx] === 255) {
+      const alpha = softData[idx] / 255.0;
+      if (alpha < 1.0 && alpha > 0) {
         const i = idx * 3;
-        finalData[i]     = Math.round(0.5 * finalData[i]     + 0.5 * blurredResultData[i]);
-        finalData[i + 1] = Math.round(0.5 * finalData[i + 1] + 0.5 * blurredResultData[i + 1]);
-        finalData[i + 2] = Math.round(0.5 * finalData[i + 2] + 0.5 * blurredResultData[i + 2]);
+        finalData[i]     = Math.round(alpha * finalData[i]     + (1 - alpha) * srcData[i]);
+        finalData[i + 1] = Math.round(alpha * finalData[i + 1] + (1 - alpha) * srcData[i + 1]);
+        finalData[i + 2] = Math.round(alpha * finalData[i + 2] + (1 - alpha) * srcData[i + 2]);
+      } else if (alpha === 0) {
+        const i = idx * 3;
+        finalData[i]     = srcData[i];
+        finalData[i + 1] = srcData[i + 1];
+        finalData[i + 2] = srcData[i + 2];
       }
     }
 
@@ -414,22 +560,15 @@
     // Deallocate ALL Wasm memory
     srcMat.delete();
     srcRGB.delete();
-    blurredRGB.delete();
-    inpaintMask.delete();
     closeKernel.delete();
-    closedMask.delete();
     dilateKernel.delete();
     dilatedMask.delete();
     dstRGB.delete();
+    softMask.delete();
     finalResult.delete();
-    erodedMask.delete();
-    boundaryKernel.delete();
-    boundaryMask.delete();
-    blurredResult.delete();
 
     return srcCanvas;
   }
-
   function createResizedCanvas(img, maxDim) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -446,105 +585,158 @@
     return canvas;
   }
 
+  async function processImageWithBackendAI(img) {
+    const imageCanvas = createResizedCanvas(img, 1536);
+    const mask = generateTransparentEditMaskCanvas(imageCanvas);
+    const useMask = mask.coverage >= 0.001 && mask.coverage <= 0.35;
+    const prompt = useMask
+      ? `Detected watermark coverage is ${(mask.coverage * 100).toFixed(2)}%. Remove the watermark only from the transparent mask region.`
+      : 'No reliable mask was detected. Inspect the entire image and remove all subtle repeated watermarks, logo stamps, proof marks, date stamps, and overlay text while preserving the original image content exactly.';
+
+    const requestBody = {
+      imageDataUrl: imageCanvas.toDataURL('image/png'),
+      prompt
+    };
+
+    if (useMask) {
+      requestBody.maskDataUrl = mask.canvas.toDataURL('image/png');
+    }
+
+    const response = await fetch('/api/inpaint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || 'AI backend failed');
+    }
+
+    return dataUrlToCanvas(payload.imageDataUrl);
+  }
+
+  function generateTransparentEditMaskCanvas(imageCanvas) {
+    const w = imageCanvas.width;
+    const h = imageCanvas.height;
+    const srcCtx = imageCanvas.getContext('2d', { willReadFrequently: true });
+    const source = srcCtx.getImageData(0, 0, w, h);
+    const data = source.data;
+
+    const blockSize = Math.max(15, Math.round(Math.min(w, h) / 45) | 1);
+    const blurR = new Float32Array(w * h);
+    const blurG = new Float32Array(w * h);
+    const blurB = new Float32Array(w * h);
+    computeLocalMedian(data, w, h, blockSize, blurR, blurG, blurB);
+
+    const rawMask = new Uint8Array(w * h);
+    const RED_THRESHOLD = 7;
+    const BLUE_THRESHOLD = 7;
+    const WHITE_THRESHOLD = 4;
+    const DARK_THRESHOLD = 5;
+    const WHITE_SAT_MAX = 0.35;
+    let detectedCount = 0;
+
+    for (let idx = 0; idx < w * h; idx++) {
+      const i = idx * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const rDiff = r - blurR[idx];
+      const gDiff = g - blurG[idx];
+      const bDiff = b - blurB[idx];
+
+      const redExcess = rDiff - 0.5 * (gDiff + bDiff);
+      const blueExcess = bDiff - 0.5 * (rDiff + gDiff);
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lumBlur = 0.299 * blurR[idx] + 0.587 * blurG[idx] + 0.114 * blurB[idx];
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+      const darkOverlay = lumBlur - lum > DARK_THRESHOLD && sat < WHITE_SAT_MAX;
+      const lightOverlay = Math.abs(lum - lumBlur) > WHITE_THRESHOLD && sat < WHITE_SAT_MAX;
+
+      if (redExcess > RED_THRESHOLD || blueExcess > BLUE_THRESHOLD || lightOverlay || darkOverlay) {
+        rawMask[idx] = 1;
+        detectedCount++;
+      }
+    }
+
+    const editMask = dilateMask(rawMask, w, h, 5);
+    let editCount = 0;
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    const maskCtx = maskCanvas.getContext('2d');
+    const maskImage = maskCtx.createImageData(w, h);
+
+    for (let idx = 0; idx < w * h; idx++) {
+      const i = idx * 4;
+      maskImage.data[i] = 255;
+      maskImage.data[i + 1] = 255;
+      maskImage.data[i + 2] = 255;
+      // OpenAI masks edit transparent areas, so detected watermark pixels get alpha 0.
+      maskImage.data[i + 3] = editMask[idx] ? 0 : 255;
+      if (editMask[idx]) editCount++;
+    }
+
+    maskCtx.putImageData(maskImage, 0, 0);
+    return {
+      canvas: maskCanvas,
+      coverage: editCount / (w * h),
+      rawCoverage: detectedCount / (w * h)
+    };
+  }
+
+  function dataUrlToCanvas(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        resolve(canvas);
+      };
+      img.onerror = () => reject(new Error('AI result could not be loaded.'));
+      img.src = dataUrl;
+    });
+  }
+
   function generateDetectedMaskCanvas(img) {
     const canvas = createResizedCanvas(img, 4096);
     
     try {
       if (typeof cv !== 'undefined' && cv.Mat) {
         const srcMat = cv.imread(canvas);
-        
         const w = srcMat.cols;
         const h = srcMat.rows;
 
         const srcRGB = new cv.Mat();
         cv.cvtColor(srcMat, srcRGB, cv.COLOR_RGBA2RGB);
 
-        const hsv = new cv.Mat();
-        cv.cvtColor(srcRGB, hsv, cv.COLOR_RGB2HSV);
+        let thresholds = { RED: 12, BLUE: 12, WHITE: 6, WHITE_SAT_MAX: 0.18 };
+        let combinedMask = detectWatermarkMask(srcRGB, w, h, thresholds);
+        filterSmallComponents(combinedMask.data, w, h, 20);
 
-        let lowerRed1 = new cv.Mat(h, w, hsv.type(), [0, 5, 5, 0]);
-        let upperRed1 = new cv.Mat(h, w, hsv.type(), [18, 255, 255, 255]);
-        let lowerRed2 = new cv.Mat(h, w, hsv.type(), [160, 5, 5, 0]);
-        let upperRed2 = new cv.Mat(h, w, hsv.type(), [180, 255, 255, 255]);
-
-        let maskRed1 = new cv.Mat();
-        let maskRed2 = new cv.Mat();
-        cv.inRange(hsv, lowerRed1, upperRed1, maskRed1);
-        cv.inRange(hsv, lowerRed2, upperRed2, maskRed2);
-
-        let redMask = new cv.Mat();
-        cv.add(maskRed1, maskRed2, redMask);
-
-        let lowerBlue = new cv.Mat(h, w, hsv.type(), [90, 5, 5, 0]);
-        let upperBlue = new cv.Mat(h, w, hsv.type(), [140, 255, 255, 255]);
-        let blueMask = new cv.Mat();
-        cv.inRange(hsv, lowerBlue, upperBlue, blueMask);
-
-        let gray = new cv.Mat();
-        cv.cvtColor(srcRGB, gray, cv.COLOR_RGB2GRAY);
-
-        let blurredGray = new cv.Mat();
-        cv.GaussianBlur(gray, blurredGray, new cv.Size(41, 41), 0);
-
-        let localContrast = new cv.Mat();
-        cv.absdiff(gray, blurredGray, localContrast);
-
-        let whiteMask = new cv.Mat();
-        cv.threshold(localContrast, whiteMask, 3, 255, cv.THRESH_BINARY);
-
-        let hsvChannels2 = new cv.MatVector();
-        cv.split(hsv, hsvChannels2);
-        let saturationChannel = hsvChannels2.get(1);
-
-        let lowSatMask = new cv.Mat();
-        cv.threshold(saturationChannel, lowSatMask, 50, 255, cv.THRESH_BINARY_INV);
-
-        let finalWhiteMask = new cv.Mat();
-        cv.bitwise_and(whiteMask, lowSatMask, finalWhiteMask);
-
-        let combinedMask = new cv.Mat();
-        cv.add(redMask, blueMask, combinedMask);
-        cv.add(combinedMask, finalWhiteMask, combinedMask);
-
-        // Morphological closing + dilation (same as main engine)
         let closeKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
-        let tempDilated2 = new cv.Mat();
-        cv.dilate(combinedMask, tempDilated2, closeKernel, new cv.Point(-1, -1), 1);
+        let tempDilated = new cv.Mat();
+        cv.dilate(combinedMask, tempDilated, closeKernel, new cv.Point(-1, -1), 1);
         let closedMask = new cv.Mat();
-        cv.erode(tempDilated2, closedMask, closeKernel, new cv.Point(-1, -1), 1);
-        tempDilated2.delete();
+        cv.erode(tempDilated, closedMask, closeKernel, new cv.Point(-1, -1), 1);
+        tempDilated.delete();
+        combinedMask.delete();
 
         let dilateKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
         let dilatedMask = new cv.Mat();
         cv.dilate(closedMask, dilatedMask, dilateKernel, new cv.Point(-1, -1), 1);
+        closedMask.delete();
+        closeKernel.delete();
+        dilateKernel.delete();
 
         cv.imshow(canvas, dilatedMask);
 
         srcMat.delete();
         srcRGB.delete();
-        hsv.delete();
-        lowerRed1.delete();
-        upperRed1.delete();
-        lowerRed2.delete();
-        upperRed2.delete();
-        maskRed1.delete();
-        maskRed2.delete();
-        redMask.delete();
-        lowerBlue.delete();
-        upperBlue.delete();
-        blueMask.delete();
-        gray.delete();
-        blurredGray.delete();
-        localContrast.delete();
-        whiteMask.delete();
-        saturationChannel.delete();
-        hsvChannels2.delete();
-        lowSatMask.delete();
-        finalWhiteMask.delete();
-        combinedMask.delete();
-        closeKernel.delete();
-        closedMask.delete();
-        dilateKernel.delete();
         dilatedMask.delete();
       }
     } catch (e) {
@@ -589,10 +781,10 @@
     // ---- STEP 2: Relative color deviation detection ----
     const watermarkMask = new Uint8Array(w * h);
 
-    const RED_THRESHOLD = 12;
-    const BLUE_THRESHOLD = 12;
-    const WHITE_THRESHOLD = 6;
-    const WHITE_SAT_MAX = 0.18;
+    const RED_THRESHOLD = 8;
+    const BLUE_THRESHOLD = 8;
+    const WHITE_THRESHOLD = 5;
+    const WHITE_SAT_MAX = 0.28;
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -600,19 +792,22 @@
         const i = idx * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2];
         const rb = blurR[idx], gb = blurG[idx], bb = blurB[idx];
+        const hsv = rgbToHsv(r, g, b);
 
         const rDiff = r - rb, gDiff = g - gb, bDiff = b - bb;
 
         // Red watermark: pixel redder than neighborhood
         const redExcess = rDiff - 0.5 * (gDiff + bDiff);
-        if (redExcess > RED_THRESHOLD) {
+        const absoluteRedOverlay = ((hsv.h <= 15 || hsv.h >= 150) && hsv.s > 45 && hsv.v > 45) || (r > 70 && r > g * 1.18 && r > b * 1.18);
+        if (redExcess > RED_THRESHOLD || absoluteRedOverlay) {
           watermarkMask[idx] = 1;
           continue;
         }
 
         // Blue watermark: pixel bluer than neighborhood
         const blueExcess = bDiff - 0.5 * (rDiff + gDiff);
-        if (blueExcess > BLUE_THRESHOLD) {
+        const absoluteBlueOverlay = (hsv.h >= 95 && hsv.h <= 140 && hsv.s > 45 && hsv.v > 45) || (b > 70 && b > r * 1.18 && b > g * 1.12);
+        if (blueExcess > BLUE_THRESHOLD || absoluteBlueOverlay) {
           watermarkMask[idx] = 1;
           continue;
         }
@@ -632,7 +827,7 @@
     }
 
     // ---- STEP 3: Dilate mask by 2px ----
-    const combinedDilated = dilateMask(watermarkMask, w, h, 2);
+    const combinedDilated = dilateMask(watermarkMask, w, h, 4);
 
     // ---- STEP 4: Pure inpainting — replace ALL watermark pixels with clean neighbors ----
     const outputData = new Uint8ClampedArray(data);
@@ -830,12 +1025,60 @@
   // ============================================
   // SHOW RESULT — with Manual Touch-up Brush
   // ============================================
+  function selectResult(index) {
+    const item = processedItems[index];
+    if (!item || item.status !== 'done' || !item.processedCanvas) return;
+
+    activeItemIndex = index;
+    originalImageData = item.originalData;
+    processedCanvas = item.processedCanvas;
+    sourceImage = item.sourceImage;
+
+    resultBefore.src = item.originalData;
+    resultAfter.src = item.processedCanvas.toDataURL('image/png');
+    if (resultEngine) resultEngine.textContent = item.engine || '';
+    updateResultSlider(50);
+    renderBatchResults();
+  }
+
+  function renderBatchResults() {
+    if (!batchResults) return;
+    batchResults.innerHTML = '';
+
+    processedItems.forEach((item, index) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `result__batch-item${index === activeItemIndex ? ' active' : ''} ${item.status}`;
+      btn.disabled = item.status !== 'done';
+      btn.title = item.error || item.name;
+
+      const name = document.createElement('span');
+      name.className = 'result__batch-name';
+      name.textContent = item.name;
+
+      const status = document.createElement('span');
+      status.className = 'result__batch-status';
+      status.textContent = item.status === 'done' ? 'Ready' : item.status === 'error' ? 'Failed' : 'Processing';
+
+      btn.appendChild(name);
+      btn.appendChild(status);
+      btn.addEventListener('click', () => selectResult(index));
+      batchResults.appendChild(btn);
+    });
+
+    if (downloadAllBtn) {
+      const doneCount = processedItems.filter(item => item.status === 'done').length;
+      downloadAllBtn.style.display = doneCount > 1 ? '' : 'none';
+    }
+  }
+
   function showResult(originalImg) {
     processingState.classList.remove('active');
     resultState.classList.add('active');
 
     resultBefore.src = originalImageData;
     resultAfter.src = processedCanvas.toDataURL('image/png');
+    if (resultEngine) resultEngine.textContent = currentEngineLabel;
 
     updateResultSlider(50);
     resultState.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1174,7 +1417,9 @@
       brushOverlay = null;
     }
     // Update result with latest processed canvas
-    resultAfter.src = processedCanvas.toDataURL('image/png');
+    if (processedCanvas) {
+      resultAfter.src = processedCanvas.toDataURL('image/png');
+    }
   }
 
   // ============================================
@@ -1221,18 +1466,35 @@
   // ============================================
   downloadBtn.addEventListener('click', () => {
     if (!processedCanvas) return;
+    const activeItem = processedItems[activeItemIndex];
     const link = document.createElement('a');
-    link.download = 'watermark-removed.png';
+    link.download = `${activeItem ? activeItem.name.replace(/\.[^.]+$/, '') : 'image'}-watermark-removed.png`;
     link.href = processedCanvas.toDataURL('image/png');
     link.click();
     showToast('Image downloaded successfully! 🎉');
   });
+
+  if (downloadAllBtn) {
+    downloadAllBtn.addEventListener('click', () => {
+      const readyItems = processedItems.filter(item => item.status === 'done' && item.processedCanvas);
+      readyItems.forEach((item, index) => {
+        setTimeout(() => {
+          const link = document.createElement('a');
+          link.download = `${item.name.replace(/\.[^.]+$/, '')}-watermark-removed.png`;
+          link.href = item.processedCanvas.toDataURL('image/png');
+          link.click();
+        }, index * 300);
+      });
+      showToast(`Downloading ${readyItems.length} images.`);
+    });
+  }
 
   // ============================================
   // TOUCH-UP BUTTON
   // ============================================
   if (touchUpBtn) {
     touchUpBtn.addEventListener('click', () => {
+      if (!processedCanvas) return;
       initBrushMode();
     });
   }
@@ -1249,6 +1511,9 @@
     originalImageData = null;
     processedCanvas = null;
     sourceImage = null;
+    processedItems = [];
+    activeItemIndex = -1;
+    renderBatchResults();
     progressFill.style.width = '0%';
     uploadArea.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
@@ -1374,6 +1639,201 @@
   // ============================================
   window.openBrushTool = initBrushMode;
 
-  console.log('✨ WatermarkRemover v3 initialized — pure inpainting engine');
+  // ============================================
+  // VIDEO WATERMARK REMOVER — UI INTEGRATION
+  // ============================================
+
+  // Mode tab switching
+  const modeImageBtn = $('#modeImage');
+  const modeVideoBtn = $('#modeVideo');
+  const videoUploadArea = $('#videoUploadArea');
+  const videoUploadZone = $('#videoUploadZone');
+  const videoUploadBtn = $('#videoUploadBtn');
+  const videoFileInput = $('#videoFileInput');
+  const videoResultState = $('#videoResultState');
+  const videoOriginal = $('#videoOriginal');
+  const videoProcessed = $('#videoProcessed');
+  const videoDownloadBtn = $('#videoDownloadBtn');
+  const videoResetBtn = $('#videoResetBtn');
+  const videoResultInfo = $('#videoResultInfo');
+  const videoCompat = $('#videoCompat');
+
+  let currentMode = 'image'; // 'image' or 'video'
+  let videoProcessor = null;
+  let processedVideoBlob = null;
+  let originalVideoUrl = null;
+
+  // Mode tab click handlers
+  if (modeImageBtn && modeVideoBtn) {
+    modeImageBtn.addEventListener('click', () => switchMode('image'));
+    modeVideoBtn.addEventListener('click', () => switchMode('video'));
+  }
+
+  function switchMode(mode) {
+    currentMode = mode;
+
+    // Update tab appearance
+    modeImageBtn.classList.toggle('mode-tabs__btn--active', mode === 'image');
+    modeVideoBtn.classList.toggle('mode-tabs__btn--active', mode === 'video');
+
+    // Show/hide upload zones
+    if (uploadArea) uploadArea.style.display = mode === 'image' ? '' : 'none';
+    if (videoUploadArea) videoUploadArea.style.display = mode === 'video' ? '' : 'none';
+
+    // Hide results when switching
+    if (resultState) resultState.classList.remove('active');
+    if (videoResultState) videoResultState.classList.remove('active');
+    if (processingState) processingState.classList.remove('active');
+
+    // Check WebCodecs compatibility for video mode
+    if (mode === 'video' && videoCompat) {
+      const supported = typeof VideoDecoder !== 'undefined' && typeof VideoEncoder !== 'undefined';
+      videoCompat.style.display = supported ? 'none' : 'block';
+      if (videoUploadBtn) videoUploadBtn.disabled = !supported;
+    }
+  }
+
+  // Video upload handlers
+  if (videoUploadBtn) {
+    videoUploadBtn.addEventListener('click', () => videoFileInput.click());
+  }
+
+  if (videoFileInput) {
+    videoFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleVideoFile(e.target.files[0]);
+    });
+  }
+
+  if (videoUploadZone) {
+    videoUploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      videoUploadZone.classList.add('dragover');
+    });
+    videoUploadZone.addEventListener('dragleave', () => {
+      videoUploadZone.classList.remove('dragover');
+    });
+    videoUploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      videoUploadZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) handleVideoFile(e.dataTransfer.files[0]);
+    });
+    videoUploadZone.addEventListener('click', (e) => {
+      if (e.target !== videoUploadBtn && !videoUploadBtn.contains(e.target)) {
+        videoFileInput.click();
+      }
+    });
+  }
+
+  async function handleVideoFile(file) {
+    const validTypes = ['video/mp4', 'video/webm', 'video/quicktime'];
+    if (!validTypes.includes(file.type) && !/\.(mp4|webm|mov)$/i.test(file.name)) {
+      showToast('Please upload an MP4, WEBM, or MOV video file.');
+      return;
+    }
+
+    if (file.size > 500 * 1024 * 1024) {
+      showToast('Video file is too large. Maximum size is 500MB.');
+      return;
+    }
+
+    // Check WebCodecs support
+    if (typeof VideoDecoder === 'undefined') {
+      showToast('Your browser does not support video processing. Use Chrome 94+ or Edge 94+.');
+      return;
+    }
+
+    // Wait for OpenCV
+    try {
+      await waitForOpenCV();
+    } catch (e) {
+      showToast('OpenCV.js failed to load. Video processing requires OpenCV.');
+      return;
+    }
+
+    // Show processing state
+    videoUploadArea.style.display = 'none';
+    if (videoResultState) videoResultState.classList.remove('active');
+    processingState.classList.add('active');
+    processingTitle.textContent = 'Processing video...';
+    processingSubtitle.textContent = file.name;
+    progressFill.style.width = '0%';
+
+    // Store original video URL for before/after
+    if (originalVideoUrl) URL.revokeObjectURL(originalVideoUrl);
+    originalVideoUrl = URL.createObjectURL(file);
+
+    try {
+      videoProcessor = new window.VideoWatermarkRemover({
+        onProgress: ({ phase, current, total, percent }) => {
+          const phaseLabels = {
+            demuxing: 'Analyzing video structure...',
+            decoding: 'Decoding video frames...',
+            processing: `Removing watermark — frame ${current}/${total}`,
+            encoding: 'Re-encoding clean video...',
+            muxing: 'Assembling final video...'
+          };
+          processingTitle.textContent = phaseLabels[phase] || 'Processing...';
+          processingSubtitle.textContent = `${percent}% complete`;
+          progressFill.style.width = `${percent}%`;
+        },
+        onError: (error) => {
+          console.error('Video processing error:', error);
+          showToast('⚠️ Video processing failed: ' + (error.message || error));
+        }
+      });
+
+      processedVideoBlob = await videoProcessor.processVideo(file);
+
+      // Show video result
+      processingState.classList.remove('active');
+      videoResultState.classList.add('active');
+
+      videoOriginal.src = originalVideoUrl;
+      const processedUrl = URL.createObjectURL(processedVideoBlob);
+      videoProcessed.src = processedUrl;
+
+      const sizeMB = (processedVideoBlob.size / (1024 * 1024)).toFixed(1);
+      videoResultInfo.textContent = `Clean video ready — ${sizeMB} MB`;
+      showToast('✅ Video watermark removed successfully!');
+
+    } catch (err) {
+      console.error('Video processing failed:', err);
+      processingState.classList.remove('active');
+      videoUploadArea.style.display = '';
+      showToast('⚠️ ' + (err.message || 'Video processing failed'));
+    }
+  }
+
+  // Video download
+  if (videoDownloadBtn) {
+    videoDownloadBtn.addEventListener('click', () => {
+      if (!processedVideoBlob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(processedVideoBlob);
+      a.download = 'watermark-removed.mp4';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      showToast('⬇️ Video downloaded!');
+    });
+  }
+
+  // Video reset
+  if (videoResetBtn) {
+    videoResetBtn.addEventListener('click', () => {
+      if (videoResultState) videoResultState.classList.remove('active');
+      videoUploadArea.style.display = '';
+      processedVideoBlob = null;
+      if (originalVideoUrl) {
+        URL.revokeObjectURL(originalVideoUrl);
+        originalVideoUrl = null;
+      }
+      videoOriginal.src = '';
+      videoProcessed.src = '';
+      videoFileInput.value = '';
+      switchMode('video');
+    });
+  }
+
+  console.log('✨ WatermarkRemover v4 initialized — image + video support');
 
 })();

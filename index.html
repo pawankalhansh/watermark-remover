@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Watermark Remover — Remove Watermarks from Images with AI</title>
-    <meta name="description" content="Remove watermarks from your images instantly using AI technology. Free, no signup required. Supports JPG, PNG, WEBP formats. Get clean, watermark-free images in seconds." />
-    <meta name="keywords" content="remove watermark, watermark remover, remove watermark from image, watermark free, watermark removal tool, AI watermark remover" />
+    <title>Watermark Remover — Free Browser Watermark Removal</title>
+    <meta name="description" content="Remove watermarks from your images instantly using free browser-based repair. No signup required. Supports JPG, PNG, WEBP formats. Get clean, watermark-free images in seconds." />
+    <meta name="keywords" content="remove watermark, watermark remover, remove watermark from image, watermark free, watermark removal tool, free watermark remover" />
     <meta name="author" content="Watermark Remover" />
     <meta name="robots" content="index, follow" />
 
     <!-- Open Graph -->
-    <meta property="og:title" content="Watermark Remover — Remove Watermarks from Images with AI" />
-    <meta property="og:description" content="Remove watermarks from your images instantly using AI. Free, no signup, high quality results." />
+    <meta property="og:title" content="Watermark Remover — Free Browser Watermark Removal" />
+    <meta property="og:description" content="Remove watermarks from your images instantly in your browser. Free, no signup, high quality results." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://yourusername.github.io/watermark-remover/" />
     <meta property="og:site_name" content="Watermark Remover" />
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Watermark Remover — Remove Watermarks from Images with AI" />
-    <meta name="twitter:description" content="Remove watermarks from your images instantly using AI. Free, no signup." />
+    <meta name="twitter:title" content="Watermark Remover — Free Browser Watermark Removal" />
+    <meta name="twitter:description" content="Remove watermarks from your images instantly in your browser. Free, no signup." />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
 
     <link rel="stylesheet" href="css/style.css" />
@@ -73,40 +73,34 @@
             <div class="hero__content">
                 <div class="hero__badge">
                     <span class="hero__badge-dot"></span>
-                    Free AI-Powered Tool — No Signup Required
+                    Free Browser-Based Tool — No Signup Required
                 </div>
 
                 <h1 class="hero__title">
-                    Image <span class="gradient-text">Watermark</span> Remover
+                    <span class="gradient-text">Watermark</span> Remover
                 </h1>
 
                 <p class="hero__subtitle">
-                    Remove watermarks and repair covered faces, textures, and details with a single upload.
+                    Remove watermarks from images and videos — all processing happens in your browser.
                 </p>
 
                 <div class="hero__panel">
-                    <div class="hero__panel-preview">
-                        <div class="hero__panel-card">
-                            <div class="hero__panel-image">IMG</div>
-                            <div>
-                                <p class="hero__panel-label">Original</p>
-                                <p class="hero__panel-text">Upload your image with a watermark.</p>
-                            </div>
-                        </div>
-                        <div class="hero__panel-arrow">→</div>
-                        <div class="hero__panel-card">
-                            <div class="hero__panel-image hero__panel-image--accent">IMG</div>
-                            <div>
-                                <p class="hero__panel-label">Output</p>
-                                <p class="hero__panel-text">Get a clean, watermark-free version instantly.</p>
-                            </div>
-                        </div>
+                    <!-- Mode Toggle Tabs -->
+                    <div class="mode-tabs" id="modeTabs">
+                        <button class="mode-tabs__btn mode-tabs__btn--active" id="modeImage" data-mode="image">
+                            🖼️ Image
+                        </button>
+                        <button class="mode-tabs__btn" id="modeVideo" data-mode="video">
+                            🎬 Video
+                            <span class="mode-tabs__badge">New</span>
+                        </button>
                     </div>
 
+                    <!-- Image Upload Zone -->
                     <div class="upload" id="uploadArea">
                         <div class="upload__zone" id="uploadZone">
                             <div class="upload__icon">📤</div>
-                            <h2 class="upload__title">Choose Files</h2>
+                            <h2 class="upload__title">Choose Images</h2>
                             <p class="upload__subtitle">Or drag and drop files here</p>
                             <button class="upload__btn" id="uploadBtn" type="button">
                                 Upload Image
@@ -120,12 +114,41 @@
                                 <span class="upload__format-tag">JPEG</span>
                                 <span class="upload__format-tag">PNG</span>
                                 <span class="upload__format-tag">WEBP</span>
+                                <span class="upload__format-tag">HEIC*</span>
                             </div>
-                            <input type="file" class="upload__input" id="fileInput" aria-label="Choose image file" accept="image/jpeg,image/jpg,image/png,image/webp" />
+                            <input type="file" class="upload__input" id="fileInput" aria-label="Choose image files" accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple />
                         </div>
                         <p class="upload__consent">
-                            By uploading, you agree to our <a href="#">Terms of Use</a> and <a href="#">Privacy Policy</a>.
+                            Images are processed in your browser. HEIC works when your browser can decode it.
                         </p>
+                    </div>
+
+                    <!-- Video Upload Zone (hidden by default) -->
+                    <div class="upload upload--video" id="videoUploadArea" style="display: none;">
+                        <div class="upload__zone" id="videoUploadZone">
+                            <div class="upload__icon">🎬</div>
+                            <h2 class="upload__title">Choose Video</h2>
+                            <p class="upload__subtitle">Or drag and drop video here</p>
+                            <button class="upload__btn" id="videoUploadBtn" type="button">
+                                Upload Video
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
+                            <div class="upload__formats">
+                                <span>Supported:</span>
+                                <span class="upload__format-tag">MP4</span>
+                                <span class="upload__format-tag">WEBM</span>
+                                <span class="upload__format-tag">MOV</span>
+                            </div>
+                            <input type="file" class="upload__input" id="videoFileInput" aria-label="Choose video file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" />
+                        </div>
+                        <p class="upload__consent">
+                            Videos are processed frame-by-frame in your browser. Requires Chrome 94+ or Edge 94+.
+                        </p>
+                        <div class="video-compat" id="videoCompat" style="display: none;">
+                            <p class="video-compat__msg">⚠️ Your browser does not support WebCodecs API. Please use Chrome 94+ or Edge 94+.</p>
+                        </div>
                     </div>
                 </div>
 
@@ -133,7 +156,7 @@
                 <div class="processing" id="processingState">
                     <div class="processing__spinner"></div>
                     <h3 class="processing__title">Removing watermark...</h3>
-                    <p class="processing__subtitle">Our AI is analyzing and processing your image</p>
+                    <p class="processing__subtitle">Your browser is repairing the image locally</p>
                     <div class="progress-bar">
                         <div class="progress-bar__fill" id="progressFill"></div>
                     </div>
@@ -144,6 +167,7 @@
                     <div class="result__header">
                         <h3 class="result__title">✅ Watermark Removed!</h3>
                         <p class="result__subtitle">Drag the slider to compare before and after</p>
+                        <p class="result__engine" id="resultEngine"></p>
                     </div>
                     <div class="result__comparison" id="resultComparison">
                         <img class="result__image result__image--before" id="resultBefore" alt="Original image with watermark" />
@@ -160,10 +184,42 @@
                         <button class="btn btn--primary btn--large" id="downloadBtn">
                             ⬇️ Download Image
                         </button>
+                        <button class="btn btn--outline btn--large" id="downloadAllBtn">
+                            Download All
+                        </button>
                         <button class="btn btn--outline btn--large" id="touchUpBtn">
                             🖌️ Touch Up
                         </button>
                         <button class="btn btn--outline btn--large" id="resetBtn">
+                            🔄 Process Another
+                        </button>
+                    </div>
+                    <div class="result__batch" id="batchResults" aria-label="Processed images"></div>
+                </div>
+
+                <!-- Video Result State -->
+                <div class="result result--video" id="videoResultState">
+                    <div class="result__header">
+                        <h3 class="result__title">✅ Video Watermark Removed!</h3>
+                        <p class="result__subtitle" id="videoResultInfo">Processing complete</p>
+                    </div>
+                    <div class="result__video-comparison">
+                        <div class="result__video-pair">
+                            <div class="result__video-box">
+                                <p class="result__video-label">Before</p>
+                                <video class="result__video-player" id="videoOriginal" controls muted></video>
+                            </div>
+                            <div class="result__video-box">
+                                <p class="result__video-label">After</p>
+                                <video class="result__video-player" id="videoProcessed" controls muted></video>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="result__actions">
+                        <button class="btn btn--primary btn--large" id="videoDownloadBtn">
+                            ⬇️ Download Video
+                        </button>
+                        <button class="btn btn--outline btn--large" id="videoResetBtn">
                             🔄 Process Another
                         </button>
                     </div>
@@ -179,7 +235,7 @@
                 <div class="section-header__label">⚡ Simple Process</div>
                 <h2 class="section-header__title">How It Works</h2>
                 <p class="section-header__subtitle">
-                    Remove watermarks in three simple steps. No technical skills needed — our AI handles everything automatically.
+                    Remove watermarks in three simple steps. No technical skills needed — the repair runs locally in your browser.
                 </p>
             </div>
 
@@ -193,9 +249,9 @@
                 </div>
                 <div class="step reveal reveal-delay-2">
                     <div class="step__number">🤖</div>
-                    <h3 class="step__title">AI Processing</h3>
+                    <h3 class="step__title">Local Repair</h3>
                     <p class="step__desc">
-                        Our AI analyzes and detects the watermark, then intelligently removes it while preserving image quality.
+                        The browser detects watermark-colored regions and inpaints them while preserving image quality.
                     </p>
                 </div>
                 <div class="step reveal reveal-delay-3">
@@ -216,7 +272,7 @@
                 <div class="section-header__label">🎯 See the Difference</div>
                 <h2 class="section-header__title">Before & After</h2>
                 <p class="section-header__subtitle">
-                    Drag the slider to see the watermark removal in action. Our AI preserves every detail of the original image.
+                    Drag the slider to see the watermark removal in action and check the repaired details.
                 </p>
             </div>
 
@@ -240,7 +296,7 @@
                 <div class="section-header__label">🚀 Why Choose Us</div>
                 <h2 class="section-header__title">Powerful Features</h2>
                 <p class="section-header__subtitle">
-                    Everything you need to remove watermarks efficiently, powered by advanced AI technology.
+                    Everything you need to remove watermarks efficiently, using free browser-based repair.
                 </p>
             </div>
 
@@ -261,9 +317,9 @@
                 </div>
                 <div class="feature-card reveal reveal-delay-3" id="feature3">
                     <div class="feature-card__icon">🤖</div>
-                    <h3 class="feature-card__title">AI-Powered</h3>
+                    <h3 class="feature-card__title">Browser Repair</h3>
                     <p class="feature-card__desc">
-                        Advanced artificial intelligence detects and removes watermarks intelligently, preserving image details.
+                        Local detection and inpainting remove visible watermark marks without paid API calls.
                     </p>
                 </div>
                 <div class="feature-card reveal reveal-delay-1" id="feature4">
@@ -284,7 +340,7 @@
                     <div class="feature-card__icon">✨</div>
                     <h3 class="feature-card__title">High Quality Output</h3>
                     <p class="feature-card__desc">
-                        Preserve original image resolution and quality. Our AI ensures the output looks natural and professional.
+                        Preserve original image resolution and quality with browser-side inpainting and manual touch up.
                     </p>
                 </div>
             </div>
@@ -417,7 +473,7 @@
                     </button>
                     <div class="faq__answer">
                         <div class="faq__answer-inner">
-                            A watermark remover is a tool that removes overlays, text, or logos from digital photos. Our AI-powered tool detects watermark regions and intelligently fills them with surrounding pixel data, restoring the original image appearance.
+                            A watermark remover is a tool that removes overlays, text, or logos from digital photos. This free browser tool detects watermark regions and fills them with surrounding pixel data to improve the image appearance.
                         </div>
                     </div>
                 </div>
@@ -459,7 +515,7 @@
                     </button>
                     <div class="faq__answer">
                         <div class="faq__answer-inner">
-                            Our AI-powered tool analyzes your image to detect watermark regions. It then uses advanced inpainting algorithms to reconstruct the pixels underneath the watermark, effectively removing it while preserving the surrounding image quality. The entire process takes just a few seconds.
+                            The browser analyzes your image to detect watermark regions, then uses inpainting algorithms to reconstruct pixels under the watermark while preserving surrounding image quality. The entire process takes just a few seconds.
                         </div>
                     </div>
                 </div>
@@ -504,7 +560,7 @@
             </a>
 
             <p class="footer__desc">
-                Remove watermarks from your images using our AI technology. Get your images watermark-free instantly, without signup or subscription.
+                Remove watermarks from your images using free browser-based repair. Get your images watermark-free instantly, without signup or subscription.
             </p>
 
             <div class="footer__links">
@@ -540,6 +596,9 @@
         </div>
     </footer>
 
-    <script src="js/app.js?v=5"></script>
+    <!-- Video processing dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
+    <script src="js/video-processor.js?v=1"></script>
+    <script src="js/app.js?v=6"></script>
 </body>
 </html>

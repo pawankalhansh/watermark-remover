@@ -1,78 +1,82 @@
-# ✨ Watermark Remover
+# Watermark Remover
 
-A premium AI-powered watermark removal tool built with vanilla HTML, CSS, and JavaScript. Remove watermarks from images instantly — all processing happens client-side in your browser.
+A free browser-based watermark removal tool built with vanilla HTML, CSS, JavaScript, Canvas, and OpenCV.js. It runs locally in the browser, so no paid API key is required for the normal app flow.
 
-![Watermark Remover](https://img.shields.io/badge/AI-Powered-F9D423?style=for-the-badge)
 ![Free](https://img.shields.io/badge/100%25-Free-4ADE80?style=for-the-badge)
 ![No Signup](https://img.shields.io/badge/No-Signup-FF4E50?style=for-the-badge)
+![Browser Based](https://img.shields.io/badge/Browser-Based-F9D423?style=for-the-badge)
 
-## 🚀 Features
+## Features
 
-- **🤖 AI-Powered Removal** — Intelligent watermark detection and inpainting
-- **🆓 100% Free** — No hidden fees, no subscriptions
-- **🔒 Privacy First** — All processing happens in your browser
-- **📤 Drag & Drop** — Simply drag your image to upload
-- **🖼️ Multiple Formats** — Support for JPG, PNG, and WEBP
-- **📱 Responsive** — Works beautifully on all devices
-- **⚡ Instant Results** — Get your clean image in seconds
-- **🔄 Before/After** — Interactive comparison slider
+- Free browser repair with no paid API calls
+- Local watermark detection and inpainting
+- Privacy first: images stay in the browser
+- Drag and drop upload
+- Batch image processing
+- Download single images or all processed images
+- Manual touch-up brush for difficult areas
+- Before/after comparison slider
+- Supports JPG, PNG, WEBP, and browser-supported HEIC/HEIF
 
-## 🛠️ Tech Stack
+## Tech Stack
 
-- **HTML5** — Semantic structure with full SEO
-- **CSS3** — Custom properties, gradients, glassmorphism, animations
-- **JavaScript** — Canvas API, IntersectionObserver, drag & drop
-- **Google Fonts** — Inter typeface
-- **No frameworks** — Pure vanilla web technologies
+- HTML5
+- CSS3
+- JavaScript
+- Canvas API
+- OpenCV.js
+- Node.js static server
 
-## 📁 Project Structure
+## Project Structure
 
-```
+```text
 watermark-remover/
-├── index.html              # Main page
-├── css/
-│   └── style.css           # Design system & styles
-├── js/
-│   └── app.js              # Application logic
-├── assets/
-│   └── images/             # Demo images
-│       ├── demo-before.png
-│       └── demo-after.png
-└── README.md               # This file
+|-- index.html
+|-- css/
+|   `-- style.css
+|-- js/
+|   `-- app.js
+|-- assets/
+|   `-- images/
+|-- server.js
+|-- package.json
+`-- README.md
 ```
 
-## 🚀 Getting Started
+## Run Locally
 
-### Local Development
+No OpenAI key is needed for the free browser mode.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/watermark-remover.git
-   ```
+```bash
+npm start
+```
 
-2. Open `index.html` in your browser, or use a local server:
-   ```bash
-   npx serve .
-   ```
+Then open:
 
-### Deploy to GitHub Pages
+```text
+http://localhost:8765
+```
 
-1. Push the code to your GitHub repository
-2. Go to **Settings** → **Pages**
-3. Under **Source**, select **Deploy from a branch**
-4. Choose `main` branch and `/ (root)` folder
-5. Click **Save** — your site will be live at `https://YOUR_USERNAME.github.io/watermark-remover/`
+If the browser shows an old result, press `Ctrl+F5`, click `Process Another`, and upload the image again.
 
-## 📝 How It Works
+## Optional Cloud Repair
 
-1. **Upload** — Drag & drop or click to upload your watermarked image
-2. **Process** — AI analyzes and removes watermarks using Canvas inpainting
-3. **Download** — Preview with before/after slider, then download the result
+The project still contains an optional OpenAI image repair endpoint in `server.js`, but the frontend is set to free browser mode by default:
 
-## ⚠️ Disclaimer
+```js
+const USE_CLOUD_AI = false;
+```
 
-This tool is intended for removing watermarks from images you own or have rights to use. Please respect copyright and intellectual property laws. Do not use this tool to infringe on others' copyrights.
+Changing that to `true` requires a paid OpenAI API key with billing enabled. Free mode does not use it.
 
-## 📄 License
+## How It Works
 
-MIT License — feel free to use, modify, and distribute.
+1. Upload a watermarked image.
+2. The browser detects likely watermark-colored regions.
+3. OpenCV.js inpaints those regions.
+4. Use Touch Up for any remaining marks.
+5. Download the repaired image.
+
+## Disclaimer
+
+Use this tool only on images you own or have permission to edit. Respect copyright and intellectual property laws.

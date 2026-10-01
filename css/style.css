@@ -534,10 +534,11 @@ ul, ol {
    padding: 16px 40px;
  }
 
- .hero__panel .upload__btn {
+.hero__panel .upload__btn {
    background: var(--white);
    color: var(--bg-primary);
    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.12);
+}
 .hero__badge {
   display: inline-flex;
   align-items: center;
@@ -846,6 +847,7 @@ ul, ol {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 20px;
   font-size: 12px;
@@ -968,6 +970,12 @@ ul, ol {
   font-size: 14px;
 }
 
+.result__engine {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--white-50);
+}
+
 .result__comparison {
   position: relative;
   width: 100%;
@@ -1054,6 +1062,58 @@ ul, ol {
   gap: 16px;
   margin-top: 24px;
   flex-wrap: wrap;
+}
+
+#downloadAllBtn {
+  display: none;
+}
+
+.result__batch {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+  padding-bottom: 4px;
+  overflow-x: auto;
+}
+
+.result__batch-item {
+  min-width: 180px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--white-80);
+  text-align: left;
+}
+
+.result__batch-item.active {
+  border-color: rgba(249, 212, 35, 0.6);
+  background: rgba(249, 212, 35, 0.1);
+}
+
+.result__batch-item.error {
+  border-color: rgba(255, 78, 80, 0.35);
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.result__batch-name,
+.result__batch-status {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result__batch-name {
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+}
+
+.result__batch-status {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--white-50);
 }
 
 /* ============================================
@@ -1816,4 +1876,140 @@ ul, ol {
   }
 }
 
+/* ============================================
+   MODE TABS (Image / Video toggle)
+   ============================================ */
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 4px;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+}
 
+.mode-tabs__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 24px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--white-60);
+  font-family: var(--font-family);
+  font-size: 0.95rem;
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  transition: all 0.25s ease;
+  position: relative;
+}
+
+.mode-tabs__btn:hover {
+  color: var(--white-90);
+  background: var(--white-06);
+}
+
+.mode-tabs__btn--active {
+  color: var(--white);
+  background: var(--gradient-brand);
+  box-shadow: 0 2px 12px rgba(249, 212, 35, 0.25);
+}
+
+.mode-tabs__btn--active:hover {
+  background: var(--gradient-brand);
+}
+
+.mode-tabs__badge {
+  display: inline-block;
+  background: #FF4E50;
+  color: white;
+  font-size: 0.65rem;
+  font-weight: var(--fw-bold);
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1;
+}
+
+/* ============================================
+   VIDEO RESULT SECTION
+   ============================================ */
+.result--video {
+  display: none;
+}
+
+.result--video.active {
+  display: block;
+}
+
+.result__video-comparison {
+  margin: 1.5rem 0;
+}
+
+.result__video-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.result__video-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  padding: 0.5rem;
+}
+
+.result__video-label {
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: var(--fw-semibold);
+  color: var(--white-70);
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.result__video-player {
+  width: 100%;
+  border-radius: 8px;
+  background: #000;
+  max-height: 400px;
+}
+
+/* ============================================
+   VIDEO COMPATIBILITY WARNING
+   ============================================ */
+.video-compat {
+  margin-top: 1rem;
+}
+
+.video-compat__msg {
+  background: rgba(255, 78, 80, 0.1);
+  border: 1px solid rgba(255, 78, 80, 0.3);
+  border-radius: 10px;
+  padding: 12px 16px;
+  color: #FF6B6B;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* ============================================
+   VIDEO RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+  .result__video-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-tabs__btn {
+    padding: 8px 16px;
+    font-size: 0.85rem;
+  }
+}

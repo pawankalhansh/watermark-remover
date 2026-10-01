@@ -1,0 +1,12 @@
+{
+  "name": "watermark-remover",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Free browser-based watermark repair UI with an optional cloud backend.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
