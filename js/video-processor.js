@@ -234,13 +234,8 @@
             
             this.encoder.configure(config);
 
-            // Muxer setup for video track
-            this.outVideoTrackId = this.muxer.addTrack({
-                timescale: this.videoTrack.timescale,
-                width: config.width,
-                height: config.height,
-                avcDecoderConfigRecord: null // Will be set by muxer or needs manual generation based on encoder config
-            });
+            // Muxer setup for video track is deferred to _handleEncodedChunk when decoderConfig is available
+            this.outVideoTrackId = null;
             
             // Muxer setup for audio track (passthrough)
             if (this.audioTrack) {
@@ -469,7 +464,23 @@
          * Collects encoded chunks from VideoEncoder and queues them in MP4Box muxer.
          */
         _handleEncodedChunk(chunk, metadata) {
-            // Note: AVCC config metadata handling may be needed for some implementations
+            if (this.outVideoTrackId === null) {
+                // Initialize the video track using the decoder configuration from the first chunk
+                let avccParams = null;
+                if (metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
+                    avccParams = metadata.decoderConfig.description;
+                } else if (this.videoTrack && this.videoTrack.codec_private_data) {
+                    avccParams = this.videoTrack.codec_private_data; // fallback to original track AVCC
+                }
+
+                this.outVideoTrackId = this.muxer.addTrack({
+                    timescale: this.videoTrack.timescale,
+                    width: this.videoTrack.track_width || this.videoTrack.width,
+                    height: this.videoTrack.track_height || this.videoTrack.height,
+                    avcDecoderConfigRecord: avccParams
+                });
+            }
+
             const buffer = new ArrayBuffer(chunk.byteLength);
             chunk.copyTo(buffer);
             
