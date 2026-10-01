@@ -5,6 +5,8 @@
  * Upload MP4 → Demux (mp4box.js) → Decode frames (WebCodecs VideoDecoder) → 
  * Per-frame watermark detection & removal (GeminiEngine Reverse Alpha Blending) → 
  * Re-encode (WebCodecs VideoEncoder) → Mux with original audio (mp4box.js) → Download clean MP4.
+ *
+ * Includes an automatic fallback to HTMLVideoElement + MediaRecorder for WebM, MOV, and non-standard containers.
  */
 (function(global) {
     'use strict';
@@ -74,23 +76,17 @@
                     phase,
                     current,
                     total,
-                    percent
+                    percent: Math.min(100, Math.max(0, percent))
                 });
             }
         }
 
         /**
          * Main entry point to process a video file.
-         * @param {File} file The input video file (MP4/WEBM)
+         * @param {File} file The input video file (MP4/WEBM/MOV)
          * @returns {Promise<Blob>} A promise that resolves with the cleaned video blob.
          */
         async processVideo(file) {
-            if (!VideoWatermarkRemover.isSupported()) {
-                const err = new Error('WebCodecs or MP4Box is not supported in this browser. Please use Chrome 94+ or Edge 94+.');
-                if (this.options.onError) this.options.onError(err);
-                throw err;
-            }
-
             this.isCancelled = false;
             this.totalFrames = 0;
             this.processedFrames = 0;
@@ -98,36 +94,46 @@
             this.audioSamples = [];
             this.outVideoTrackId = null;
             this.outAudioTrackId = null;
-            this.muxer = MP4Box.createFile();
 
-            try {
-                this._reportProgress('demuxing', 0, 0, 0);
-                await this._demux(file);
-                
-                if (this.isCancelled) throw new Error('Cancelled');
-                if (!this.videoTrack) throw new Error('No video track found in the input file.');
-                
-                this.totalFrames = this.videoSamples.length;
-                this._reportProgress('processing', 0, this.totalFrames, 0);
-                
-                await this._setupEncodingMuxing();
-                if (this.isCancelled) throw new Error('Cancelled');
-                
-                await this._decodeAndProcess();
-                if (this.isCancelled) throw new Error('Cancelled');
-                
-                const finalBlob = await this._finalizeMuxing();
-                if (this.options.onComplete) {
-                    this.options.onComplete(finalBlob);
+            // Check if native WebCodecs + MP4Box can be used
+            const isMp4 = file.type === 'video/mp4' || file.name.toLowerCase().endsWith('.mp4');
+
+            if (VideoWatermarkRemover.isSupported() && isMp4) {
+                try {
+                    this.muxer = MP4Box.createFile();
+                    this._reportProgress('demuxing', 0, 0, 0);
+                    await this._demux(file);
+                    
+                    if (this.isCancelled) throw new Error('Cancelled');
+                    if (!this.videoTrack) throw new Error('No video track found in the input file.');
+                    
+                    this.totalFrames = this.videoSamples.length;
+                    this._reportProgress('processing', 0, this.totalFrames, 0);
+                    
+                    await this._setupEncodingMuxing();
+                    if (this.isCancelled) throw new Error('Cancelled');
+                    
+                    await this._decodeAndProcess();
+                    if (this.isCancelled) throw new Error('Cancelled');
+                    
+                    const finalBlob = await this._finalizeMuxing();
+                    if (this.options.onComplete) {
+                        this.options.onComplete(finalBlob);
+                    }
+                    
+                    return finalBlob;
+                } catch (err) {
+                    if (this.isCancelled) throw err;
+                    console.warn('[VideoProcessor] MP4Box/WebCodecs pipeline failed, falling back to video element decoder:', err);
+                    this._cleanup();
+                    // Fall back to universal video playback pipeline
+                    return await this._processViaVideoElement(file);
+                } finally {
+                    this._cleanup();
                 }
-                
-                return finalBlob;
-            } catch (err) {
-                this._cleanup();
-                if (this.options.onError) this.options.onError(err);
-                throw err;
-            } finally {
-                this._cleanup();
+            } else {
+                // Non-MP4 video format or WebCodecs unsupported: run universal playback pipeline
+                return await this._processViaVideoElement(file);
             }
         }
 
@@ -161,57 +167,119 @@
                 const mp4boxfile = MP4Box.createFile();
                 this.demuxer = mp4boxfile;
                 
-                mp4boxfile.onError = (e) => reject(new Error('MP4Box parse error: ' + e));
-                
-                mp4boxfile.onReady = (info) => {
-                    info.tracks.forEach(track => {
-                        if (track.video && !this.videoTrack) {
-                            this.videoTrack = track;
-                            mp4boxfile.setExtractionOptions(track.id, null, { nbSamples: Infinity });
-                        } else if (track.audio && !this.audioTrack) {
-                            this.audioTrack = track;
-                            mp4boxfile.setExtractionOptions(track.id, null, { nbSamples: Infinity });
+                let isResolved = false;
+                let expectedExtractions = 0;
+                let extractionFinishedCount = 0;
+
+                const finishDemux = () => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        if (!this.videoTrack || this.videoSamples.length === 0) {
+                            reject(new Error('No video frames could be extracted from this MP4 file.'));
+                        } else {
+                            resolve();
                         }
-                    });
-                    
-                    mp4boxfile.start();
+                    }
                 };
                 
-                let extractionCount = 0;
-                let expectedExtractions = 0;
+                mp4boxfile.onError = (e) => {
+                    console.error('[VideoProcessor] MP4Box error:', e);
+                    if (!isResolved) {
+                        isResolved = true;
+                        reject(new Error('MP4Box parse error: ' + (e?.message || e)));
+                    }
+                };
+
+                const checkComplete = () => {
+                    if (expectedExtractions > 0 && extractionFinishedCount >= expectedExtractions) {
+                        finishDemux();
+                    }
+                };
+                
+                mp4boxfile.onReady = (info) => {
+                    // 1. Video track
+                    if (info.videoTracks && info.videoTracks.length > 0) {
+                        this.videoTrack = info.videoTracks[0];
+                    } else if (info.tracks) {
+                        this.videoTrack = info.tracks.find(t => t.video || t.type === 'video');
+                    }
+
+                    // 2. Audio track (optional)
+                    if (info.audioTracks && info.audioTracks.length > 0) {
+                        this.audioTrack = info.audioTracks[0];
+                    } else if (info.tracks) {
+                        this.audioTrack = info.tracks.find(t => t.audio || t.type === 'audio');
+                    }
+
+                    if (!this.videoTrack) {
+                        if (!isResolved) {
+                            isResolved = true;
+                            reject(new Error('No video track found in input file.'));
+                        }
+                        return;
+                    }
+
+                    expectedExtractions = 1 + (this.audioTrack ? 1 : 0);
+                    
+                    // Request sample extraction in standard chunks of 1000
+                    mp4boxfile.setExtractionOptions(this.videoTrack.id, null, { nbSamples: 1000 });
+                    if (this.audioTrack) {
+                        mp4boxfile.setExtractionOptions(this.audioTrack.id, null, { nbSamples: 1000 });
+                    }
+
+                    mp4boxfile.start();
+                    checkComplete();
+                };
                 
                 mp4boxfile.onSamples = (id, user, samples) => {
                     if (this.videoTrack && id === this.videoTrack.id) {
-                        this.videoSamples = samples;
-                        extractionCount++;
+                        this.videoSamples.push(...samples);
+                        if (this.videoTrack.nb_samples && this.videoSamples.length >= this.videoTrack.nb_samples) {
+                            extractionFinishedCount++;
+                        }
                     } else if (this.audioTrack && id === this.audioTrack.id) {
-                        this.audioSamples = samples;
-                        extractionCount++;
+                        this.audioSamples.push(...samples);
+                        if (this.audioTrack.nb_samples && this.audioSamples.length >= this.audioTrack.nb_samples) {
+                            extractionFinishedCount++;
+                        }
                     }
                     
-                    if (expectedExtractions > 0 && extractionCount >= expectedExtractions) {
-                        resolve();
-                    }
+                    checkComplete();
                 };
                 
                 const reader = new FileReader();
                 reader.onload = (e) => {
-                    const buffer = e.target.result;
-                    buffer.fileStart = 0;
-                    
-                    const originalOnReady = mp4boxfile.onReady;
-                    mp4boxfile.onReady = (info) => {
-                        originalOnReady(info);
-                        expectedExtractions = (this.videoTrack ? 1 : 0) + (this.audioTrack ? 1 : 0);
-                        if (expectedExtractions === 0) {
-                            reject(new Error('No media tracks found in video'));
+                    try {
+                        const buffer = e.target.result;
+                        buffer.fileStart = 0;
+                        mp4boxfile.appendBuffer(buffer);
+                        mp4boxfile.flush();
+                        
+                        // If all samples were already extracted or flush completed
+                        if (this.videoSamples.length > 0) {
+                            finishDemux();
+                        } else {
+                            setTimeout(() => {
+                                if (this.videoSamples.length > 0) {
+                                    finishDemux();
+                                } else if (!isResolved) {
+                                    finishDemux();
+                                }
+                            }, 350);
                         }
-                    };
-
-                    mp4boxfile.appendBuffer(buffer);
-                    mp4boxfile.flush();
+                    } catch (parseErr) {
+                        if (!isResolved) {
+                            isResolved = true;
+                            reject(parseErr);
+                        }
+                    }
                 };
-                reader.onerror = () => reject(new Error('File read error'));
+                reader.onerror = () => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        reject(new Error('File read error'));
+                    }
+                };
                 reader.readAsArrayBuffer(file);
             });
         }
@@ -221,7 +289,7 @@
          * Ensures Video Track is Track 1 and Audio Track is Track 2.
          */
         async _setupEncodingMuxing() {
-            const codecString = this.videoTrack.codec || 'avc1.42E01E';
+            let codecString = this.videoTrack.codec || 'avc1.42E01E';
             this.videoAvcc = this._extractAvcc(this.videoTrack.id);
 
             const durationSec = (this.videoTrack.duration / this.videoTrack.timescale) || 1;
@@ -230,6 +298,11 @@
 
             const width = this.videoTrack.track_width || this.videoTrack.video?.width || this.videoTrack.width || 1280;
             const height = this.videoTrack.track_height || this.videoTrack.video?.height || this.videoTrack.height || 720;
+
+            // Normalize codec string for VideoEncoder
+            if (!codecString.startsWith('avc1')) {
+                codecString = 'avc1.4d002a';
+            }
 
             // Configure VideoEncoder
             const encoderInit = {
@@ -246,10 +319,21 @@
                 codec: codecString,
                 width: width,
                 height: height,
-                bitrate: this.videoTrack.bitrate || 3000000,
+                bitrate: this.videoTrack.bitrate || 3500000,
                 framerate: this.videoFramerate,
                 avc: { format: 'avc' }
             };
+
+            if (typeof VideoEncoder.isConfigSupported === 'function') {
+                try {
+                    const support = await VideoEncoder.isConfigSupported(encoderConfig);
+                    if (!support || !support.supported) {
+                        encoderConfig.codec = 'avc1.42001f';
+                    }
+                } catch (supErr) {
+                    console.warn('[VideoProcessor] isConfigSupported check warning:', supErr);
+                }
+            }
             
             this.encoder.configure(encoderConfig);
 
@@ -264,7 +348,9 @@
 
             // Add Track 2: AUDIO (if present)
             if (this.audioTrack) {
-                const audioCodec = this.audioTrack.codec.split('.')[0] === 'mp4a' ? 'mp4a' : this.audioTrack.codec;
+                const audioCodec = (this.audioTrack.codec && this.audioTrack.codec.split('.')[0] === 'mp4a') 
+                    ? 'mp4a' 
+                    : (this.audioTrack.codec || 'mp4a');
                 this.outAudioTrackId = this.muxer.addTrack({
                     type: audioCodec,
                     timescale: this.audioTrack.timescale || 44100,
@@ -316,7 +402,11 @@
                                 }
                             }
 
-                            const cleanFrame = new VideoFrame(cleanCanvas, { timestamp, duration });
+                            const frameInit = { timestamp };
+                            if (typeof duration === 'number' && duration > 0) {
+                                frameInit.duration = Math.round(duration);
+                            }
+                            const cleanFrame = new VideoFrame(cleanCanvas, frameInit);
                             const isKey = (this.processedFrames % 30 === 0);
                             this.encoder.encode(cleanFrame, { keyFrame: isKey });
                             cleanFrame.close();
@@ -419,7 +509,7 @@
             const buffer = new ArrayBuffer(chunk.byteLength);
             chunk.copyTo(buffer);
             
-            const timescale = this.videoTrack.timescale || 90000;
+            const timescale = this.videoTrack?.timescale || 90000;
             const dts = Math.floor((chunk.timestamp / 1000000) * timescale);
             const duration = chunk.duration 
                 ? Math.floor((chunk.duration / 1000000) * timescale) 
@@ -460,11 +550,18 @@
                     this.muxer.flush();
                     this.muxer.onReady = null; 
                     
-                    const stream = new DataStream();
-                    stream.endianness = DataStream.BIG_ENDIAN;
-                    this.muxer.write(stream);
-                    
-                    const resultBuffer = stream.buffer.slice(0, stream.position);
+                    let resultBuffer = null;
+                    try {
+                        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+                        this.muxer.write(stream);
+                        resultBuffer = stream.buffer.slice(0, stream.position);
+                    } catch (streamErr) {
+                        try {
+                            resultBuffer = this.muxer.getBuffer();
+                        } catch (bufErr) {
+                            console.error('[VideoProcessor] Mux serialization error:', streamErr, bufErr);
+                        }
+                    }
                     
                     if (resultBuffer && resultBuffer.byteLength > 1000) {
                         const blob = new Blob([resultBuffer], { type: 'video/mp4' });
@@ -476,6 +573,122 @@
                     console.error("[VideoProcessor] Muxer serialization error:", e);
                     reject(e);
                 }
+            });
+        }
+
+        /**
+         * Universal fallback pipeline using HTMLVideoElement and MediaRecorder.
+         * Handles WebM, MOV, QuickTime, and any MP4 that fails demuxing.
+         */
+        async _processViaVideoElement(file) {
+            return new Promise(async (resolve, reject) => {
+                this._reportProgress('demuxing', 0, 0, 10);
+                
+                const videoUrl = URL.createObjectURL(file);
+                const video = document.createElement('video');
+                video.muted = true;
+                video.playsInline = true;
+                video.preload = 'auto';
+                video.src = videoUrl;
+
+                const cleanup = () => {
+                    URL.revokeObjectURL(videoUrl);
+                    video.src = '';
+                    video.load();
+                };
+
+                video.onerror = () => {
+                    cleanup();
+                    reject(new Error('Failed to load video in browser player.'));
+                };
+
+                await new Promise((res, rej) => {
+                    video.onloadedmetadata = res;
+                    video.onerror = rej;
+                });
+
+                const width = video.videoWidth || 1280;
+                const height = video.videoHeight || 720;
+                const duration = video.duration || 1;
+                const fps = 30;
+                const totalFrames = Math.max(1, Math.round(duration * fps));
+                this.totalFrames = totalFrames;
+                this.processedFrames = 0;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+                const stream = canvas.captureStream(fps);
+                
+                let mimeType = 'video/webm';
+                if (typeof MediaRecorder !== 'undefined') {
+                    if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
+                        mimeType = 'video/mp4;codecs=avc1';
+                    } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+                        mimeType = 'video/mp4';
+                    } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+                        mimeType = 'video/webm;codecs=vp9';
+                    } else if (MediaRecorder.isTypeSupported('video/webm')) {
+                        mimeType = 'video/webm';
+                    }
+                }
+
+                const chunks = [];
+                const recorder = new MediaRecorder(stream, { mimeType });
+                recorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) chunks.push(e.data);
+                };
+
+                recorder.onstop = () => {
+                    cleanup();
+                    const outputBlob = new Blob(chunks, { type: mimeType.split(';')[0] });
+                    resolve(outputBlob);
+                };
+
+                recorder.start(100);
+
+                // Step frame-by-frame
+                for (let f = 0; f < totalFrames; f++) {
+                    if (this.isCancelled) {
+                        recorder.stop();
+                        cleanup();
+                        reject(new Error('Cancelled'));
+                        return;
+                    }
+
+                    const targetTime = Math.min(duration, f / fps);
+                    video.currentTime = targetTime;
+                    await new Promise(r => {
+                        const onSeeked = () => {
+                            video.removeEventListener('seeked', onSeeked);
+                            r();
+                        };
+                        video.addEventListener('seeked', onSeeked);
+                    });
+
+                    ctx.drawImage(video, 0, 0, width, height);
+
+                    if (global.GeminiEngine && typeof global.GeminiEngine.processRenderableToCanvas === 'function') {
+                        try {
+                            const clean = await global.GeminiEngine.processRenderableToCanvas(canvas, { adaptiveMode: "always" });
+                            ctx.drawImage(clean, 0, 0);
+                        } catch (err) {
+                            console.warn('[VideoFallback] Clean frame error:', err);
+                        }
+                    }
+
+                    this.processedFrames++;
+                    this._reportProgress('processing', this.processedFrames, this.totalFrames);
+                    if (this.options.onFrameProcessed) {
+                        this.options.onFrameProcessed(this.processedFrames, this.totalFrames);
+                    }
+
+                    await new Promise(r => setTimeout(r, 10));
+                }
+
+                recorder.stop();
             });
         }
 
