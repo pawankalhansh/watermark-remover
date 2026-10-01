@@ -496,9 +496,9 @@
                 try {
                     this.muxer.onReady = null; 
                     
-                    // Use MP4Box's DataStream to properly serialize the ISO file
-                    const stream = new MP4Box.DataStream();
-                    stream.endianness = MP4Box.DataStream.BIG_ENDIAN;
+                    // Use the globally exposed DataStream to properly serialize the ISO file
+                    const stream = new DataStream();
+                    stream.endianness = DataStream.BIG_ENDIAN;
                     
                     // Write the muxed file into the stream
                     this.muxer.write(stream);
