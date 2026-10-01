@@ -1,9 +1,9 @@
 /**
- * VideoWatermarkRemover - Client-side video watermark removal using WebCodecs and OpenCV.js
+ * VideoWatermarkRemover - Client-side video watermark removal using WebCodecs, MP4Box.js, and GeminiEngine
  *
  * Pipeline:
  * Upload MP4 → Demux (mp4box.js) → Decode frames (WebCodecs VideoDecoder) → 
- * Per-frame watermark detection & inpainting (OpenCV.js) → 
+ * Per-frame watermark detection & removal (GeminiEngine Reverse Alpha Blending) → 
  * Re-encode (WebCodecs VideoEncoder) → Mux with original audio (mp4box.js) → Download clean MP4.
  */
 (function(global) {
@@ -28,14 +28,16 @@
             
             this.videoTrack = null;
             this.audioTrack = null;
+            this.videoAvcc = null;
+            
+            this.outVideoTrackId = null;
+            this.outAudioTrackId = null;
             
             this.totalFrames = 0;
             this.processedFrames = 0;
             
             this.videoSamples = [];
             this.audioSamples = [];
-            
-            this.outputChunks = [];
         }
 
         /**
@@ -45,8 +47,7 @@
         static isSupported() {
             return typeof VideoDecoder !== 'undefined' && 
                    typeof VideoEncoder !== 'undefined' && 
-                   typeof MP4Box !== 'undefined' &&
-                   typeof cv !== 'undefined';
+                   typeof MP4Box !== 'undefined';
         }
 
         /**
@@ -85,7 +86,7 @@
          */
         async processVideo(file) {
             if (!VideoWatermarkRemover.isSupported()) {
-                const err = new Error('Required APIs (WebCodecs, MP4Box, OpenCV) are not supported in this environment.');
+                const err = new Error('WebCodecs or MP4Box is not supported in this browser. Please use Chrome 94+ or Edge 94+.');
                 if (this.options.onError) this.options.onError(err);
                 throw err;
             }
@@ -95,7 +96,8 @@
             this.processedFrames = 0;
             this.videoSamples = [];
             this.audioSamples = [];
-            this.outputChunks = [];
+            this.outVideoTrackId = null;
+            this.outAudioTrackId = null;
             this.muxer = MP4Box.createFile();
 
             try {
@@ -103,24 +105,18 @@
                 await this._demux(file);
                 
                 if (this.isCancelled) throw new Error('Cancelled');
-                
-                if (!this.videoTrack) {
-                    throw new Error('No video track found in the file.');
-                }
+                if (!this.videoTrack) throw new Error('No video track found in the input file.');
                 
                 this.totalFrames = this.videoSamples.length;
                 this._reportProgress('processing', 0, this.totalFrames, 0);
                 
                 await this._setupEncodingMuxing();
-                
                 if (this.isCancelled) throw new Error('Cancelled');
                 
                 await this._decodeAndProcess();
-                
                 if (this.isCancelled) throw new Error('Cancelled');
                 
                 const finalBlob = await this._finalizeMuxing();
-                
                 if (this.options.onComplete) {
                     this.options.onComplete(finalBlob);
                 }
@@ -128,13 +124,33 @@
                 return finalBlob;
             } catch (err) {
                 this._cleanup();
-                if (this.options.onError) {
-                    this.options.onError(err);
-                }
+                if (this.options.onError) this.options.onError(err);
                 throw err;
             } finally {
                 this._cleanup();
             }
+        }
+
+        /**
+         * Extracts AVCDecoderConfigurationRecord / avcC buffer from demuxed track.
+         */
+        _extractAvcc(trackId) {
+            try {
+                const trak = this.demuxer.getTrackById(trackId);
+                if (!trak || !trak.mdia?.minf?.stbl?.stsd?.entries) return null;
+                for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+                    const box = entry.avcC || entry.hvcC || entry.vpcC;
+                    if (box) {
+                        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+                        box.write(stream);
+                        // Slice off the 8-byte box header [4-byte size + 4-byte box type]
+                        return new Uint8Array(stream.buffer.slice(8, stream.position));
+                    }
+                }
+            } catch (e) {
+                console.warn('[VideoProcessor] Could not extract avcC box:', e);
+            }
+            return null;
         }
 
         /**
@@ -145,7 +161,7 @@
                 const mp4boxfile = MP4Box.createFile();
                 this.demuxer = mp4boxfile;
                 
-                mp4boxfile.onError = (e) => reject(new Error('MP4Box error: ' + e));
+                mp4boxfile.onError = (e) => reject(new Error('MP4Box parse error: ' + e));
                 
                 mp4boxfile.onReady = (info) => {
                     info.tracks.forEach(track => {
@@ -173,7 +189,7 @@
                         extractionCount++;
                     }
                     
-                    if (extractionCount >= expectedExtractions) {
+                    if (expectedExtractions > 0 && extractionCount >= expectedExtractions) {
                         resolve();
                     }
                 };
@@ -182,18 +198,13 @@
                 reader.onload = (e) => {
                     const buffer = e.target.result;
                     buffer.fileStart = 0;
-                    expectedExtractions = (this.videoTrack ? 1 : 0) + (this.audioTrack ? 1 : 0);
-                    // Determine how many tracks we expect extractions for
-                    // Need to wait until onReady figures out the tracks before setting expectedExtractions properly
-                    // Actually, onReady sets up the extractions and calls start(), then onSamples is called.
                     
-                    // Hook into onReady to set expected extractions
                     const originalOnReady = mp4boxfile.onReady;
                     mp4boxfile.onReady = (info) => {
                         originalOnReady(info);
                         expectedExtractions = (this.videoTrack ? 1 : 0) + (this.audioTrack ? 1 : 0);
                         if (expectedExtractions === 0) {
-                            reject(new Error('No media tracks found'));
+                            reject(new Error('No media tracks found in video'));
                         }
                     };
 
@@ -206,303 +217,213 @@
         }
 
         /**
-         * Sets up WebCodecs VideoEncoder and MP4Box.js muxing structures.
+         * Sets up WebCodecs VideoEncoder and creates MP4Box tracks.
+         * Ensures Video Track is Track 1 and Audio Track is Track 2.
          */
         async _setupEncodingMuxing() {
-            // Note: In a real implementation, you would need to parse the AVCC/HEVC configuration from the demuxed track
-            // and pass it to the decoder. Here we assume generic h264 for simplicity.
             const codecString = this.videoTrack.codec || 'avc1.42E01E';
-            
-            // Set up encoder
-            const init = {
+            this.videoAvcc = this._extractAvcc(this.videoTrack.id);
+
+            const durationSec = (this.videoTrack.duration / this.videoTrack.timescale) || 1;
+            const calculatedFps = Math.round(this.videoTrack.nb_samples / durationSec) || 30;
+            this.videoFramerate = Math.max(1, Math.min(60, calculatedFps));
+
+            const width = this.videoTrack.track_width || this.videoTrack.video?.width || this.videoTrack.width || 1280;
+            const height = this.videoTrack.track_height || this.videoTrack.video?.height || this.videoTrack.height || 720;
+
+            // Configure VideoEncoder
+            const encoderInit = {
                 output: (chunk, metadata) => {
                     this._handleEncodedChunk(chunk, metadata);
                 },
                 error: (e) => {
-                    console.error('Encoder error:', e);
+                    console.error('[VideoProcessor] VideoEncoder error:', e);
                 }
             };
             
-            this.encoder = new VideoEncoder(init);
-            const config = {
+            this.encoder = new VideoEncoder(encoderInit);
+            const encoderConfig = {
                 codec: codecString,
-                width: this.videoTrack.track_width || this.videoTrack.width,
-                height: this.videoTrack.track_height || this.videoTrack.height,
-                bitrate: this.videoTrack.bitrate || 2000000,
-                framerate: this.videoTrack.nb_samples / (this.videoTrack.duration / this.videoTrack.timescale) || 30,
+                width: width,
+                height: height,
+                bitrate: this.videoTrack.bitrate || 3000000,
+                framerate: this.videoFramerate,
                 avc: { format: 'avc' }
             };
             
-            this.encoder.configure(config);
+            this.encoder.configure(encoderConfig);
 
-            // Muxer setup for video track is deferred to _handleEncodedChunk when decoderConfig is available
-            this.outVideoTrackId = null;
-            
-            // Muxer setup for audio track (passthrough)
+            // Add Track 1: VIDEO
+            this.outVideoTrackId = this.muxer.addTrack({
+                type: 'avc1',
+                timescale: this.videoTrack.timescale || 90000,
+                width: width,
+                height: height,
+                avcDecoderConfigRecord: this.videoAvcc ? this.videoAvcc.buffer : null
+            });
+
+            // Add Track 2: AUDIO (if present)
             if (this.audioTrack) {
-                // In a robust implementation, extract audio codec config and set it up here.
-                // For simplicity, we assume we can copy properties.
+                const audioCodec = this.audioTrack.codec.split('.')[0] === 'mp4a' ? 'mp4a' : this.audioTrack.codec;
                 this.outAudioTrackId = this.muxer.addTrack({
-                    type: this.audioTrack.codec.split('.')[0] === 'mp4a' ? 'mp4a' : this.audioTrack.codec, // simplify
-                    timescale: this.audioTrack.timescale,
-                    samplerate: this.audioTrack.audio.sample_rate,
-                    channel_count: this.audioTrack.audio.channel_count
+                    type: audioCodec,
+                    timescale: this.audioTrack.timescale || 44100,
+                    samplerate: this.audioTrack.audio?.sample_rate || 44100,
+                    channel_count: this.audioTrack.audio?.channel_count || 2
                 });
-                
-                // Add original audio samples
-                for (const sample of this.audioSamples) {
-                    // Ensure sample.data is passed as a pure ArrayBuffer
-                    const buffer = sample.data.buffer.slice(
-                        sample.data.byteOffset, 
-                        sample.data.byteOffset + sample.data.byteLength
-                    );
-                    this.muxer.addSample(this.outAudioTrackId, buffer, {
-                        dts: sample.dts,
-                        cts: sample.cts,
-                        duration: sample.duration,
-                        is_sync: sample.is_sync
-                    });
-                }
             }
         }
 
         /**
-         * Decodes video samples, processes them with OpenCV, and feeds them to the encoder.
+         * Decodes video samples sequentially, applies GeminiEngine Reverse Alpha Blending,
+         * feeds cleaned frames to VideoEncoder, and waits for all frames to finish.
          */
         async _decodeAndProcess() {
             return new Promise((resolve, reject) => {
-                let pendingFrames = 0;
-                let sampleIndex = 0;
-                let decodeDone = false;
-                
-                const processNextFrame = async (frame) => {
-                    if (this.isCancelled) {
-                        frame.close();
-                        reject(new Error('Cancelled'));
-                        return;
-                    }
-                    
-                    try {
-                        const canvas = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
-                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                        ctx.drawImage(frame, 0, 0);
-                        
-                        const processedFrame = await this._removeWatermark(canvas, frame.timestamp, frame.duration);
-                        
-                        this.encoder.encode(processedFrame, { keyFrame: sampleIndex % 30 === 0 });
-                        processedFrame.close();
-                        frame.close();
-                        
-                        this.processedFrames++;
-                        this._reportProgress('processing', this.processedFrames, this.totalFrames);
-                        
-                        if (this.options.onFrameProcessed) {
-                            this.options.onFrameProcessed(this.processedFrames, this.totalFrames);
+                let frameQueue = [];
+                let isDecodingDone = false;
+                let isProcessingQueue = false;
+
+                const processQueue = async () => {
+                    if (isProcessingQueue) return;
+                    isProcessingQueue = true;
+
+                    while (frameQueue.length > 0) {
+                        if (this.isCancelled) {
+                            frameQueue.forEach(f => f.close());
+                            frameQueue = [];
+                            isProcessingQueue = false;
+                            reject(new Error('Cancelled'));
+                            return;
                         }
-                        
-                        pendingFrames--;
-                        pump();
-                    } catch (e) {
-                        frame.close();
+
+                        const frame = frameQueue.shift();
+                        try {
+                            const canvas = new OffscreenCanvas(frame.displayWidth, frame.displayHeight);
+                            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                            ctx.drawImage(frame, 0, 0);
+
+                            const timestamp = frame.timestamp;
+                            const duration = frame.duration;
+                            frame.close(); // Close raw frame immediately to preserve GPU memory
+
+                            let cleanCanvas = canvas;
+                            if (global.GeminiEngine && typeof global.GeminiEngine.processRenderableToCanvas === 'function') {
+                                try {
+                                    cleanCanvas = await global.GeminiEngine.processRenderableToCanvas(canvas, { adaptiveMode: "always" });
+                                } catch (cleanErr) {
+                                    console.warn('[VideoProcessor] GeminiEngine frame process error:', cleanErr);
+                                }
+                            }
+
+                            const cleanFrame = new VideoFrame(cleanCanvas, { timestamp, duration });
+                            const isKey = (this.processedFrames % 30 === 0);
+                            this.encoder.encode(cleanFrame, { keyFrame: isKey });
+                            cleanFrame.close();
+
+                            this.processedFrames++;
+                            this._reportProgress('processing', this.processedFrames, this.totalFrames);
+                            if (this.options.onFrameProcessed) {
+                                this.options.onFrameProcessed(this.processedFrames, this.totalFrames);
+                            }
+                        } catch (frameErr) {
+                            console.error('[VideoProcessor] Frame handling error:', frameErr);
+                        }
+                    }
+
+                    isProcessingQueue = false;
+
+                    // If decoder is flushed and all frames in queue have finished encoding
+                    if (isDecodingDone && frameQueue.length === 0) {
+                        try {
+                            await this.encoder.flush();
+                            resolve();
+                        } catch (flushErr) {
+                            reject(flushErr);
+                        }
+                    }
+                };
+
+                const decoderInit = {
+                    output: (frame) => {
+                        frameQueue.push(frame);
+                        processQueue();
+                    },
+                    error: (e) => {
+                        console.error('[VideoProcessor] VideoDecoder error:', e);
                         reject(e);
                     }
                 };
 
-                const init = {
-                    output: (frame) => {
-                        pendingFrames++;
-                        // Use requestAnimationFrame or setTimeout to avoid blocking
-                        setTimeout(() => processNextFrame(frame), 0);
-                    },
-                    error: (e) => reject(e)
-                };
-                
-                this.decoder = new VideoDecoder(init);
-                // Note: Provide description (AVCC/HEVC) for successful decoding
-                // Assuming mp4box provides valid codec string and description buffer isn't strictly required for all H264,
-                // but usually it is. In practice, extract `avcC` from track.mdia.minf.stbl.stsd...
-                const config = {
+                this.decoder = new VideoDecoder(decoderInit);
+
+                const decoderConfig = {
                     codec: this.videoTrack.codec || 'avc1.42E01E'
                 };
-                
-                // Try extracting AVC configuration record from mp4box track info if available
-                if (this.videoTrack.codec_private_data) {
-                    config.description = this.videoTrack.codec_private_data;
-                }
-                
-                try {
-                    this.decoder.configure(config);
-                } catch(e) {
-                    console.warn("Decoder configuration failed, trying without description", e);
-                    // fallback config if description is invalid
+                if (this.videoAvcc) {
+                    decoderConfig.description = this.videoAvcc;
                 }
 
-                const pump = async () => {
-                    if (this.isCancelled) return;
-                    
-                    // Don't flood the decoder
-                    if (pendingFrames > 5) return;
-                    
-                    if (sampleIndex >= this.videoSamples.length) {
-                        if (!decodeDone) {
-                            decodeDone = true;
-                            await this.decoder.flush();
-                            await this.encoder.flush();
-                            resolve();
-                        }
-                        return;
-                    }
-                    
-                    const sample = this.videoSamples[sampleIndex++];
-                    const chunk = new EncodedVideoChunk({
-                        type: sample.is_sync ? 'key' : 'delta',
-                        timestamp: (sample.cts * 1000000) / sample.timescale,
-                        duration: (sample.duration * 1000000) / sample.timescale,
-                        data: sample.data
-                    });
-                    
+                try {
+                    this.decoder.configure(decoderConfig);
+                } catch (configErr) {
+                    console.warn('[VideoProcessor] Decoder configure with avcC failed, trying fallback:', configErr);
+                    delete decoderConfig.description;
+                    this.decoder.configure(decoderConfig);
+                }
+
+                // Feed samples into decoder
+                (async () => {
                     try {
-                        this.decoder.decode(chunk);
-                    } catch(e) {
-                        console.error("Decode error", e);
+                        for (let i = 0; i < this.videoSamples.length; i++) {
+                            if (this.isCancelled) return;
+
+                            const sample = this.videoSamples[i];
+                            const chunk = new EncodedVideoChunk({
+                                type: sample.is_sync ? 'key' : 'delta',
+                                timestamp: (sample.cts * 1000000) / sample.timescale,
+                                duration: (sample.duration * 1000000) / sample.timescale,
+                                data: sample.data
+                            });
+
+                            this.decoder.decode(chunk);
+
+                            // Control queue pressure if decoding much faster than processing
+                            if (frameQueue.length > 8) {
+                                await new Promise(r => setTimeout(r, 20));
+                            }
+                        }
+
+                        await this.decoder.flush();
+                        isDecodingDone = true;
+                        processQueue();
+                    } catch (decodeLoopErr) {
+                        reject(decodeLoopErr);
                     }
-                    
-                    pump();
-                };
-                
-                pump();
+                })();
             });
         }
 
         /**
-         * Detects and removes watermark on a single frame using GeminiEngine (Reverse Alpha Blending)
-         * with fallback to OpenCV.js
-         */
-        async _removeWatermark(canvas, timestamp, duration) {
-            // First attempt to use the authentic Reverse Alpha Blending engine
-            if (global.GeminiEngine && typeof global.GeminiEngine.processRenderableToCanvas === 'function') {
-                try {
-                    const cleanedCanvas = await global.GeminiEngine.processRenderableToCanvas(canvas, { adaptiveMode: "always" });
-                    return new VideoFrame(cleanedCanvas, { timestamp, duration });
-                } catch (err) {
-                    console.warn("[VideoProcessor] GeminiEngine frame process fallback to OpenCV:", err);
-                }
-            }
-
-            const ctx = canvas.getContext('2d');
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            
-            let src = null;
-            let srcRGB = null;
-            let blurredRGB = null;
-            let mask = null;
-            let dst = null;
-            
-            try {
-                src = cv.matFromImageData(imgData);
-                srcRGB = new cv.Mat();
-                cv.cvtColor(src, srcRGB, cv.COLOR_RGBA2RGB);
-                
-                blurredRGB = new cv.Mat();
-                cv.GaussianBlur(srcRGB, blurredRGB, new cv.Size(21, 21), 0);
-                
-                mask = new cv.Mat.zeros(srcRGB.rows, srcRGB.cols, cv.CV_8UC1);
-                
-                const RED_THRESHOLD = 12;
-                const BLUE_THRESHOLD = 12;
-                const WHITE_THRESHOLD = 6;
-                const WHITE_SAT_MAX = 0.18;
-                
-                const srcData = srcRGB.data;
-                const blurData = blurredRGB.data;
-                const maskData = mask.data;
-                
-                for (let i = 0; i < srcRGB.rows * srcRGB.cols; i++) {
-                    const idx = i * 3;
-                    const r = srcData[idx];
-                    const g = srcData[idx + 1];
-                    const b = srcData[idx + 2];
-                    
-                    const br = blurData[idx];
-                    const bg = blurData[idx + 1];
-                    const bb = blurData[idx + 2];
-                    
-                    // Color deviation
-                    const redExcess = (r - br) - 0.5 * ((g - bg) + (b - bb));
-                    const blueExcess = (b - bb) - 0.5 * ((r - br) + (g - bg));
-                    
-                    // White check
-                    const maxCh = Math.max(r, g, b);
-                    const minCh = Math.min(r, g, b);
-                    const lum = (maxCh + minCh) / 2;
-                    const bMaxCh = Math.max(br, bg, bb);
-                    const bMinCh = Math.min(br, bg, bb);
-                    const bLum = (bMaxCh + bMinCh) / 2;
-                    
-                    let saturation = 0;
-                    if (maxCh > 0) {
-                        saturation = (maxCh - minCh) / maxCh;
-                    }
-                    
-                    const isRed = redExcess > RED_THRESHOLD;
-                    const isBlue = blueExcess > BLUE_THRESHOLD;
-                    const isWhite = Math.abs(lum - bLum) > WHITE_THRESHOLD && saturation < WHITE_SAT_MAX;
-                    
-                    if (isRed || isBlue || isWhite) {
-                        maskData[i] = 255;
-                    }
-                }
-
-                dst = new cv.Mat();
-                cv.inpaint(srcRGB, mask, dst, 5, cv.INPAINT_TELEA);
-                
-                // Copy back to canvas
-                const outRgba = new cv.Mat();
-                cv.cvtColor(dst, outRgba, cv.COLOR_RGB2RGBA);
-                const outImgData = new ImageData(new Uint8ClampedArray(outRgba.data), canvas.width, canvas.height);
-                ctx.putImageData(outImgData, 0, 0);
-                
-                outRgba.delete();
-                
-                return new VideoFrame(canvas, { timestamp, duration });
-            } finally {
-                if (src) src.delete();
-                if (srcRGB) srcRGB.delete();
-                if (blurredRGB) blurredRGB.delete();
-                if (mask) mask.delete();
-                if (dst) dst.delete();
-            }
-        }
-
-        /**
-         * Collects encoded chunks from VideoEncoder and queues them in MP4Box muxer.
+         * Collects encoded chunks from VideoEncoder and queues them into MP4Box muxer.
          */
         _handleEncodedChunk(chunk, metadata) {
-            if (this.outVideoTrackId === null) {
-                // Initialize the video track using the decoder configuration from the first chunk
-                let avccParams = null;
-                if (metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
-                    avccParams = metadata.decoderConfig.description;
-                } else if (this.videoTrack && this.videoTrack.codec_private_data) {
-                    avccParams = this.videoTrack.codec_private_data; // fallback to original track AVCC
+            // Update avcDecoderConfigRecord on video track if available from first keyframe metadata
+            if (metadata && metadata.decoderConfig && metadata.decoderConfig.description) {
+                const trak = this.muxer.getTrackById(this.outVideoTrackId);
+                if (trak && (!trak.mdia?.minf?.stbl?.stsd?.entries[0]?.avcC)) {
+                    trak.avcDecoderConfigRecord = metadata.decoderConfig.description;
                 }
-
-                this.outVideoTrackId = this.muxer.addTrack({
-                    type: 'avc1',
-                    timescale: this.videoTrack.timescale,
-                    width: this.videoTrack.track_width || this.videoTrack.width,
-                    height: this.videoTrack.track_height || this.videoTrack.height,
-                    avcDecoderConfigRecord: avccParams
-                });
             }
 
             const buffer = new ArrayBuffer(chunk.byteLength);
             chunk.copyTo(buffer);
             
-            // Re-scale timestamp from microsecs to timescale (usually 90000 or similar from input)
-            const timescale = this.videoTrack.timescale;
+            const timescale = this.videoTrack.timescale || 90000;
             const dts = Math.floor((chunk.timestamp / 1000000) * timescale);
-            const duration = chunk.duration ? Math.floor((chunk.duration / 1000000) * timescale) : Math.floor(timescale / 30);
+            const duration = chunk.duration 
+                ? Math.floor((chunk.duration / 1000000) * timescale) 
+                : Math.floor(timescale / (this.videoFramerate || 30));
             
             this.muxer.addSample(this.outVideoTrackId, buffer, {
                 dts: dts,
@@ -513,41 +434,53 @@
         }
 
         /**
-         * Finalizes the MP4Box file and creates a Blob.
+         * Muxes original audio samples, flushes the container, and produces the final MP4 Blob.
          */
         _finalizeMuxing() {
             return new Promise((resolve, reject) => {
                 this._reportProgress('muxing', 0, 0, 0);
                 
                 try {
-                    this.muxer.flush(); // ensure all boxes (like moov) are properly finalized
+                    // Add original audio samples to Track 2
+                    if (this.audioTrack && this.outAudioTrackId && this.audioSamples.length > 0) {
+                        for (const sample of this.audioSamples) {
+                            const buffer = sample.data.buffer.slice(
+                                sample.data.byteOffset, 
+                                sample.data.byteOffset + sample.data.byteLength
+                            );
+                            this.muxer.addSample(this.outAudioTrackId, buffer, {
+                                dts: sample.dts,
+                                cts: sample.cts,
+                                duration: sample.duration,
+                                is_sync: sample.is_sync
+                            });
+                        }
+                    }
+
+                    this.muxer.flush();
                     this.muxer.onReady = null; 
                     
-                    // Use the globally exposed DataStream to properly serialize the ISO file
                     const stream = new DataStream();
                     stream.endianness = DataStream.BIG_ENDIAN;
-                    
-                    // Write the muxed file into the stream
                     this.muxer.write(stream);
                     
-                    // Extract the final buffer
                     const resultBuffer = stream.buffer.slice(0, stream.position);
                     
-                    if (resultBuffer && resultBuffer.byteLength > 0) {
+                    if (resultBuffer && resultBuffer.byteLength > 1000) {
                         const blob = new Blob([resultBuffer], { type: 'video/mp4' });
                         resolve(blob);
                     } else {
-                        reject(new Error("Failed to write muxed MP4 file."));
+                        reject(new Error("Muxed MP4 output is empty or invalid."));
                     }
                 } catch(e) {
-                    console.error("Muxer save error", e);
+                    console.error("[VideoProcessor] Muxer serialization error:", e);
                     reject(e);
                 }
             });
         }
 
         /**
-         * Cleans up all resources.
+         * Cleans up all decoder, encoder, and demuxer resources.
          */
         _cleanup() {
             if (this.decoder && this.decoder.state !== 'closed') {
