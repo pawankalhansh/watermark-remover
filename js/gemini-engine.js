@@ -1,0 +1,18361 @@
+(function(global) {
+  // src/core/canvasBlob.js
+  async function canvasToBlob(canvas, type = "image/png", {
+    unavailableMessage = "Canvas blob export API is unavailable",
+    nullBlobMessage = "Failed to encode image blob"
+  } = {}) {
+    if (typeof canvas?.convertToBlob === "function") {
+      return await canvas.convertToBlob({ type });
+    }
+    if (typeof canvas?.toBlob === "function") {
+      return await new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error(nullBlobMessage));
+          }
+        }, type);
+      });
+    }
+    throw new Error(unavailableMessage);
+  }
+
+  // src/core/watermarkDecisionPolicy.js
+  var STANDARD_DIRECT_MATCH_MIN_SPATIAL_SCORE = 0.3;
+  var STANDARD_DIRECT_MATCH_MIN_GRADIENT_SCORE = 0.12;
+  var STANDARD_STRONG_GRADIENT_DIRECT_MATCH_MIN_SPATIAL_SCORE = 0.295;
+  var STANDARD_STRONG_GRADIENT_DIRECT_MATCH_MIN_GRADIENT_SCORE = 0.45;
+  var ADAPTIVE_DIRECT_MATCH_MIN_CONFIDENCE = 0.5;
+  var ADAPTIVE_DIRECT_MATCH_MIN_SPATIAL_SCORE = 0.45;
+  var ADAPTIVE_DIRECT_MATCH_MIN_GRADIENT_SCORE = 0.12;
+  var ADAPTIVE_DIRECT_MATCH_MIN_SIZE = 40;
+  var ADAPTIVE_DIRECT_MATCH_MAX_SIZE = 192;
+  var ATTRIBUTION_MIN_SIZE = 24;
+  var ATTRIBUTION_MAX_SIZE = 192;
+  var ATTRIBUTION_MAX_RESIDUAL_SCORE = 0.2;
+  var ATTRIBUTION_MIN_SUPPRESSION_GAIN = 0.25;
+  var ATTRIBUTION_MIN_SPATIAL_SCORE = 0.22;
+  var ATTRIBUTION_MIN_VALIDATED_SPATIAL_SCORE = 0.2;
+  var ATTRIBUTION_MIN_VALIDATED_SUPPRESSION_GAIN = 0.3;
+  var ATTRIBUTION_MIN_ADAPTIVE_CONFIDENCE = 0.35;
+  var ATTRIBUTION_MIN_ADAPTIVE_SUPPRESSION_GAIN = 0.16;
+  function toFiniteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function isPositionSized(position) {
+    const width = toFiniteNumber(position?.width);
+    const height = toFiniteNumber(position?.height);
+    return width !== null && height !== null;
+  }
+  function classifyStandardWatermarkSignal({ spatialScore, gradientScore }) {
+    const spatial = toFiniteNumber(spatialScore);
+    const gradient = toFiniteNumber(gradientScore);
+    if (spatial === null || gradient === null) {
+      return { tier: "insufficient" };
+    }
+    if (spatial >= STANDARD_DIRECT_MATCH_MIN_SPATIAL_SCORE && gradient >= STANDARD_DIRECT_MATCH_MIN_GRADIENT_SCORE || spatial >= STANDARD_STRONG_GRADIENT_DIRECT_MATCH_MIN_SPATIAL_SCORE && gradient >= STANDARD_STRONG_GRADIENT_DIRECT_MATCH_MIN_GRADIENT_SCORE) {
+      return { tier: "direct-match" };
+    }
+    if (spatial > 0 || gradient > 0) {
+      return { tier: "needs-validation" };
+    }
+    return { tier: "insufficient" };
+  }
+  function classifyAdaptiveWatermarkSignal(adaptiveResult) {
+    if (!adaptiveResult || adaptiveResult.found !== true) {
+      return { tier: "insufficient" };
+    }
+    const confidence = toFiniteNumber(adaptiveResult.confidence);
+    const spatial = toFiniteNumber(adaptiveResult.spatialScore);
+    const gradient = toFiniteNumber(adaptiveResult.gradientScore);
+    const size = toFiniteNumber(adaptiveResult?.region?.size);
+    if (confidence === null || spatial === null || gradient === null || size === null) {
+      return { tier: "insufficient" };
+    }
+    if (confidence >= ADAPTIVE_DIRECT_MATCH_MIN_CONFIDENCE && spatial >= ADAPTIVE_DIRECT_MATCH_MIN_SPATIAL_SCORE && gradient >= ADAPTIVE_DIRECT_MATCH_MIN_GRADIENT_SCORE && size >= ADAPTIVE_DIRECT_MATCH_MIN_SIZE && size <= ADAPTIVE_DIRECT_MATCH_MAX_SIZE) {
+      return { tier: "direct-match" };
+    }
+    if (size >= ADAPTIVE_DIRECT_MATCH_MIN_SIZE && size <= ADAPTIVE_DIRECT_MATCH_MAX_SIZE && gradient >= ADAPTIVE_DIRECT_MATCH_MIN_GRADIENT_SCORE && (confidence > 0 || spatial > 0)) {
+      return { tier: "needs-validation" };
+    }
+    return { tier: "insufficient" };
+  }
+  function classifyGeminiAttributionFromWatermarkMeta(watermarkMeta) {
+    if (!watermarkMeta || typeof watermarkMeta !== "object") {
+      return { tier: "insufficient" };
+    }
+    if (watermarkMeta.applied === false) {
+      return { tier: "insufficient" };
+    }
+    const size = toFiniteNumber(watermarkMeta.size);
+    if (size === null || size < ATTRIBUTION_MIN_SIZE || size > ATTRIBUTION_MAX_SIZE) {
+      return { tier: "insufficient" };
+    }
+    if (!isPositionSized(watermarkMeta.position)) {
+      return { tier: "insufficient" };
+    }
+    const detection = watermarkMeta.detection || {};
+    const adaptiveConfidence = toFiniteNumber(detection.adaptiveConfidence);
+    const originalSpatialScore = toFiniteNumber(detection.originalSpatialScore);
+    const processedSpatialScore = toFiniteNumber(detection.processedSpatialScore);
+    const suppressionGain = toFiniteNumber(detection.suppressionGain);
+    const source = typeof watermarkMeta.source === "string" ? watermarkMeta.source : "";
+    if (adaptiveConfidence !== null && suppressionGain !== null && adaptiveConfidence >= ATTRIBUTION_MIN_ADAPTIVE_CONFIDENCE && suppressionGain >= ATTRIBUTION_MIN_ADAPTIVE_SUPPRESSION_GAIN) {
+      return { tier: "adaptive-match" };
+    }
+    if (source.includes("validated") && originalSpatialScore !== null && processedSpatialScore !== null && suppressionGain !== null && originalSpatialScore >= ATTRIBUTION_MIN_VALIDATED_SPATIAL_SCORE && processedSpatialScore <= ATTRIBUTION_MAX_RESIDUAL_SCORE && suppressionGain >= ATTRIBUTION_MIN_VALIDATED_SUPPRESSION_GAIN) {
+      return { tier: "validated-match" };
+    }
+    if (originalSpatialScore !== null && processedSpatialScore !== null && suppressionGain !== null && originalSpatialScore >= ATTRIBUTION_MIN_SPATIAL_SCORE && processedSpatialScore <= ATTRIBUTION_MAX_RESIDUAL_SCORE && suppressionGain >= ATTRIBUTION_MIN_SUPPRESSION_GAIN) {
+      return { tier: "safe-removal" };
+    }
+    return { tier: "insufficient" };
+  }
+
+  // src/userscript/urlUtils.js
+  function isGoogleusercontentHost(hostname) {
+    return hostname === "googleusercontent.com" || hostname.endsWith(".googleusercontent.com");
+  }
+  function hasNativeDownloadTokenAtTail(pathname) {
+    return /=(?:d|d-I)$/i.test(String(pathname || ""));
+  }
+  function classifyGeminiAssetPath(pathname) {
+    if (typeof pathname !== "string" || pathname.length === 0) return null;
+    const firstSegment = pathname.split("/").filter(Boolean)[0] || "";
+    if (!firstSegment) return null;
+    if (firstSegment.startsWith("rd-")) {
+      const variant = firstSegment.slice(3);
+      return {
+        family: "rd",
+        variant: variant.endsWith("-dl") ? variant.slice(0, -3) : variant,
+        isPreview: false,
+        isDownload: variant.endsWith("-dl")
+      };
+    }
+    if (firstSegment === "gg") {
+      return {
+        family: "gg",
+        variant: "",
+        isPreview: true,
+        isDownload: false
+      };
+    }
+    if (!firstSegment.startsWith("gg-")) {
+      return null;
+    }
+    const ggVariant = firstSegment.slice(3);
+    const isDownload = ggVariant === "dl" || ggVariant.endsWith("-dl");
+    const normalizedVariant = isDownload ? ggVariant === "dl" ? "" : ggVariant.slice(0, -3) : ggVariant;
+    return {
+      family: "gg",
+      variant: normalizedVariant,
+      isPreview: !isDownload,
+      isDownload
+    };
+  }
+  function hasGeminiAssetPath(pathname) {
+    return classifyGeminiAssetPath(pathname) !== null;
+  }
+  function classifyGeminiAssetUrl(url) {
+    if (typeof url !== "string" || url.length === 0) return null;
+    try {
+      const parsed = new URL(url);
+      if (!isGoogleusercontentHost(parsed.hostname)) {
+        return null;
+      }
+      return classifyGeminiAssetPath(parsed.pathname);
+    } catch {
+      return null;
+    }
+  }
+  function isGeminiGeneratedAssetUrl(url) {
+    return classifyGeminiAssetUrl(url) !== null;
+  }
+  function isGeminiPreviewAssetUrl(url) {
+    return classifyGeminiAssetUrl(url)?.isPreview === true;
+  }
+  function isGeminiDisplayPreviewAssetUrl(url) {
+    if (typeof url !== "string" || url.length === 0) return false;
+    try {
+      const parsed = new URL(url);
+      if (!isGoogleusercontentHost(parsed.hostname)) {
+        return false;
+      }
+      const classification = classifyGeminiAssetPath(parsed.pathname);
+      if (!classification || classification.family !== "gg") {
+        return false;
+      }
+      if (classification.isPreview === true) {
+        return hasNativeDownloadTokenAtTail(parsed.pathname) === false;
+      }
+      if (hasNativeDownloadTokenAtTail(parsed.pathname)) {
+        return false;
+      }
+      return classification.isDownload === true && /-rj$/i.test(parsed.pathname) && hasNativeDownloadTokenAtTail(parsed.pathname) === false;
+    } catch {
+      return false;
+    }
+  }
+  function isGeminiOriginalAssetUrl(url) {
+    if (typeof url !== "string" || url.length === 0) return false;
+    try {
+      const parsed = new URL(url);
+      if (!isGoogleusercontentHost(parsed.hostname)) {
+        return false;
+      }
+      const classification = classifyGeminiAssetPath(parsed.pathname);
+      if (!classification) {
+        return false;
+      }
+      return classification.isPreview === false || hasNativeDownloadTokenAtTail(parsed.pathname);
+    } catch {
+      return false;
+    }
+  }
+  function normalizeGoogleusercontentImageUrl(url) {
+    if (!isGeminiGeneratedAssetUrl(url)) return url;
+    try {
+      const parsed = new URL(url);
+      if (!hasGeminiAssetPath(parsed.pathname)) {
+        return url;
+      }
+      const path = parsed.pathname;
+      const dimensionPairAtTail = /=w\d+-h\d+([^/]*)$/i;
+      if (dimensionPairAtTail.test(path)) {
+        parsed.pathname = path.replace(dimensionPairAtTail, "=s0$1");
+        return parsed.toString();
+      }
+      if (hasNativeDownloadTokenAtTail(path)) {
+        parsed.pathname = path.replace(/=(?:d|d-I)$/i, (match) => `=s0-${match.slice(1)}`);
+        return parsed.toString();
+      }
+      const sizeTransformAtTail = /=(?:s|w|h)\d+([^/]*)$/i;
+      if (sizeTransformAtTail.test(path)) {
+        parsed.pathname = path.replace(sizeTransformAtTail, "=s0$1");
+        return parsed.toString();
+      }
+      parsed.pathname = `${path}=s0`;
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
+
+  // src/shared/errorUtils.js
+  function stringifyErrorPayload(value) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  function normalizeErrorMessage(error, fallback = "Unknown error") {
+    if (error instanceof Error) {
+      return error.message || fallback;
+    }
+    if (typeof error === "string") {
+      return error.trim() || fallback;
+    }
+    if (error && typeof error === "object") {
+      if (typeof error.message === "string" && error.message.trim()) {
+        return error.message.trim();
+      }
+      if (typeof error.error === "string" && error.error.trim()) {
+        return error.error.trim();
+      }
+      const status = Number.isFinite(error.status) ? String(error.status) : "";
+      const statusText = typeof error.statusText === "string" ? error.statusText.trim() : "";
+      const combinedStatus = `${status} ${statusText}`.trim();
+      if (combinedStatus) {
+        return combinedStatus;
+      }
+      const serialized = stringifyErrorPayload(error);
+      if (serialized && serialized !== "{}") {
+        return serialized;
+      }
+    }
+    return fallback;
+  }
+
+  // src/shared/imageSessionStore.js
+  function normalizeAssetId(value, prefix) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    const trimmed = value.trim();
+    if (!trimmed.startsWith(prefix) || trimmed.length <= prefix.length) {
+      return "";
+    }
+    return trimmed;
+  }
+  function normalizeImageSessionAssetIds(assetIds = null) {
+    const normalized = {
+      responseId: normalizeAssetId(assetIds?.responseId, "r_"),
+      draftId: normalizeAssetId(assetIds?.draftId, "rc_"),
+      conversationId: normalizeAssetId(assetIds?.conversationId, "c_")
+    };
+    if (!normalized.responseId && !normalized.draftId && !normalized.conversationId) {
+      return null;
+    }
+    return normalized;
+  }
+  function buildImageSessionKey(assetIds = null) {
+    const normalizedAssetIds = normalizeImageSessionAssetIds(assetIds);
+    if (!normalizedAssetIds) {
+      return "";
+    }
+    if (normalizedAssetIds.draftId) {
+      return `draft:${normalizedAssetIds.draftId}`;
+    }
+    if (normalizedAssetIds.responseId && normalizedAssetIds.conversationId) {
+      return `response:${normalizedAssetIds.responseId}|conversation:${normalizedAssetIds.conversationId}`;
+    }
+    return "";
+  }
+  function createEmptySurfaceCollection() {
+    return {
+      preview: /* @__PURE__ */ new Set(),
+      fullscreen: /* @__PURE__ */ new Set(),
+      unknown: /* @__PURE__ */ new Set()
+    };
+  }
+  function createEmptyProcessedResourceRecord() {
+    return {
+      objectUrl: "",
+      blob: null,
+      blobType: "",
+      processedMeta: null,
+      processedFrom: ""
+    };
+  }
+  function createEmptyProcessedResourceSlots() {
+    return {
+      preview: createEmptyProcessedResourceRecord(),
+      full: createEmptyProcessedResourceRecord()
+    };
+  }
+  function createSessionRecord(sessionKey, assetIds, now = Date.now()) {
+    return {
+      sessionKey,
+      assetIds: normalizeImageSessionAssetIds(assetIds),
+      sources: {
+        originalUrl: "",
+        previewUrl: "",
+        currentBlobUrl: ""
+      },
+      derived: {
+        processedBlobUrl: "",
+        processedBlobType: "",
+        processedMeta: null,
+        processedFrom: "",
+        processedSlots: createEmptyProcessedResourceSlots()
+      },
+      state: {
+        preview: "idle",
+        fullscreen: "idle",
+        unknown: "idle",
+        lastError: ""
+      },
+      surfaces: createEmptySurfaceCollection(),
+      timestamps: {
+        createdAt: Number(now) || Date.now(),
+        updatedAt: Number(now) || Date.now(),
+        lastProcessedAt: 0
+      }
+    };
+  }
+  function touchSession(session, now = Date.now()) {
+    session.timestamps.updatedAt = Number(now) || Date.now();
+    return session;
+  }
+  function normalizeSurfaceType(surface = "") {
+    const normalizedSurface = typeof surface === "string" ? surface.trim().toLowerCase() : "";
+    if (normalizedSurface === "preview" || normalizedSurface === "fullscreen") {
+      return normalizedSurface;
+    }
+    return "unknown";
+  }
+  function normalizeProcessedResourceSlot(slot = "") {
+    const normalizedSlot = typeof slot === "string" ? slot.trim().toLowerCase() : "";
+    if (normalizedSlot === "full") {
+      return "full";
+    }
+    return "preview";
+  }
+  function readElementProcessedObjectUrl(element) {
+    const objectUrl = typeof element?.dataset?.gwrWatermarkObjectUrl === "string" ? element.dataset.gwrWatermarkObjectUrl.trim() : "";
+    return objectUrl || "";
+  }
+  function isUsableSurfaceElement(element) {
+    if (!element || typeof element !== "object") {
+      return false;
+    }
+    if ("isConnected" in element) {
+      return Boolean(element.isConnected);
+    }
+    return true;
+  }
+  function findPreferredSurfaceElement(elements, preferredProcessedUrl = "") {
+    let processedMatch = null;
+    let processedFallback = null;
+    let plainFallback = null;
+    for (const element of elements) {
+      if (!isUsableSurfaceElement(element)) {
+        continue;
+      }
+      const processedObjectUrl = readElementProcessedObjectUrl(element);
+      if (processedObjectUrl && preferredProcessedUrl && processedObjectUrl === preferredProcessedUrl) {
+        return element;
+      }
+      if (processedObjectUrl) {
+        processedFallback ||= element;
+        continue;
+      }
+      plainFallback ||= element;
+    }
+    processedMatch ||= processedFallback;
+    return processedMatch || plainFallback || null;
+  }
+  function readProcessedSlotResource(session, slot) {
+    const normalizedSlot = normalizeProcessedResourceSlot(slot);
+    const resource = session?.derived?.processedSlots?.[normalizedSlot] || null;
+    if (!resource?.objectUrl) {
+      return null;
+    }
+    return {
+      kind: "processed",
+      url: resource.objectUrl,
+      ...resource.blob ? { blob: resource.blob } : {},
+      mimeType: resource.blobType || "image/png",
+      processedMeta: resource.processedMeta,
+      source: resource.processedFrom || "processed",
+      slot: normalizedSlot
+    };
+  }
+  function syncLegacyProcessedFields(session) {
+    const previewResource = readProcessedSlotResource(session, "preview");
+    const fullResource = readProcessedSlotResource(session, "full");
+    const preferredResource = previewResource || fullResource;
+    session.derived.processedBlobUrl = preferredResource?.url || "";
+    session.derived.processedBlobType = preferredResource?.mimeType || "";
+    session.derived.processedMeta = preferredResource?.processedMeta ?? null;
+    session.derived.processedFrom = preferredResource?.source || "";
+  }
+  function buildOriginalResource(session) {
+    if (!session?.sources?.originalUrl) {
+      return null;
+    }
+    return {
+      kind: "original",
+      url: session.sources.originalUrl,
+      mimeType: "",
+      processedMeta: null,
+      source: "original"
+    };
+  }
+  function isFullQualityAction(action = "") {
+    return action === "clipboard" || action === "download";
+  }
+  function createImageSessionStore({
+    now = () => Date.now()
+  } = {}) {
+    const sessions = /* @__PURE__ */ new Map();
+    const elementBindings = /* @__PURE__ */ new WeakMap();
+    function getSession(sessionKey = "") {
+      if (!sessionKey) {
+        return null;
+      }
+      return sessions.get(sessionKey) || null;
+    }
+    function getOrCreateByAssetIds(assetIds = null) {
+      const normalizedAssetIds = normalizeImageSessionAssetIds(assetIds);
+      const sessionKey = buildImageSessionKey(normalizedAssetIds);
+      if (!sessionKey) {
+        return "";
+      }
+      let session = sessions.get(sessionKey);
+      if (!session) {
+        session = createSessionRecord(sessionKey, normalizedAssetIds, now());
+        sessions.set(sessionKey, session);
+        return sessionKey;
+      }
+      if (!session.assetIds) {
+        session.assetIds = normalizedAssetIds;
+      } else {
+        session.assetIds = {
+          responseId: session.assetIds.responseId || normalizedAssetIds.responseId,
+          draftId: session.assetIds.draftId || normalizedAssetIds.draftId,
+          conversationId: session.assetIds.conversationId || normalizedAssetIds.conversationId
+        };
+      }
+      touchSession(session, now());
+      return sessionKey;
+    }
+    function getByAssetIds(assetIds = null) {
+      const sessionKey = buildImageSessionKey(assetIds);
+      return sessionKey ? sessions.get(sessionKey) || null : null;
+    }
+    function attachElement(sessionKey, surface, element) {
+      const session = getSession(sessionKey);
+      if (!session || !element || typeof element !== "object") {
+        return false;
+      }
+      detachElement(element);
+      const normalizedSurface = normalizeSurfaceType(surface);
+      session.surfaces[normalizedSurface].add(element);
+      elementBindings.set(element, {
+        sessionKey,
+        surface: normalizedSurface
+      });
+      touchSession(session, now());
+      return true;
+    }
+    function detachElement(element) {
+      const binding = elementBindings.get(element);
+      if (!binding) {
+        return false;
+      }
+      const session = getSession(binding.sessionKey);
+      if (session) {
+        session.surfaces[binding.surface]?.delete(element);
+        touchSession(session, now());
+      }
+      elementBindings.delete(element);
+      return true;
+    }
+    function updateOriginalSource(sessionKey, sourceUrl = "") {
+      const session = getSession(sessionKey);
+      const normalizedUrl = typeof sourceUrl === "string" ? sourceUrl.trim() : "";
+      if (!session || !normalizedUrl) {
+        return false;
+      }
+      session.sources.originalUrl = normalizedUrl;
+      touchSession(session, now());
+      return true;
+    }
+    function updateSourceSnapshot(sessionKey, {
+      sourceUrl = "",
+      isPreviewSource = false
+    } = {}) {
+      const session = getSession(sessionKey);
+      const normalizedUrl = typeof sourceUrl === "string" ? sourceUrl.trim() : "";
+      if (!session || !normalizedUrl) {
+        return false;
+      }
+      if (normalizedUrl.startsWith("blob:") || normalizedUrl.startsWith("data:")) {
+        session.sources.currentBlobUrl = normalizedUrl;
+      } else if (isPreviewSource) {
+        session.sources.previewUrl = normalizedUrl;
+      } else {
+        session.sources.originalUrl ||= normalizedUrl;
+      }
+      touchSession(session, now());
+      return true;
+    }
+    function updateProcessedResult(sessionKey, {
+      slot = "preview",
+      objectUrl = "",
+      blob = null,
+      blobType = "",
+      processedMeta = null,
+      processedFrom = ""
+    } = {}) {
+      const session = getSession(sessionKey);
+      const normalizedObjectUrl = typeof objectUrl === "string" ? objectUrl.trim() : "";
+      if (!session || !normalizedObjectUrl) {
+        return false;
+      }
+      const normalizedSlot = normalizeProcessedResourceSlot(slot);
+      if (!session.derived.processedSlots) {
+        session.derived.processedSlots = createEmptyProcessedResourceSlots();
+      }
+      session.derived.processedSlots[normalizedSlot] = {
+        objectUrl: normalizedObjectUrl,
+        blob: blob instanceof Blob ? blob : null,
+        blobType: typeof blobType === "string" ? blobType.trim() : "",
+        processedMeta: processedMeta ?? null,
+        processedFrom: typeof processedFrom === "string" ? processedFrom.trim() : ""
+      };
+      syncLegacyProcessedFields(session);
+      const timestamp = Number(now()) || Date.now();
+      touchSession(session, timestamp);
+      session.timestamps.lastProcessedAt = timestamp;
+      return true;
+    }
+    function markProcessing(sessionKey, surface, status, error = "") {
+      const session = getSession(sessionKey);
+      if (!session) {
+        return false;
+      }
+      const normalizedSurface = normalizeSurfaceType(surface);
+      session.state[normalizedSurface] = typeof status === "string" ? status : "idle";
+      session.state.lastError = typeof error === "string" ? error : "";
+      touchSession(session, now());
+      return true;
+    }
+    function getBestResource(sessionKey, action = "display") {
+      const session = getSession(sessionKey);
+      if (!session) {
+        return null;
+      }
+      const fullProcessedResource = readProcessedSlotResource(session, "full");
+      const previewProcessedResource = readProcessedSlotResource(session, "preview");
+      if (isFullQualityAction(action)) {
+        if (fullProcessedResource) {
+          return fullProcessedResource;
+        }
+        const originalResource2 = buildOriginalResource(session);
+        if (originalResource2) {
+          return originalResource2;
+        }
+      } else {
+        if (previewProcessedResource) {
+          return previewProcessedResource;
+        }
+        if (fullProcessedResource) {
+          return fullProcessedResource;
+        }
+      }
+      const originalResource = buildOriginalResource(session);
+      if (originalResource) {
+        return originalResource;
+      }
+      if (session.sources.previewUrl) {
+        return {
+          kind: "preview",
+          url: session.sources.previewUrl,
+          mimeType: "",
+          processedMeta: null,
+          source: "preview"
+        };
+      }
+      if (session.sources.currentBlobUrl) {
+        return {
+          kind: "blob",
+          url: session.sources.currentBlobUrl,
+          mimeType: "",
+          processedMeta: null,
+          source: "blob"
+        };
+      }
+      return null;
+    }
+    function getPreferredElement(sessionKey, action = "display") {
+      const session = getSession(sessionKey);
+      if (!session) {
+        return null;
+      }
+      const preferredResource = getBestResource(sessionKey, action);
+      const preferredProcessedUrl = preferredResource?.kind === "processed" ? preferredResource.url || "" : "";
+      const orderedSurfaces = ["preview", "fullscreen", "unknown"];
+      for (const surface of orderedSurfaces) {
+        const preferredElement = findPreferredSurfaceElement(
+          session.surfaces?.[surface] || [],
+          preferredProcessedUrl
+        );
+        if (preferredElement) {
+          return preferredElement;
+        }
+      }
+      return null;
+    }
+    function getSnapshot(sessionKey) {
+      const session = getSession(sessionKey);
+      if (!session) {
+        return null;
+      }
+      return {
+        sessionKey: session.sessionKey,
+        assetIds: session.assetIds ? { ...session.assetIds } : null,
+        sources: { ...session.sources },
+        derived: {
+          ...session.derived,
+          processedSlots: {
+            preview: {
+              ...session.derived.processedSlots.preview,
+              blob: session.derived.processedSlots.preview.blob || null
+            },
+            full: {
+              ...session.derived.processedSlots.full,
+              blob: session.derived.processedSlots.full.blob || null
+            }
+          }
+        },
+        state: { ...session.state },
+        surfaces: {
+          previewCount: session.surfaces.preview.size,
+          fullscreenCount: session.surfaces.fullscreen.size,
+          unknownCount: session.surfaces.unknown.size
+        },
+        timestamps: { ...session.timestamps }
+      };
+    }
+    return {
+      buildSessionKey: buildImageSessionKey,
+      getOrCreateByAssetIds,
+      getByAssetIds,
+      getSnapshot,
+      getBestResource,
+      getPreferredElement,
+      attachElement,
+      detachElement,
+      updateOriginalSource,
+      updateSourceSnapshot,
+      updateProcessedResult,
+      markProcessing
+    };
+  }
+  var defaultImageSessionStore = createImageSessionStore();
+  function getDefaultImageSessionStore() {
+    return defaultImageSessionStore;
+  }
+
+  // src/shared/originalBlob.js
+  function shouldFetchBlobDirectly(sourceUrl) {
+    return typeof sourceUrl === "string" && (sourceUrl.startsWith("blob:") || sourceUrl.startsWith("data:"));
+  }
+  function isRuntimeBlobUrl(sourceUrl) {
+    return typeof sourceUrl === "string" && sourceUrl.startsWith("blob:");
+  }
+  function shouldPreferRenderedCapture(sourceUrl) {
+    return isGeminiPreviewAssetUrl(sourceUrl);
+  }
+  async function captureRenderedBlob({
+    image,
+    captureRenderedImageBlob
+  }) {
+    if (typeof captureRenderedImageBlob !== "function") {
+      throw new Error("Rendered capture unavailable");
+    }
+    return captureRenderedImageBlob(image);
+  }
+  async function acquireOriginalBlob({
+    sourceUrl,
+    image,
+    fetchBlobFromBackground: fetchBlobFromBackground2,
+    fetchBlobDirect: fetchBlobDirect2,
+    captureRenderedImageBlob,
+    validateBlob,
+    preferRenderedCaptureForPreview = true,
+    preferRenderedCaptureForBlobUrl = false,
+    allowRenderedCaptureFallbackOnValidationFailure = true
+  }) {
+    const normalizedSourceUrl = typeof sourceUrl === "string" ? sourceUrl.trim() : "";
+    if (preferRenderedCaptureForPreview && shouldPreferRenderedCapture(normalizedSourceUrl)) {
+      return captureRenderedBlob({
+        image,
+        captureRenderedImageBlob
+      });
+    }
+    if (preferRenderedCaptureForBlobUrl && isRuntimeBlobUrl(normalizedSourceUrl)) {
+      return captureRenderedBlob({
+        image,
+        captureRenderedImageBlob
+      });
+    }
+    if (isGeminiGeneratedAssetUrl(normalizedSourceUrl)) {
+      const blob = await fetchBlobFromBackground2(normalizedSourceUrl);
+      if (typeof validateBlob === "function") {
+        try {
+          await validateBlob(blob);
+        } catch (error) {
+          if (!allowRenderedCaptureFallbackOnValidationFailure) {
+            throw error;
+          }
+          return captureRenderedBlob({
+            image,
+            captureRenderedImageBlob
+          });
+        }
+      }
+      return blob;
+    }
+    if (shouldFetchBlobDirectly(normalizedSourceUrl)) {
+      return fetchBlobDirect2(normalizedSourceUrl);
+    }
+    return captureRenderedBlob({
+      image,
+      captureRenderedImageBlob
+    });
+  }
+
+  // src/shared/domAdapter.js
+  var GEMINI_IMAGE_CONTAINER_SELECTOR = "generated-image,.generated-image-container";
+  var GEMINI_FULLSCREEN_CONTAINER_SELECTOR = 'expansion-dialog,[role="dialog"],.image-expansion-dialog-panel,.cdk-overlay-pane';
+  var GEMINI_UPLOADER_PREVIEW_SELECTOR = '[data-test-id="image-preview"],uploader-file-preview,uploader-file-preview-container,.attachment-preview-wrapper,.file-preview-container';
+  var MIN_GEMINI_IMAGE_EDGE = 128;
+  var MAX_CONTAINER_SEARCH_DEPTH = 4;
+  var MIN_ACTION_BUTTONS = 3;
+  var GEMINI_DRAFT_ID_ATTRIBUTE = "data-test-draft-id";
+  function normalizeGeminiAssetId(value, prefix) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith(prefix) || trimmed.length <= prefix.length) {
+      return null;
+    }
+    return trimmed;
+  }
+  function parseGeminiAssetIdsFromJslog(jslog = "") {
+    if (typeof jslog !== "string" || jslog.length === 0) {
+      return null;
+    }
+    const responseId = normalizeGeminiAssetId(jslog.match(/"((?:r|resp)_[^"]+)"/)?.[1] || null, "r_");
+    const conversationId = normalizeGeminiAssetId(jslog.match(/"((?:c|conv)_[^"]+)"/)?.[1] || null, "c_");
+    const draftId = normalizeGeminiAssetId(jslog.match(/"((?:rc|draft)_[^"]+)"/)?.[1] || null, "rc_");
+    if (!responseId && !conversationId && !draftId) {
+      return null;
+    }
+    return {
+      responseId,
+      draftId,
+      conversationId
+    };
+  }
+  function getAttributeValue(element, attributeName) {
+    if (!element || typeof element.getAttribute !== "function") {
+      return "";
+    }
+    return String(element.getAttribute(attributeName) || "").trim();
+  }
+  function getClosestElement(element, selector) {
+    if (!element || typeof element.closest !== "function") {
+      return null;
+    }
+    return element.closest(selector);
+  }
+  function collectGeminiMetadataElements(img) {
+    const elements = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushElement = (element) => {
+      if (!element || typeof element !== "object" || seen.has(element)) return;
+      seen.add(element);
+      elements.push(element);
+    };
+    pushElement(img);
+    pushElement(getClosestElement(img, "single-image"));
+    pushElement(getClosestElement(img, `[${GEMINI_DRAFT_ID_ATTRIBUTE}]`));
+    pushElement(getClosestElement(img, GEMINI_IMAGE_CONTAINER_SELECTOR));
+    let current = img?.parentElement || null;
+    let depth = 0;
+    while (current && depth < MAX_CONTAINER_SEARCH_DEPTH) {
+      pushElement(current);
+      current = current.parentElement || null;
+      depth += 1;
+    }
+    return elements;
+  }
+  function getMediaEdgeSize(element) {
+    const naturalWidth = Number(element?.naturalWidth) || 0;
+    const naturalHeight = Number(element?.naturalHeight) || 0;
+    const width = Number(element?.width) || 0;
+    const height = Number(element?.height) || 0;
+    const clientWidth = Number(element?.clientWidth) || 0;
+    const clientHeight = Number(element?.clientHeight) || 0;
+    return {
+      width: Math.max(naturalWidth, width, clientWidth),
+      height: Math.max(naturalHeight, height, clientHeight)
+    };
+  }
+  function hasAnyGeminiAssetIds(assetIds) {
+    return Boolean(assetIds?.responseId || assetIds?.draftId || assetIds?.conversationId);
+  }
+  function isBlobOrDataImageSource(sourceUrl) {
+    return sourceUrl.startsWith("blob:") || sourceUrl.startsWith("data:");
+  }
+  function isInsideGeminiFullscreenContainer(img) {
+    return Boolean(getClosestElement(img, GEMINI_FULLSCREEN_CONTAINER_SELECTOR));
+  }
+  function isGeminiUploaderPreviewImage(img) {
+    return Boolean(getClosestElement(img, GEMINI_UPLOADER_PREVIEW_SELECTOR));
+  }
+  function resolveCandidateImageUrl(img) {
+    if (!img || typeof img !== "object") return "";
+    if (img?.dataset?.gwrPreviewImage === "true") return "";
+    const explicitSource = typeof img?.dataset?.gwrSourceUrl === "string" ? img.dataset.gwrSourceUrl.trim() : "";
+    if (explicitSource) return explicitSource;
+    const stableSource = typeof img?.dataset?.gwrStableSource === "string" ? img.dataset.gwrStableSource.trim() : "";
+    if (stableSource) {
+      const currentSrc2 = typeof img?.currentSrc === "string" ? img.currentSrc.trim() : "";
+      const src2 = typeof img?.src === "string" ? img.src.trim() : "";
+      if (currentSrc2.startsWith("blob:") || currentSrc2.startsWith("data:") || src2.startsWith("blob:") || src2.startsWith("data:")) {
+        return stableSource;
+      }
+    }
+    const currentSrc = typeof img?.currentSrc === "string" ? img.currentSrc.trim() : "";
+    if (currentSrc) return currentSrc;
+    const src = typeof img?.src === "string" ? img.src.trim() : "";
+    return src;
+  }
+  function isProcessableGeminiImageElement(img) {
+    if (!img || typeof img.closest !== "function") return false;
+    if (img?.dataset?.gwrPreviewImage === "true") return false;
+    if (isGeminiUploaderPreviewImage(img)) return false;
+    const knownContainer = img.closest(GEMINI_IMAGE_CONTAINER_SELECTOR);
+    const sourceUrl = resolveCandidateImageUrl(img);
+    if (isGeminiGeneratedAssetUrl(sourceUrl)) {
+      if (knownContainer) return true;
+      return hasMeaningfulGeminiImageSize(img);
+    }
+    if (knownContainer && isBlobOrDataImageSource(sourceUrl)) {
+      if (isInsideGeminiFullscreenContainer(img)) {
+        return true;
+      }
+      if (hasAnyGeminiAssetIds(extractGeminiImageAssetIds(img))) {
+        return true;
+      }
+    }
+    return shouldUseRenderedImageFallback(img);
+  }
+  function getGeminiImageContainerSelector() {
+    return GEMINI_IMAGE_CONTAINER_SELECTOR;
+  }
+  function getGeminiImageQuerySelector() {
+    return GEMINI_IMAGE_CONTAINER_SELECTOR.split(",").map((selector) => `${selector.trim()} img`).join(",");
+  }
+  function hasMeaningfulGeminiImageSize(img) {
+    const { width, height } = getMediaEdgeSize(img);
+    return width >= MIN_GEMINI_IMAGE_EDGE || height >= MIN_GEMINI_IMAGE_EDGE;
+  }
+  function getPreferredGeminiImageContainer(img) {
+    if (!img || typeof img !== "object") return null;
+    const knownContainer = typeof img.closest === "function" ? img.closest(GEMINI_IMAGE_CONTAINER_SELECTOR) : null;
+    if (knownContainer) return knownContainer;
+    let current = img.parentElement || null;
+    let depth = 0;
+    while (current && depth < MAX_CONTAINER_SEARCH_DEPTH) {
+      if (current.tagName && current.tagName !== "IMG") {
+        return current;
+      }
+      current = current.parentElement || null;
+      depth += 1;
+    }
+    return img.parentElement || null;
+  }
+  function extractGeminiImageAssetIds(img) {
+    const assetIds = {
+      responseId: null,
+      draftId: null,
+      conversationId: null
+    };
+    if (!img || typeof img !== "object") {
+      return assetIds;
+    }
+    const responseIdFromDataset = normalizeGeminiAssetId(
+      typeof img?.dataset?.gwrResponseId === "string" ? img.dataset.gwrResponseId : null,
+      "r_"
+    );
+    if (responseIdFromDataset) {
+      assetIds.responseId = responseIdFromDataset;
+    }
+    const draftIdFromDataset = normalizeGeminiAssetId(
+      typeof img?.dataset?.gwrDraftId === "string" ? img.dataset.gwrDraftId : null,
+      "rc_"
+    );
+    if (draftIdFromDataset) {
+      assetIds.draftId = draftIdFromDataset;
+    }
+    const conversationIdFromDataset = normalizeGeminiAssetId(
+      typeof img?.dataset?.gwrConversationId === "string" ? img.dataset.gwrConversationId : null,
+      "c_"
+    );
+    if (conversationIdFromDataset) {
+      assetIds.conversationId = conversationIdFromDataset;
+    }
+    for (const element of collectGeminiMetadataElements(img)) {
+      if (!assetIds.draftId) {
+        assetIds.draftId = normalizeGeminiAssetId(
+          getAttributeValue(element, GEMINI_DRAFT_ID_ATTRIBUTE),
+          "rc_"
+        );
+      }
+      const parsed = parseGeminiAssetIdsFromJslog(getAttributeValue(element, "jslog"));
+      if (!parsed) continue;
+      assetIds.responseId ||= parsed.responseId;
+      assetIds.draftId ||= parsed.draftId;
+      assetIds.conversationId ||= parsed.conversationId;
+      if (assetIds.responseId && assetIds.draftId && assetIds.conversationId) {
+        break;
+      }
+    }
+    return assetIds;
+  }
+  function hasNearbyActionCluster(img) {
+    let current = img?.parentElement || null;
+    let depth = 0;
+    while (current && depth < MAX_CONTAINER_SEARCH_DEPTH) {
+      const buttons = typeof current.querySelectorAll === "function" ? current.querySelectorAll('button,[role="button"]') : [];
+      if ((buttons?.length || 0) >= MIN_ACTION_BUTTONS) {
+        return true;
+      }
+      current = current.parentElement || null;
+      depth += 1;
+    }
+    return false;
+  }
+  function shouldUseRenderedImageFallback(img) {
+    return hasMeaningfulGeminiImageSize(img) && hasNearbyActionCluster(img);
+  }
+
+  // src/core/embeddedOutlineAlphaMap.js
+  var EMBEDDED_OUTLINE_LIGHT_D4_INT16_BASE64 = "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";
+
+  // src/core/embeddedDarkOutlineAlphaMap.js
+  var EMBEDDED_OUTLINE_DARK_D4_INT16_BASE64 = "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";
+
+  // src/core/embeddedAlphaMaps.js
+  var EMBEDDED_ALPHA_MAP_LENGTHS = {
+    "36-v2": 36 * 36,
+    48: 48 * 48,
+    96: 96 * 96,
+    "96-20260520": 96 * 96
+  };
+  var EMBEDDED_ALPHA_MAP_BASE64 = {
+    "36-v2": "gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPIGAADzR0FA+4eBgPoGAADyBgAA8wcBAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADzBwEA8AAAAALGwMD2ZmJg+mZiYPrGwMD2BgIA7wcBAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDzBwEA8AAAAAOHg4D2lpKQ+o6KiPuHg4D0AAAAAwcBAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPNXUVD6lpKQ+paSkPtXUVD6BgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgIA78fBwPZWUlD6lpKQ+o6KiPpmYmD6xsLA9AAAAAIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgIA7tbQ0PqWkpD6fnp4+nZycPqempj7V1FQ+gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgAA8wcBAPIGAgDuJiIg9l5aWPqWkpD6dnJw+nZycPqOioj6bmpo+sbCwPQAAAADBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYCAO4GAADzt7Gw+qaioPp2cnD6dnJw+nZycPp2cnD6npqY+3dxcPoGAgDuBgAA8gYCAO4GAADyBgAA8gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDzBwEA8AAAAAJGQED6hoKA+oaCgPpuamj6dnJw+nZycPpuamj6hoKA+oaCgPpmYGD4AAAAAwcBAPMHAQDyBgAA8gYCAO4GAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDwAAAAA0dDQPZ2cnD6hoKA+m5qaPp2cnD6dnJw+n56ePp+enj6bmpo+o6KiPp2cnD7Z2Ng9AAAAAIGAADyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDzBwEA8wcBAPAAAAAChoKA9j46OPqempj6fnp4+nZycPp2cnD6dnJw+nZycPp+enj6dnJw+m5qaPqWkpD6Pjo4+mZiYPQAAAACBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8AAAAAJmYmD2NjIw+p6amPp2cnD6bmpo+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPp2cnD6lpKQ+i4qKPpmYmD0AAAAAgYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPIGAADyBgIA72djYPY+Ojj6npqY+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+p6amPo+Ojj7R0NA9gYCAO4GAgDvBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8AAAAAIGAADyhoCA+nZycPqWkpD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+m5qaPp+enj6dnJw+nZycPqWkpD6dnJw+kZAQPoGAADwAAAAAgYAAPMHAQDyBgAA8gYCAO4GAADyBgAA8gYAAPMHAQDyBgAA8gYAAPAAAAACBgIA7sbCwPeHgYD6fnp4+o6KiPp2cnD6bmpo+nZycPp2cnD6dnJw+nZycPp+enj6dnJw+nZycPp2cnD6bmpo+nZycPp+enj6dnJw+nZycPp2cnD6joqI+oaCgPu3sbD6JiIg9gYCAO4GAgDuBgAA8wcBAPIGAgDyBgAA8gYAAPAAAAAAAAAAAgYCAO6moqD3V1FQ+mZiYPqempj6fnp4+m5qaPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+oaCgPqmoqD6XlpY+tbQ0PvHwcD2BgAA8AAAAAAAAAACBgAA8gYAAPLGwMD3h4OA90dBQPpmYmD6npqY+o6KiPp2cnD6dnJw+nZycPpuamj6dnJw+nZycPpuamj6dnJw+nZycPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6bmpo+nZycPp2cnD6dnJw+m5qaPpuamj6lpKQ+o6KiPpWUlD7R0FA+2djYPaGgID2BgIA73dxcPpmYmD6joqI+paSkPqOioj6dnJw+m5qaPp2cnD6bmpo+nZycPp2cnD6bmpo+nZycPp2cnD6bmpo+nZycPp2cnD6bmpo+m5qaPp2cnD6bmpo+nZycPp2cnD6bmpo+nZycPp2cnD6bmpo+nZycPp+enj6bmpo+nZycPqOioj6joqI+o6KiPpmYmD7NzEw+0dBQPpmYmD6lpKQ+paSkPqWkpD6fnp4+m5qaPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPqGgoD6lpKQ+o6KiPpmYmD7d3Fw+gYCAO6GgID3h4OA90dBQPpWUlD6lpKQ+paSkPp2cnD6bmpo+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+m5qaPp2cnD6joqI+paSkPpmYmD7R0FA+4eDgPaGgID2BgAA8gYAAPAAAAAAAAAAAgYAAPPHwcD21tDQ+l5aWPqmoqD6hoKA+m5qaPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPp2cnD6dnJw+m5qaPp2cnD6bmpo+oaCgPqempj6ZmJg+1dRUPrGwsD2BgAA8AAAAAAAAAACBgAA8gYAAPMHAQDzBwEA8gYAAPAAAAACBgIA7iYiIPe3sbD6hoKA+o6KiPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6joqI+oaCgPuHgYD6pqKg9gYCAOwAAAACBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPMHAQDzBwEA8AAAAAMHAQDyRkBA+m5qaPqempj6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6dnJw+nZycPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPqOioj6dnJw+nZwcPoGAADyBgIA7gYCAO4GAADyBgAA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7wcBAPIGAgDuBgIA72djYPZGQkD6npqY+nZycPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6bmpo+nZycPp2cnD6dnJw+p6amPpGQkD7R0NA9AAAAAIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDzBwEA8AAAAAKGgoD2Pjo4+p6amPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6npqY+jYyMPpmYmD0AAAAAgYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPAAAAACZmJg9kZCQPqWkpD6dnJw+nZycPp2cnD6dnJw+n56ePp2cnD6dnJw+m5qaPqWkpD6Pjo4+mZiYPQAAAADBwEA8gYAAPIGAgDuBgAA8wcBAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7gYAAPMHAQDwAAAAA0dDQPZ2cnD6joqI+m5qaPp2cnD6bmpo+nZycPp2cnD6bmpo+oaCgPp2cnD7R0NA9AAAAAMHAQDyBgAA8gYAAPIGAADyBgIA7gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDzBwEA8gYCAO52cHD6hoKA+n56ePp2cnD6dnJw+nZycPpuamj6hoKA+o6KiPpWUFD4AAAAAwcBAPMHAQDzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAADzBwEA8gYCAO4GAADzl5GQ+paSkPp2cnD6dnJw+nZycPpuamj6npqY+7exsPoGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPAAAAACpqKg9m5qaPqWkpD6bmpo+nZycPqWkpD6XlpY+iYiIPQAAAACBgAA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA71dRUPqempj6dnJw+n56ePqOioj61tDQ+gYCAO4GAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgIA7sbCwPZuamj6joqI+o6KiPpWUlD7x8HA9AAAAAMHAQDzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPNXUVD6lpKQ+paSkPtXUVD6BgAA8wcBAPMHAQDyBgAA8gYAAPIGAADzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8AAAAAOHg4D2lpKQ+paSkPuHg4D0AAAAAwcBAPMHAQDyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYCAO7GwMD2ZmJg+mZiYPqGgID2BgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgAA8gYCAO4GAgDvBwEA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzZ2Fg+zcxMPoGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7",
+    48: "gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAgYCAOwAAAADj4uI+4eDgPoGAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA7gYAAPIGAgDuBgIA7gYAAPMHAQDyBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDvBwEA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAAAAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4WEBD6BgAA/gYAAP4GAAD4AAAAAgYAAPAAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8wcBAPIGAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4GAADyBgAA8gYCAOwAAAAAAAAAAgYAAPIGAgDsAAAAAAAAAAIGAgDsAAAAAgYCAO5GQkD6BgAA/gYAAP5GQkD4AAAAAgYCAOwAAAACBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgAA8wcBAPMHAQDyBgIA7gYCAO4GAADyBgAA8gYAAPMHAQDyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADwAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO+Hg4D6BgAA/gYAAP/Hw8D4AAAAAgYCAO4GAgDuBgIA7gYAAPIGAgDuBgAA8wcBAPIGAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADyBgAA8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAgYAAPoGAAD+BgAA/gYAAP4GAAD+BgAA+AAAAAAAAAACBgIA7gYAAPAAAAACBgAA8gYAAPIGAgDuBgIA7gYCAOwAAAADBwEA8wcBAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAIGAADwAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7oaCgPoGAAD+BgAA/gYAAP4GAAD/BwMA+AAAAAAAAAACBgIA7AAAAAIGAgDuBgAA8gYAAPAAAAACBgIA7gYCAO4GAgDuBgAA8wcBAPMHAQDzBwEA8gYCAO4GAgDsAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAwcBAPIGAgDuBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7gYAAPIGAADwAAAAAAAAAAIGAADyJiIg9gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYCAPQAAAACBgIA7AAAAAAAAAAAAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAIGAADwAAAAAgYCAO4GAADyBgIA7gYCAOwAAAAAAAAAAgYCAO8HAQDyBgIA7gYCAO4GAgDsAAAAAgYCAO4GAgDuhoKA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/o6KiPoGAgDuBgAA8AAAAAIGAgDuBgIA7gYCAO8HAQDyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPAAAAAAAAAAAgYCAO4GAADyBgIA7gYAAPIGAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYCAO4GAADyBgAA8gYCAO4mIiD2BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD6BgAA8gYCAO4GAADwAAAAAgYCAO4GAADyBgIA7wcBAPIGAADyBgAA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8gYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAIGAADyBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAOwAAAACBgIA7gYCAO+Hg4D6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP8HAwD6BgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDvBwEA8wcBAPMHAQDyBgAA8wcBAPIGAADyBgIA7gYCAO4GAADyBgAA8gYAAPIGAgDsAAAAAAAAAAIGAgDuBgAA8AAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYAAPIGAgDuBgIA7gYAAPAAAAACBgIA7gYCAPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4GA+AAAAAAAAAACBgAA8gYAAPMHAQDyBgIA7gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAO8HAQDwAAAAAgYCAO4GAADwAAAAAgYAAPAAAAACBgAA8gYCAOwAAAACBgIA9gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/x8PA+wcDAPYGAgDuBgAA8wcBAPIGAADyBgAA8gYAAPIGAADwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYAAPIGAgDuBgIA7gYCAOwAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAMHAQDyBgAA8gYCAO4GAgD3h4OA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/4eDgPoGAAD2BgIA7gYCAOwAAAACBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYCAOwAAAACBgIA7AAAAAAAAAACBgIA7AAAAAIGAgDsAAAAAgYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO9PS0j6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP8HAwD6BgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAgYAAPIGAgDuBgIA7o6KiPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+hoKA+gYCAOwAAAACBgIA7gYCAO4GAgDvBwEA8gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuhoKA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/oaCgPgAAAACBgIA7gYCAO4GAgDvBwEA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAIGAADwAAAAAgYCAO4GAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAAAAAACBgIA7gYAAPcHAwD6BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP9HQ0D6BgIA9gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7wcBAPIGAgDzBwEA8gYAAPAAAAACBgIA7gYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7AAAAAAAAAADBwMA94eDgPoGAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4OA+iYiIPYGAgDyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgAA8gYAAPIGAgDuBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAOHgYD7x8PA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4WEhD6BgIA7gYCAO4GAADzBwEA8gYAAPMHAQDzBwEA8gYCAO4GAgDsAAAAAgYAAPIGAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAgDuBgAA+wcDAPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4OA+gYCAPYGAADzBwEA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYCAPaOioj6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP6GgoD6BgIA9gYAAPIGAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4WEBD7BwMA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/oaCgPoGAAD6BgIA7gYAAPIGAgDuBgIA7AAAAAIGAAD6RkJA+8fDwPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4OA+kZCQPoGAAD6BgIA84eDgPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/j4uI+4eDgPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4OA+gYCAO4GAAD6RkJA+4eDgPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/x8PA+kZCQPoGAAD6BgIA7gYCAO8HAQDwAAAAAgYCAO4GAAD6hoKA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/wcDAPoGAAD6BgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDuBgIA7AAAAAAAAAACBgAA8gYCAPaOioj6BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP6Oioj6JiIg9gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADyBgIA7gYCAOwAAAAAAAAAAgYCAO4GAADyBgIA94eDgPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/BwMA+gYAAPoGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgD6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/8/LyPuXkZD6BgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAACBgIA7AAAAAAAAAAAAAAAAgYAAPAAAAACBgIA94+LiPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD/h4OA+wcDAPYGAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAACBgIA7AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYCAPdHQ0D6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP8HAwD6BgAA9gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADyBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAAAAAAAAgYCAO4GAgDuhoKA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/oaCgPsHAQDzBwEA8gYAAPIGAgDuBgAA8gYAAPIGAgDuBgIA7wcBAPMHAQDyBgAA8gYAAPIGAgDsAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAAAAAACBgIA7gYCAO4GAADyBgIA7oaCgPoGAAD+BgAA/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+hoKA+gYCAO4GAgDyBgIA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgIA7wcBAPMHAQDyBgIA7gYAAPIGAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgAA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYCAO8PCwj6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP9HQ0D6BgAA8gYAAPMHAQDzBwEA8gYCAOwAAAACBgIA7gYAAPIGAADyBgAA8wcBAPMHAQDyBgIA7gYCAO8HAQDzBwEA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAPMHAQDyBgAA8wcBAPIGAADzBwEA8gYCAO4GAgDuBgIA7gYCAO6GgID3j4uI+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/4eDgPoGAgD2BgAA8wcBAPMHAQDzBwEA8gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYCAPMHAQDwAAAAAgYCAO8HAQDzBwEA8gYAAPIGAADyBgAA8gYCAO4GAADyBgAA8AAAAAAAAAACBgAA8wcBAPIGAADzBwEA8gYAAPIGAADwAAAAAgYCAO4GAADzJyMg98fDwPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYCAPQAAAACBgAA8gYAAPAAAAAAAAAAAgYCAO4GAgDuBgAA8wcBAPIGAADyBgIA7AAAAAAAAAACBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA7gYCAO4GAADyBgAA84eBgPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgIA+gYCAO4GAgDvBwEA8gYAAPIGAgDsAAAAAgYCAO4GAgDvBwEA8wcBAPIGAgDuBgAA8gYCAOwAAAAAAAAAAAAAAAIGAgDuBgIA7gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAIGAgDuBgAA8gYAAPIGAADyBgAA8AAAAAMHAwD6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP+Hg4D6BgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgAA8gYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPMHAQDyBgAA8gYCAO4GAAD6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAgD2BgIA7gYCAOwAAAACBgAA8gYAAPIGAgDuBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAAAAAAAAgYCAOwAAAACBgAA8gYAAPIGAADyBgIA7gYCAOwAAAAChoKA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/oaCgPoGAgDuBgIA7gYCAO4GAgDuBgAA8wcBAPAAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgIA7gYCAO4GAADyBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDuBgIA9gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYCAPYGAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDsAAAAAw8LCPoKBAT+CgQE/gYAAP4GAAD+hoKA+gYCAO4GAADyBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDsAAAAAgYAAPIGAADyBgIA7AAAAAIGAgDuBgIA7gYAAPMHAQDyBgIA7gYAAPoKBAT+BgAA/gYAAP4GAAD+BgAA+gYCAO4GAADyBgAA8AAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAgDuBgIA7gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYAAPAAAAAAAAAAAgYAAPIGAADyBgIA7gYCAO/Py8j6BgAA/gYAAP+Hg4D6BgIA7gYCAO4GAADzBwEA8gYCAO4GAgDuBgAA8gYAAPAAAAAAAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADyBgIA7gYCAO5OSkj6BgAA/gYAAP5OSkj6BgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYCAO4GAADyBgIA7AAAAAIGAgDvBwEA8wcBAPIGAgDsAAAAAgYCAO4GAgDuBgAA8gYAAPIGAAD6BgAA/gYAAP4WEBD6BgIA7gYCAO4GAADyBgAA8gYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA7gYCAOwAAAADBwEA8gYAAPIGAgDvh4OA+4eDgPoGAgDuBgIA7gYCAO4GAADyBgAA8gYAAPIGAADyBgIA7AAAAAIGAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7",
+    96: "gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDwAAAAAwcBAPMHAQDyBgIA8wcBAPIGAADyhoKA8gYAAPIGAADyBgAA8AAAAAIGAADyBgIA7gYCAO4GAgDuBgIA7wcBAPIGAADzBwEA8gYCAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPIGAADwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPOXkZD7z8vI+4+LiPu3sbD6BgIA7wcBAPAAAAACBgAA8gYCAO4GAADyBgIA8gYCAPIGAADyBgIA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYAAPIGAgDyBgIA8gYCAPIGAADzBwEA8gYCAO8HAQDyBgAA8gYAAPIGAgDuBgAA8wcBAPMHAQDyBgAA8wcBAPMHAQDyBgIA8wcBAPMHAQDyBgIA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8oaCgPIGAgDyBgIA8wcBAPIGAgDyBgAA8wcBAPIGAgDvBwEA8wcBAPIGAgDyBgAA8gYAAPMHAQDzBwEA8gYCAO4GAADyBgIA8wcBAPIGAADyBgAA8gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADzBwEA8wcBAPIGAgDvBwEA8wcBAPIGAADzBwEA8oaCgPMHAQDzBwEA8gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAAAAAACBgAA8gYCAPYGAAD+BgAA/goEBP4KBAT+RkBA9gYAAPAAAAACBgIA7gYAAPIGAADyBgAA8wcBAPMHAQDyBgAA8gYAAPIGAADzBwEA8gYCAPMHAQDzBwEA8gYCAO4GAgDuBgAA8gYAAPIGAADyBgIA7gYAAPAAAAACBgAA8AAAAAIGAgDuBgIA7gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYAAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcDAPKGgoDyBgIA8oaCgPIGAgDyhoKA8gYCAOwAAAACBgAA8gYCAO4GAADyBgIA8wcBAPIGAADwAAAAAgYCAO4GAgDvBwEA8gYCAO4GAgDuBgIA7gYCAO4GAADyBgAA8gYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAgYCAO4GAADyBgAA8gYAAPMHAQDzBwEA8gYCAPMHAQDzBwEA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAADyBgAA8paQkPoGAAD+BgAA/goEBP4GAAD/FxEQ+AAAAAAAAAACBgIA7gYAAPIGAgDsAAAAAAAAAAIGAgDuBgIA7gYAAPKGgoDyBgIA8wcBAPIGAgDyBgIA8gYAAPAAAAACBgIA7gYAAPIGAADzBwEA8gYCAPIGAgDyBgAA8wcBAPKGgoDzBwEA8gYAAPIGAADyBgIA8gYCAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYCAPMHAQDyBgAA8gYCAPMHAQDyBgIA8gYCAPMHAQDzBwEA8AAAAAIGAgDuBgIA7gYAAPIGAADyhoKA8gYAAPMHAQDwAAAAAgYCAO4GAADyBgAA8AAAAAAAAAAAAAAAAgYAAPIGAADyBgIA7AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYCAO4GAADyBgIA7gYCAOwAAAACBgIA7gYCAPMHAQDyBgAA8gYCAPIGAgDuBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAACBgIA7gYAAPIGAADzBwEA8paSkPoGAAD+BgAA/goEBP4KBAT+hoKA+gYCAO4GAgDuBgIA7gYCAO4GAgDsAAAAAAAAAAIGAgDuBgAA8gYCAPIGAgDzBwEA8gYAAPMHAQDyBgIA8gYCAPIGAADyBgAA8wcBAPIGAADzBwEA8gYCAPIGAgDyBgIA8gYCAPMHAQDyBgIA8gYAAPMHAQDyBgIA8oaCgPIGAgDyBgAA8gYCAO8HAQDzBwEA8oaCgPIGAgDzBwEA8gYCAPMHAQDyhoKA8gYCAPMHAQDzBwEA8AAAAAAAAAACBgIA7wcBAPKGgoDyBgIA8gYCAPMHAQDyBgIA7gYAAPIGAgDuBgIA7AAAAAAAAAADBwEA8gYCAO8HAQDzBwEA8AAAAAIGAADyBgIA7gYCAOwAAAACBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAACBgAA8gYCAPMHAQDyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAgDuBgIA8wcBAPAAAAACBgIA7AAAAAIGAgDvBwEA85eTkPoGAAD+BgAA/gYAAP4GAAD/z8vI+gYAAPMHAQDyBgIA7gYAAPMHAQDyBgIA7gYAAPMHAQDzBwEA8gYCAPIGAgDyBgIA8wcBAPIGAgDyBgIA8wcBAPIGAADyBgIA7gYCAO8HAQDyBgIA8oaCgPIGAgDyBgIA8gYCAPIGAgDyBgIA8gYCAPMHAQDzBwEA8wcBAPIGAgDsAAAAAwcBAPIGAADzBwEA8gYCAPMHAQDzBwEA8gYAAPKGgoDyBgIA8oaCgPIGAgDzBwEA8gYCAOwAAAADBwEA8wcBAPMHAQDyBgIA8gYCAPIGAgDzBwEA8gYAAPIGAgDyBgIA8AAAAAIGAgDuBgIA7gYCAO4GAADzBwEA8gYAAPIGAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7AAAAAIGAgDuBgAA8gYCAPIGAgDyBgIA8gYCAPIGAgDuBgIA8oaCgPIGAADyBgIA8AAAAAIGAADyBgIA8gYAAPIGAADyFhAQ+goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/iYgIPoGAADyBgAA8gYAAPMHAQDzBwEA8gYAAPIGAgDuBgAA8wcBAPIGAgDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAADyBgAA8gYCAO8HAQDzBwEA8wcBAPIGAgDyBgIA8gYCAPKGgoDzBwEA8gYAAPMHAQDyBgIA8gYCAPIGAADyBgIA7wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDzBwEA8gYCAPMHAQDzBwEA8gYCAO4GAADyBgIA7gYCAO4GAgDyBgIA8wcBAPMHAQDyBgIA8wcBAPAAAAACBgIA7AAAAAIGAADyBgAA8gYCAO4GAgDvBwEA8gYCAO4GAgDuBgAA8wcBAPMHAQDzBwEA8wcBAPIGAADwAAAAAgYCAO4GAADzBwEA8gYAAPIGAADyBgAA8wcBAPIGAADyBgIA7gYCAPIGAADyBgIA7gYAAPIGAgDuBgAA8gYAAPIGAADylpKQ+goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/k5KSPoGAADyBgAA8gYAAPIGAADyBgIA8wcBAPIGAADyBgIA7gYAAPIGAADzBwEA8wcBAPKGgoDzBwEA8gYCAPIGAADyBgAA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgAA8gYAAPMHAQDzBwEA8wcBAPIGAADzBwEA8gYAAPMHAQDzBwMA8oaCgPIGAgDyBgIA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8gYCAO8HAQDyBgAA8gYAAPMHAQDzBwEA8gYAAPIGAgDyBgIA8gYAAPIGAADyBgIA7gYAAPMHAQDyBgIA8gYCAO4GAgDsAAAAAgYAAPMHAQDzBwEA8wcBAPIGAgDuBgAA8wcBAPAAAAACBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDvBwEA8gYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDvj4uI+goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/8/LyPoGAADyBgAA8gYAAPIGAADyBgIA8wcBAPMHAQDyBgIA8wcBAPIGAADzBwEA8gYAAPMHAQDzBwEA8gYCAO4GAADyBgAA8gYAAPIGAADyBgIA7wcBAPIGAgDzBwEA8wcBAPIGAgDyBgAA8gYCAO8HAQDzBwEA8gYAAPMHAQDyBgIA8wcBAPIGAgDzBwEA8oaCgPKGgoDyBgIA8gYCAPIGAgDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYCAPMHAQDyBgIA7wcBAPIGAADzBwEA8gYAAPIGAADyBgIA8gYCAO4GAgDuBgAA8wcBAPIGAgDyBgIA7gYAAPIGAADyBgAA8gYAAPAAAAACBgAA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgIA8wcBAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYCAO4GAgDzBwEA8wcBAPKmoKD6BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4WEBD7BwEA8gYAAPIGAgDvBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADzBwEA8gYAAPIGAgDuBgIA7gYCAO4GAgDvBwEA8wcBAPIGAADyBgIA8gYAAPIGAgDsAAAAAgYCAO4GAgDuBgIA8wcBAPMHAQDyBgIA8wcBAPIGAADyBgIA8oaCgPIGAgDyBgAA8gYAAPIGAgDyBgIA8oaCgPIGAgDyBgIA8gYCAO8HAQDyBgIA7gYCAOwAAAACBgIA7wcBAPIGAADyBgIA7wcBAPIGAgDuBgAA8gYAAPMHAQDyBgAA8gYAAPIGAgDuBgAA8wcBAPIGAgDyBgAA8wcBAPAAAAACBgIA7AAAAAIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8wcBAPIGAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAADzBwEA8wcBAPLOysj6CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP8PCwj6BgAA8AAAAAIGAgDvBwEA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgAA8gYAAPMHAQDyBgAA8gYCAO4GAgDsAAAAAgYAAPIGAADzBwEA8gYAAPMHAQDyBgAA8gYCAPAAAAACBgIA7gYAAPIGAADzBwEA8gYCAPIGAgDyBgIA8gYCAPIGAgDyhoKA8gYCAPIGAADyBgIA8wcBAPMHAQDzBwEA8wcDAPIGAgDyBgIA8wcBAPIGAADyBgIA8wcBAPIGAgDuBgIA7gYCAO4GAgDvBwEA8wcBAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYAAPMHAQDzBwEA8gYAAPIGAgDyBgIA7gYCAO4GAgDuBgIA7gYCAO8HAQDyBgAA8gYCAPIGAADyBgAA8gYCAO4GAgDzBwEA8wcBAPIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAADyBgIA8iYiIPYGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+JiIg9gYCAO4GAADyBgAA8gYAAPMHAQDyBgIA7gYAAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYCAO8HAQDyBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgIA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYCAPIGAgDzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADzBwEA8wcBAPIGAADzBwEA8wcBAPIGAgDuBgIA7gYCAO4GAgDuBgAA8wcBAPIGAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPMHAQDzBwEA8gYAAPIGAADyBgIA7wcBAPIGAgDsAAAAAgYAAPIGAgDzBwEA8wcBAPIGAADyBgAA8wcBAPMHAQDyBgAA8wcBAPIGAgDuBgAA8gYCAO4GAgDuBgIA7gYCAO4GAADzBwEA8oaCgPoGAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD+FhIQ+gYAAPIGAADyBgIA7AAAAAIGAADyBgIA8wcBAPIGAgDyBgAA8gYAAPIGAADyBgAA8gYCAO4GAADyBgIA7gYCAO8HAQDyBgAA8gYAAPMHAQDwAAAAAgYAAPIGAgDuBgIA8gYCAPIGAgDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDyBgIA7wcBAPIGAgDvBwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDyhoKA8gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7gYAAPIGAADyBgAA8AAAAAAAAAACBgIA7gYAAPMHAQDwAAAAAgYAAPIGAgDuBgAA8gYCAOwAAAADBwEA8wcBAPMHAQDwAAAAAAAAAAIGAgDvBwEA8gYAAPMHAQDzBwEA8wcBAPIGAADwAAAAAgYCAO4GAADyBgIA7gYAAPAAAAAAAAAAAgYAAPAAAAACJiIg9goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD/z8vI+gYAAPYGAgDuBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAOwAAAADBwEA8gYAAPIGAgDuBgAA8gYCAO4GAgDzBwEA8wcBAPIGAADyBgIA7gYAAPIGAgDuBgIA8wcBAPIGAADyBgAA8gYAAPMHAQDzBwEA8gYAAPIGAgDyBgIA8gYCAPMHAQDyBgIA8gYCAPMHAwDzBwEA8wcBAPMHAQDzBwEA8gYCAO4GAADwAAAAAgYAAPIGAgDsAAAAAgYAAPMHAQDyBgAA8gYCAOwAAAACBgAA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYCAO4GAADyBgAA8wcBAPAAAAAAAAAAAgYCAO4GAADzBwEA8gYAAPMHAQDyBgAA8wcBAPMHAQDyBgAA8gYCAO4GAgDuBgIA7AAAAAIGAADyBgIA7gYAAPMHAQDyDgoI+gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/g4KCPoGAADyBgAA8gYAAPIGAgDuBgIA8gYCAPIGAgDyBgAA8gYCAO4GAgDuBgAA8wcBAPIGAgDuBgIA7gYAAPIGAgDzBwEA8gYCAPMHAQDyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAADzBwEA8wcBAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAADyBgIA8gYCAPKGgoDyBgIA8wcBAPMHAQDzBwEA8gYAAPIGAgDuBgIA7gYCAO8HAQDyBgIA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgAA8wcBAPIGAgDyBgAA8gYCAO4GAADyBgAA8gYAAPIGAgDvBwEA8gYCAPAAAAAAAAAAAgYCAO4GAADzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgIA8gYCAPJGQkD3j4uI+goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+BgAA/8/LyPpGQED2BgAA8oaCgPIGAgDyBgIA8wcBAPIGAADyBgIA8gYCAPIGAADzBwEA8gYAAPIGAgDyBgIA7wcBAPIGAgDyBgIA8gYCAPIGAADyBgAA8gYAAPIGAADzBwEA8wcBAPMHAQDyBgIA8gYCAPMHAQDzBwEA8gYCAPIGAgDyhoKA8gYCAPKGgoDzBwMA8gYCAPIGAADyBgIA8gYCAPMHAQDzBwEA8gYAAPMHAQDyBgAA8gYAAPMHAQDyhoKA8wcBAPIGAgDuBgAA8gYCAO4GAgDsAAAAAgYAAPIGAgDuBgAA8gYCAO8HAQDzBwEA8gYAAPIGAADzBwEA8gYAAPIGAADyBgIA7gYAAPIGAADzBwEA8gYCAO4GAADyBgIA8gYCAPMHAQDyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAADzBwEA8gYCAPKWkpD6CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP4OCAj+BgAA/goEBP4KBAT+CgQE/goEBP4WEhD7BwEA8gYCAO8HAQDyBgIA8gYAAPMHAQDzBwMA8wcBAPIGAADyBgIA7gYCAO4GAADzBwEA8gYCAPMHAQDyBgIA8gYCAPIGAADyBgAA8gYCAO8HAQDzBwEA8wcBAPIGAgDzBwEA8gYCAPMHAQDyBgIA8oaCgPMHAwDzBwEA8gYCAPIGAADyhoKA8wcBAPIGAgDzBwEA8oaCgPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8oaCgPMHAQDyBgAA8gYAAPAAAAACBgIA7gYAAPIGAgDuBgIA8gYCAPMHAQDzBwEA8gYAAPMHAQDyBgIA7gYAAPIGAgDvBwEA8wcBAPIGAADzBwEA8gYAAPIGAgDvBwEA8gYCAPKGgoDyBgAA8wcBAPIGAADzBwEA8gYCAO4GAADzBwEA8kZCQPYKBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP/Py8j6JiIg9wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgAA8gYCAO4GAgDyBgAA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgIA7gYAAPIGAADzBwEA8gYCAPIGAADyBgIA7wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDyBgIA7gYAAPMHAQDzBwEA8wcBAPKGgoDyBgIA8wcBAPIGAgDyBgAA8gYAAPIGAgDuBgIA7gYAAPIGAgDuBgIA8gYCAPIGAgDyBgIA8AAAAAIGAADzBwEA8wcBAPIGAADzBwEA8gYCAO4GAADyBgIA7gYCAO4GAADzBwEA8gYCAOwAAAACBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgAA8paSkPoKBAT+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+zsrI+gYCAPIGAADyBgAA8gYAAPMHAQDzBwEA8gYAAPIGAADyBgAA8gYCAO8HAQDyBgIA8gYCAOwAAAADBwEA8gYCAO4GAgDuBgAA8wcBAPMHAQDyBgIA8gYCAPMHAQDyBgAA8wcBAPIGAADzBwEA8gYCAPMHAQDyBgIA8oaCgPMHAQDzBwEA8wcBAPIGAADzBwEA8gYCAPMHAQDyBgIA8gYAAPMHAQDyBgIA8wcBAPIGAADyBgAA8wcBAPMHAQDyBgIA8gYAAPIGAgDuBgIA7AAAAAIGAADzBwEA8oaCgPIGAgDzBwEA8gYCAO8HAQDyBgIA7gYCAO4GAADzBwEA8gYCAPIGAADyBgIA8gYCAPMHAQDyBgAA8gYCAPIGAgDzBwEA8gYCAPKGgoDyBgIA8gYCAPMHAQDylpCQ+gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4SDAz+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/iYgIPoGAgDuBgIA7gYAAPIGAgDyBgAA8gYCAO4GAADyBgAA8AAAAAIGAADyBgAA8gYAAPIGAADyBgAA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPIGAADyBgAA8gYAAPIGAgDzBwEA8gYAAPMHAQDyBgAA8wcBAPIGAgDyBgAA8gYAAPIGAgDyBgIA8gYAAPIGAgDzBwEA8gYAAPMHAQDyhoKA8oaCgPIGAgDyBgAA8gYCAOwAAAADBwEA8gYCAPIGAgDzBwEA8gYCAO4GAADyBgAA8gYCAO4GAADzBwEA8gYAAPIGAADyBgIA7gYCAPIGAADyBgAA8AAAAAIGAADzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzj4uI+goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/g4ICP4GAAD+CgQE/gYAAP4GAAD+CgQE/4+LiPpGQED3BwEA8wcBAPMHAQDyBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADzBwEA8wcBAPIGAADyBgAA8wcBAPIGAADzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAADyBgAA8wcBAPIGAADzBwEA8oaCgPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDzBwEA8gYAAPIGAgDvBwEA8gYCAO4GAADyBgAA8gYAAPMHAQDyBgIA7gYAAPIGAADyBgAA8wcBAPMHAQDyBgAA8gYAAPMHAQDwAAAAAgYAAPMHAQDyBgIA8wcBAPMHAQDyBgIA8wcBAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYCAO4GAgDvBwEA8gYCAPIWEhD6BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP5OSkj6BgAA8wcBAPMHAQDyBgAA8gYCAPIGAgDuBgIA7gYCAO4GAgDvBwEA8wcBAPIGAADzBwEA8gYAAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAO4GAgDyBgIA8gYCAPIGAADyBgIA8oaCgPIGAgDyBgAA8wcBAPIGAgDuBgAA8gYAAPIGAADyBgAA8oaCgPIGAADyBgAA8gYCAPIGAgDyBgAA8wcBAPIGAADzBwEA8gYCAO4GAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgIA7gYAAPIGAgDuBgIA7gYAAPMHAQDzBwEA8gYAAPIGAgDzBwEA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgAA8AAAAAMHAQDyBgIA82djYPYKBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+DggI/goEBP4GAAD+FhAQ+wcBAPMHAQDyBgIA8gYCAPIGAADyBgIA7wcBAPMHAQDzBwEA8gYCAPMHAQDyBgIA8gYCAPMHAQDyBgAA8gYCAPMHAQDzBwEA8wcBAPMHAQDyhoKA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgAA8gYAAPIGAgDyBgIA8gYCAPIGAgDyBgAA8wcBAPMHAQDyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDsAAAAAAAAAAAAAAAChoKA8gYCAPIGAADyBgAA8gYAAPIGAgDvBwEA8wcBAPMHAQDyBgAA8gYCAPMHAQDyBgIA7gYCAO4GAADzBwEA8oaCgPMHAQDwAAAAAgYCAO4GAADyJiIg95eTkPoKBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD/j4uI+sbAwPYGAgDyhoKA8oaCgPMHAQDyBgAA8AAAAAIGAADzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8oaCgPIGAADzBwEA8gYAAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADyBgIA7wcBAPMHAQDwAAAAAAAAAAAAAAACBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAAAAAAIGAgDvBwEA8gYCAPIGAADyBgIA7gYAAPIGAADyBgAA8wcBAPIGAADzBwEA8gYCAPMHAQDzBwEA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAADyjoqI+gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/s7KyPsHAQDzBwEA8gYCAPMHAQDzBwEA8gYAAPIGAADzBwEA8gYCAPIGAADyBgIA8wcBAPKGgoDyBgIA8wcBAPIGAgDyhoKA8oaCgPMHAQDyBgAA8gYCAPMHAQDzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAgDyBgIA8wcBAPIGAADyBgIA7gYAAPMHAQDyBgAA8wcBAPMHAQDwAAAAAAAAAAAAAAACBgIA7wcBAPMHAQDyBgIA7gYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7gYAAPAAAAACBgAA8wcBAPIGAADyBgAA8gYCAO4GAADzBwEA8wcBAPMHAQDyBgIA7gYAAPIGAADyBgAA8wcBAPIGAgDuBgIA8wcBAPIWEhD6CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+DggI/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP+XkZD6BgAA8gYCAO4GAgDyBgIA8gYCAO8HAQDyBgIA8gYAAPMHAQDyBgIA7gYCAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyhoKA8gYAAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADwAAAAAgYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7gYAAPIGAADzBwEA8gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAwcBAPMHAQDyBgAA8gYAAPIGAADzBwEA8gYCAPIGAgDyBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8jYwMPoKBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4OCAj+CgQE/gYAAP4GAAD+BgAA+gYCAO4GAgDyBgIA8gYAAPIGAADyBgIA8gYCAO4GAADyhoKA8wcBAPIGAgDyBgIA8gYCAO4GAgDyBgIA8gYCAPIGAgDyBgAA8oaCgPIGAgDzBwEA8gYCAPKGgoDzBwEA8gYCAPIGAgDyBgIA8wcBAPMHAQDyBgIA7wcBAPIGAgDuBgAA8gYCAO4GAADyBgIA7gYCAO4GAADyBgAA8gYAAPMHAQDyBgIA8wcBAPIGAgDsAAAAAgYCAO4GAgDuBgAA8gYCAO4GAADzBwEA8gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8wcBAPIGAADzBwEA8gYAAPIGAgDsAAAAAwcBAPIGAADyJiIg98/LyPoKBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD/x8PA+kZCQPYGAADyBgIA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYCAPIGAgDyBgAA8gYAAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADzBwEA8gYCAO8HAQDzBwEA8gYAAPIGAgDzBwEA8wcBAPKGgoDzBwEA8gYAAPIGAADwAAAAAgYCAO4GAADyBgAA8wcBAPMHAQDyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADzBwEA8gYAAPIGAADyBgIA7gYAAPIGAgDvBwEA8wcBAPMHAQDwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgD3h4OA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/4+LiPomIiD3BwEA8gYCAO4GAgDuBgIA8wcBAPIGAADyBgAA8gYCAO8HAQDyBgIA7gYAAPMHAQDyBgIA8oaCgPMHAQDzBwEA8gYCAPIGAADyBgIA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgAA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADyBgIA7gYCAO4GAADyBgIA8gYAAPMHAQDyBgAA8gYCAPIGAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDzBwEA8wcBAPIGAADwAAAAAgYCAO8HAQDyBgIA7wcBAPIGAgDsAAAAAgYCAO4GAADzBwEA8kZCQPePi4j6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP+Pi4j6BgIA9gYCAO4GAgDuhoKA8wcBAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPMHAQDyhoKA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAADyBgAA8wcBAPIGAgDyhoKA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAADyBgAA8gYAAPMHAQDyhoKA8wcBAPMHAQDzBwEA8wcBAPIGAgDuBgIA7gYCAO4GAADyBgAA8gYAAPIGAADyBgAA8wcBAPMHAQDwAAAAAgYAAPIGAADyBgAA8gYCAO4GAADyBgIA7gYAAPIGAADyxsDA94+LiPoKBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+DggI/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT/T0tI+gYAAPcHAQDyBgAA8gYCAPIGAgDsAAAAAgYCAO8HAQDyBgAA8gYAAPIGAADyBgIA8wcBAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDuBgIA7gYAAPMHAQDyBgAA8gYCAPMHAQDyBgAA8gYCAO8HAQDwAAAAAgYCAO4GAADyBgAA8gYAAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYCAOwAAAACBgAA8gYCAO4GAgDuBgAA8gYAAPJmYmD3V1NQ+gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/g4ICP4GAAD+BgAA/gYAAP4GAAD+CgQE/g4ICP4KBAT+CgQE/4+LiPqGgoD2BgIA8wcDAPIGAADyBgAA8gYCAO4GAADzBwEA8gYCAPMHAQDyBgIA7gYCAPIGAgDyBgAA8gYAAPIGAADzBwEA8wcBAPIGAgDzBwEA8gYCAPIGAgDyhoKA8oaCgPMHAQDzBwEA8gYCAPIGAgDuBgAA8wcBAPMHAQDyBgAA8gYCAO8HAQDzBwEA8gYAAPIGAgDuBgIA7wcBAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYCAO8HAQDzBwEA8gYCAO8HAQDyBgIA7wcBAPIGAADzBwEA8gYAAPIGAADyBgIA7kZCQPeXk5D6CgQE/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4GAAD+CgQE/gYAAP4KBAT+CgQE/goEBP4OCAj+DggI/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4OCAj+BgAA/gYAAP+Pi4j6JiIg9gYAAPAAAAAAAAAAAwcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgAA8wcBAPIGAgDyBgIA8gYCAPMHAQDyBgIA8gYCAPIGAgDzBwEA8wcBAPIGAADzBwEA8gYCAPMHAQDwAAAAAgYAAPMHAQDzBwEA8gYCAO4GAgDuBgIA7wcBAPIGAADyBgIA7gYAAPIGAgDzBwEA8gYAAPIGAgDuBgIA7gYCAO4GAADzBwEA8gYCAPIGAADyBgAA8gYAAPIGAADyRkJA95eTkPoKBAT+CgQE/g4ICP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD/j4uI+gYCAPYGAgDuBgIA7gYCAO4GAADzBwEA8oaCgPMHAQDzBwEA8wcBAPKGgoDyBgAA8gYAAPMHAQDyBgAA8wcBAPIGAgDyBgAA8wcBAPIGAgDyBgIA8wcBAPIGAgDyBgIA8gYCAPIGAADyBgAA8gYCAPIGAgDyBgIA7AAAAAMHAQDzBwEA8gYCAO4GAgDuBgIA7gYCAPMHAQDyBgAA8wcBAPMHAQDyBgIA8wcBAPIGAgDuBgIA7AAAAAIGAADyBgAA8oaCgPMHAQDyBgIA7gYCAO4mICD7z8vI+gYAAP4KBAT+CgQE/g4ICP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/8fDwPoWEBD6BgIA7gYCAO4GAgDuBgAA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA7gYAAPIGAADzBwEA8gYCAPIGAgDyBgAA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYAAPIGAADzBwEA8wcDAPKGgoDwAAAAAgYAAPMHAQDzBwEA8gYCAO4GAgDuBgAA8gYAAPIGAADyBgAA8wcBAPMHAQDzBwEA8wcBAPIGAgDuBgIA7gYCAO4GAADyBgIA8wcBAPMHAQDyBgIA75eRkPoKBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgIA+gYAAPIGAADzBwEA8wcBAPIGAgDuBgIA8wcBAPIGAADyBgAA8gYCAPIGAgDyBgIA8gYCAPIGAgDyBgIA8gYCAPIGAgDyBgIA8wcBAPMHAQDyBgAA8wcBAPMHAwDyhoKA8gYCAPMHAQDwAAAAAgYCAO4GAgDyBgIA8gYAAPIGAADyBgIA7gYCAPIGAADyBgIA7wcBAPMHAQDyBgAA8wcBAPIGAADyBgIA7gYCAO4GAADyBgAA8wcBAPIGAAD2xsLA+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/goEBP4KBAT+DggI/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/o6KiPpGQkD3BwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDyBgIA8gYCAPIGAgDyBgIA8gYCAPIGAgDzBwEA8wcBAPIGAgDyhoKA8wcBAPMHAQDzBwEA8gYCAPIGAgDyhoKA8gYAAPMHAQDyBgIA7gYCAO4GAgDuBgAA8gYAAPMHAQDyBgIA7gYCAO8HAQDyBgAA8gYAAPMHAQDzBwEA8wcBAPMHAQDyBgAA8AAAAAIGAADzBwEA8iYgIPuHg4D6BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP+Pi4j7R0NA9wcBAPIGAgDuBgIA8gYAAPIGAADyBgIA8wcBAPMHAQDzBwEA8gYAAPIGAADzBwEA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYCAO4GAADyBgIA7gYCAOwAAAACBgAA8wcBAPMHAQDyBgIA7gYAAPIGAgDyhoKA8gYCAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYAAPIGAAD2TkpI+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+DggI/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/hYSEPsHAQDyBgAA8gYCAO4GAADyBgIA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgIA8wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgIA7gYCAPKGgoDzBwEA8gYCAOwAAAADBwEA8gYAAPMHAQDyBgAA8wcBAPMHAQDyBgIA8wcBAPIGAgDzBwEA8gYCAPIGAgDzBwEA8iYgIPuPi4j6BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP+Xk5D6pqCg+gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDzBwEA8wcBAPIGAgDyBgAA8gYAAPIGAADyBgAA8wcBAPIGAgDyBgAA8gYAAPIGAgDuBgAA8gYCAO8HAQDzBwEA8wcBAPMHAQDyhoKA8gYAAPIGAADyBgIA8wcBAPImIiD2zsrI+gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/g4ICP4KBAT+DggI/g4ICP4KBAT+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/paSkPomIiD3BwEA8wcBAPIGAgDzBwEA8gYCAPIGAgDzBwEA8wcBAPIGAgDzBwEA8wcBAPMHAQDyBgAA8wcBAPIGAADzBwEA8wcDAPIGAgDzBwEA8gYCAPIGAgDuBgAA8gYAAPMHAQDyBgAA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA9g4KCPvPy8j6CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4OCAj+CgQE/goEBP4KBAT+lpKQ+kZCQPYGAADyhoKA8gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPIGAgDzBwEA8gYCAPIGAADyBgAA8gYCAPMHAQDyBgAA8wcBAPIGAADyBgAA8kZAQPYWEhD7z8vI+gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+DggI/goEBP4KBAT+CgQE/4+LiPoWEhD6ZmJg9gYCAPKGgoDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDyhoKA8wcBAPMHAQDyBgIA7AAAAAIGAADzBwEA8gYAAPIGAADyBgIA7gYAAPIGAgD2FhIQ+8/LyPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/o6KiPomIiD2BgAA8gYCAPIGAADyBgIA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgIA7wcBAPMHAQDyBgIA8gYAAPIGAADyFhAQ+w8LCPoGAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4SDAz+BgAA/g4ICP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+xsLA+paQkPsHAQDzBwEA8gYCAO4GAgDyBgAA8wcBAPMHAQDzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAgDuBgAA+kZCQPvPy8j6BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/g4ICP+Pi4j6joqI+kZAQPoGAgDyBgIA8wcBAPMHAQDyBgIA8wcBAPKGgID3FxEQ+o6KiPvPy8j6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4OCAj+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/g4ICP4OCAj+CgQE/gYAAP4GAAD+CgQE/g4ICP4OCAj+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+DggI/goEBP+Xk5D6lpKQ+rawsPpGQkD2BgAA86ehoPoKBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/g4ICP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD/p6Gg+4+LiPoKBAT+CgQE/goEBP4OCAj+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP4GAAD+CgQE/g4ICP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+DggI/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+DggI/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT/z8vI+8/LyPoKBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT/l5OQ+6ehoPoGAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/g4ICP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/g4ICP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT/t7Gw+wcBAPKmoqD2hoCA+paSkPuPi4j6BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/goEBP/X09D6joqI+xcREPpGQED2BgAA8wcBAPIGAgDzBwEA8wcBAPIGAADyFhAQ+oaCgPuPi4j6BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP/Py8j6VlJQ+iYgIPoGAgDzBwEA8gYAAPIGAgDuBgAA8wcBAPIGAgDyBgAA8gYCAO4GAADyBgIA7gYAAPIGAADylpCQ+tbS0PoGAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+DggI/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT/DwsI+iYgIPoGAgDyhoKA8wcBAPMHAQDyBgIA7gYAAPIGAADyBgIA7gYCAPIGAgDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAADyBgIA8wcBAPIGAgD2joqI+gYAAP4GAAD+BgAA/g4ICP4OCAj+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4OCAj+CgQE/goEBP4KBAT+CgQE/g4ICP4OCAj+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD/z8vI+hYSEPpmYmD3BwEA8wcBAPMHAwDzBwMA8wcBAPMHAQDyBgAA8gYCAPIGAADyBgAA8gYCAPMHAQDzBwEA8wcBAPKGgoDyBgIA8gYCAPMHAQDyBgIA8gYCAPIGAADyBgAA8kZCQPYWEhD7j4uI+goEBP4KBAT+CgQE/gYAAP4KBAT+DggI/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT+CgQE/g4ICP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/8/LyPoOCgj6RkBA9gYAAPIGAADyBgAA8gYCAPIGAgDyhoKA8wcBAPIGAADyBgIA8wcBAPIGAgDuBgAA8gYCAPIGAADzBwEA8gYCAPKGgoDyBgIA8gYAAPMHAQDyhoKA8oaCgPIGAADzBwEA8gYAAPIGAgDyBgIA9o6KiPoKBAT+BgAA/gYAAP4KBAT+DggI/g4ICP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP/X09D6FhIQ+oaAgPYGAgDyBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDyhoKA8gYCAPMHAQDyBgIA8wcBAPIGAADyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgAA8gYCAPIGAgDzBwEA8oaCgPIGAgDyBgAA8gYAAPIGAADwAAAAAgYAAPImIiD2npqY+gYAAP4KBAT+DggI/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/gYAAP4OCAj+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/s7KyPpGQkD2BgIA8wcBAPMHAQDyBgAA8gYCAPIGAgDyBgIA8wcBAPIGAgDyBgIA8gYCAPMHAQDzBwEA8gYAAPMHAQDyBgIA8wcBAPMHAQDyBgAA8wcBAPIGAADyBgAA8wcBAPIGAgDzBwEA8gYCAPIGAgDuBgIA7gYCAO4GAADwAAAAAgYCAO8HAQDzBwEA8oaAgPuHg4D6BgAA/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+DggI/goEBP4KBAT+DggI/goEBP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP+Xk5D6JiAg+gYCAPMHAQDzBwEA8wcBAPIGAgDzBwEA8wcBAPIGAADzBwEA8wcBAPIGAgDyBgIA8wcBAPMHAQDyBgIA7gYAAPMHAQDzBwEA8wcBAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDzBwEA8gYCAPKGgoDyBgIA8wcBAPIGAADyBgIA7gYAAPIGAADyBgAA8AAAAAIGAADyDgoI+gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4KBAT+BgAA/gYAAP4KBAT+DggI/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/lZSUPrGwMD3BwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPKGgoDzBwEA8gYCAO8HAQDyBgIA7gYAAPIGAgDuBgAA8gYCAPIGAgDzBwEA8gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDwAAAAAgYAAPAAAAACBgAA8gYCAO4GAgDsAAAAAwcDAPePi4j6CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/g4ICP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP+Pi4j6JiAg+wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPKGgoDyBgIA8wcBAPMHAQDyBgIA7gYCAO4GAgDuBgIA7wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAADyBgAA8wcBAPIGAADwAAAAAgYCAO8HAQDyBgAA8AAAAAAAAAADBwEA8gYCAO4mIiD2joqI+goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP4GAAD+DggI/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/s7KyPqGgID3BwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPKGgoDyBgIA8wcBAPMHAQDyBgAA8wcBAPIGAADyBgAA8wcBAPIGAgDyBgIA8gYCAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDyBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA8gYAAPIGAgDuBgIA8hYSEPoKBAT+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4OCAj+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT/l5GQ+wcBAPMHAQDzBwEA8wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyhoKA8wcBAPIGAADyBgIA7gYAAPIGAgDuBgAA8wcBAPMHAQDzBwEA8gYAAPMHAQDzBwEA8oaCgPIGAgDzBwEA8gYCAPIGAgDzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAgDzBwEA8gYAAPMHAQDyBgIA7wcBAPIGAgDuBgAA8gYAAPImICD7z8vI+goEBP4GAAD+CgQE/goEBP4OCAj+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/8fDwPomICD7BwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPKGgoDyBgIA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPMHAQDzBwEA8gYCAPIGAgDzBwEA8oaCgPIGAgDyBgIA8gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgIA7wcBAPIGAADzBwEA8gYCAPMHAQDyZmJg94+LiPoGAAD+CgQE/goEBP4GAAD+CgQE/gYAAP4KBAT+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD/j4uI+iYiIPcHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8oaCgPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8oaCgPMHAQDzBwEA8wcBAPIGAgDzBwEA8gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYCAO8HAQDzBwEA8wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDyBgIA8kZCQPePi4j6CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/gYAAP4KBAT+BgAA/gYAAP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP+Pi4j6RkJA9gYAAPIGAADzBwEA8gYAAPIGAADzBwEA8wcBAPMHAQDyBgIA8oaCgPMHAQDyBgIA8oaCgPIGAgDyBgIA8oaCgPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPIGAADyBgIA8gYAAPIGAADyBgIA7gYCAPIGAgDyBgAA8wcBAPMHAQDyBgIA8wcBAPIGAgDyhoKA8oaCgPMHAQDyBgIA8wcBAPIGAADzBwEA8gYAAPIGAgDuBgIA8gYCAPIGAgDyBgIA8wcBAPIGAgDyBgIA8gYAAPMHAQDzBwEA8wcBAPJGQkD3j4uI+goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/g4ICP4GAAD+BgAA/gYAAP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP4OCAj+CgQE/g4ICP4OCAj+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/09LSPpGQkD3BwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPMHAQDyBgIA8gYCAPIGAgDyBgIA8gYCAPMHAQDzBwEA8gYAAPIGAgDyBgIA8gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDyBgIA8oaCgPMHAQDyBgIA8wcBAPIGAgDuBgAA8gYAAPMHAQDyBgIA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgIA8gYCAPIGAADyhoCA909LSPoKBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4OCAj+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+CgQE/gYAAP4KBAT/j4uI+sbAwPYGAgDyBgIA7wcBAPMHAQDyBgAA8gYAAPMHAQDwAAAAAgYAAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPIGAADzBwEA8wcBAPIGAgDyhoKA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYCAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgIA8gYAAPIGAgDyBgAA8gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDuBgAA8wcBAPMHAQDzBwEA8mZiYPeXk5D6CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/gYAAP4GAAD+CgQE/gYAAP4KBAT+DggI/g4ICP4GAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP+Pi4j6RkJA9gYCAPIGAADzBwEA8gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAADzBwEA8gYCAPMHAQDyBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDyBgIA8wcBAPIGAADzBwEA8gYAAPIGAADyBgAA8wcBAPIGAgDzBwEA8wcBAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAADyBgAA8gYCAO8HAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPMHAQDzBwEA8wcBAPIGAgDyBgIA7wcBAPMHAQDzBwEA8wcBAPJGQkD3j4uI+g4ICP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4KBAT+BgAA/goEBP4KBAT+DggI/goEBP4KBAT+CgQE/gYAAP4GAAD+DggI/4+LiPpGQkD2BgAA8gYAAPIGAgDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADyhoKA8gYCAPMHAQDyBgIA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPMHAQDyBgIA8wcBAPIGAADyBgAA8wcBAPIGAgDyBgIA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYCAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYAAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8oaCgPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDyJiIg98/LyPoKBAT+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP4KBAT/19PQ+kZCQPYGAgDzBwEA8wcBAPMHAQDyBgAA8wcBAPIGAADyBgIA8wcBAPIGAgDzBwEA8gYCAPMHAQDyBgIA8gYAAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPKGgoDyhoKA8oaCgPMHAQDyBgIA8wcBAPIGAgDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDzBwEA8gYCAPIGAADyBgIA8wcBAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgIA7gYCAO4GAADzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAgDyhoKA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPMHAQDyBgIA7hYQEPoKBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4GAAD+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/goEBP4KBAT+DggI/goEBP4KBAT+CgQE/gYAAP4KBAT+NjAw+oaCgPKGgoDzBwEA8wcBAPMHAQDzBwEA8gYCAO4GAgDyBgAA8wcBAPKGgoDyBgAA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYAAPMHAQDyBgIA7gYAAPIGAgDuBgAA8gYAAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPIGAgDyhoKA8oaCgPMHAQDyBgIA8gYCAPIGAgDyBgAA8wcBAPIGAADyBgAA8gYAAPOXkZD6BgAA/gYAAP4GAAD+CgQE/gYAAP4GAAD+CgQE/goEBP4GAAD+BgAA/gYAAP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4OCgj6BgIA8oaCgPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYAAPKGgoDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAwDyBgAA8wcBAPIGAADzBwEA8gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8wcBAPMHAQDyhoKA8oaCgPKGgoDyBgIA8gYCAPIGAADzBwEA8wcBAPMHAQDyBgAA8AAAAAIGAADyBgAA8gYCAO8HAQDyzsrI+gYAAP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/gYAAP4KBAT+CgQE/g4ICP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+BgAA/oaCgPoGAgDuBgAA8gYCAO4GAgDzBwEA8wcBAPMHAQDyBgAA8gYCAO4GAADyBgAA8gYCAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYCAPMHAQDzBwEA8gYCAPMHAQDyBgAA8gYCAPIGAADyBgAA8gYCAPIGAgDyBgIA8wcBAPIGAADzBwEA8wcBAPIGAgDuhoKA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYAAPMHAQDwAAAAAwcBAPMHAQDyBgAA8gYCAPIGAgDyhoKA8oaCgPKGgoDyBgIA8wcBAPIGAgDyBgIA8wcBAPMHAQDyBgIA8gYAAPMHAQDyBgIA7gYAAPMHAQDyBgAA94eDgPoGAAD+BgAA/gYAAP4GAAD+CgQE/g4ICP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4GAAD+BgAA/gYAAP4GAAD/j4uI+kZCQPYGAADyBgIA7wcBAPMHAQDyBgIA8oaCgPMHAQDyBgIA7wcBAPIGAgDzBwEA8gYAAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPMHAQDyBgIA8wcBAPIGAgDyBgAA8wcBAPMHAQDyBgIA8wcBAPIGAgDvBwEA8gYAAPIGAADzBwEA8gYCAO4GAADyBgIA7gYCAPMHAQDyBgIA8gYAAPMHAQDzBwEA8wcBAPMHAQDyBgIA7wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgIA8gYCAPIGAADzBwEA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgAA8gYAAPoGAAD+BgAA/gYAAP4KBAT+CgQE/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+BgAA/goEBP4KBAT+BgAA/goEBP4GAAD+BgAA/goEBP4KBAT/R0NA9gYCAPIGAgDzBwEA8gYCAPIGAgDzBwEA8wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAgDyhoKA8gYCAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgAA8gYCAPMHAQDyBgAA8gYAAPMHAQDyBgAA8wcBAPIGAgDyBgAA8gYCAO4GAgDuBgAA8gYCAO4GAADzBwEA8wcBAPIGAgDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPJOSkj6BgAA/gYAAP4KBAT+DggI/gYAAP4KBAT+CgQE/goEBP4GAAD+BgAA/goEBP4KBAT+CgQE/goEBP4GAAD+BgAA/gYAAP4GAAD+BgAA/goEBP4WEhD6BgAA8gYCAPIGAgDzBwEA8gYAAPMHAQDyBgIA8wcBAPIGAgDyBgIA8gYCAPIGAgDyBgIA8gYAAPIGAgDyBgIA7gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYAAPIGAADzBwEA8wcBAPIGAADzBwEA8gYAAPIGAgDuBgAA8gYAAPMHAQDyBgIA7wcBAPIGAADzBwEA8wcBAPMHAQDyBgAA8wcBAPIGAADyBgIA8gYAAPMHAQDyBgAA8gYAAPIGAgDyBgAA8wcBAPMHAQDyBgIA8gYCAPMHAQDyBgAA8oaCgPIGAADyBgIA7wcBAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAO5GQED3j4uI+gYAAP4OCAj+CgQE/goEBP4OCAj+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+BgAA/gYAAP4GAAD+CgQE/5eTkPoGAgDzBwEA8oaCgPIGAgDzBwEA8wcBAPMHAQDyhoKA8gYCAPIGAADzBwEA8oaCgPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYAAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAADzBwEA8wcBAPIGAgDyhoKA8wcBAPMHAQDyBgIA8gYAAPIGAgDyBgAA8oaCgPIGAADzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDyBgIA8wcBAPIGAgDzBwEA8gYAAPIGAgDzBwEA8wcBAPMHAQDyBgIA8gYCAPIGAgDzBwEA8gYCAPIGAgDyBgAA8gYAAPIGAADyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDzBwEA8gYAAPIGAADyJiAg+goEBP4KBAT+DggI/goEBP4OCAj+CgQE/g4ICP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+CgQE/qagoPoGAADyBgAA8gYAAPIGAADyBgIA8gYCAPIGAADyBgIA8gYCAO8HAQDyBgAA8wcBAPIGAADyBgAA8gYCAPIGAADyBgIA7gYAAPIGAADyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPMHAQDyBgAA8wcBAPIGAADyBgAA8gYAAPMHAQDyBgIA8wcBAPIGAgDyBgIA7wcBAPKGgoDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPIGAgDvBwEA8gYAAPIGAgDvBwEA8gYCAPKGgoDyBgIA8gYCAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDyBgIA8gYAAPIGAADzBwEA8wcBAPAAAAACBgAA8gYCAO4GAADyBgIA7s7KyPoGAAD+BgAA/gYAAP4GAAD+CgQE/g4ICP4GAAD+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/gYAAP4KBAT+lpKQ+gYCAPMHAQDzBwEA8wcBAPKGgoDyBgIA8gYCAPMHAQDzBwEA8gYCAPMHAQDzBwEA8gYCAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYCAPIGAADyBgAA8gYAAPIGAgDvBwEA8gYCAPMHAQDzBwEA8gYCAPIGAgDzBwEA8gYAAPIGAADyBgAA8wcBAPKGgoDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAgDyBgIA8gYCAPIGAADyBgAA8gYCAO4GAADyBgIA8wcBAPIGAgDyhoKA8gYCAPIGAADzBwEA8gYCAPMHAQDyBgIA8wcBAPIGAADzBwEA8oaCgPIGAgDyBgIA8gYAAPIGAADzBwEA8wcBAPIGAgDzBwEA8gYAAPIGAADyBgAA8iYiIPfHw8D6BgAA/gYAAP4GAAD+BgAA/goEBP4KBAT+CgQE/g4ICP4OCAj+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+JiIg9wcBAPMHAQDzBwEA8gYCAO4GAgDyBgAA8wcBAPMHAQDyhoKA8wcBAPMHAQDyBgAA8gYCAPMHAQDyhoKA8wcBAPIGAADzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDyBgIA8gYCAPIGAgDyBgAA8gYCAO4GAgDvBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAgDyBgIA8gYCAPIGAADzBwEA8gYCAPIGAgDzBwEA8oaCgPMHAQDzBwEA8gYCAPIGAgDzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAgDyBgAA8wcBAPIGAADyBgAA8gYCAO8HAQDzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIOCgj6BgAA/gYAAP4GAAD+BgAA/gYAAP4KBAT+DggI/goEBP4KBAT+CgQE/goEBP4OCAj+CgQE/goEBP6WkpD6BgIA8gYCAPIGAgDzBwEA8wcBAPKGgoDzBwEA8wcBAPIGAADzBwEA8gYAAPMHAQDyBgAA8wcBAPIGAgDuBgAA8gYAAPIGAADzBwEA8wcBAPIGAADzBwEA8oaCgPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDyBgIA8gYCAPIGAADyBgIA8wcBAPIGAgDyBgAA8gYCAPIGAADyBgAA8AAAAAIGAADyBgAA8wcBAPIGAADyBgIA8gYAAPIGAADzBwEA8wcBAPIGAADyBgIA8wcBAPMHAQDzBwEA8wcBAPKGgoDyBgIA8wcBAPIGAgDyBgIA8gYCAPJGQED3z8vI+gYAAP4GAAD+DggI/goEBP4GAAD+CgQE/g4ICP4KBAT+CgQE/goEBP4KBAT+CgQE/4+LiPpmYmD3BwEA8wcBAPKGgoDyBgIA8gYCAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPIGAgDyBgAA8gYAAPKGgoDzBwEA8gYCAPKGgoDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8gYCAPIGAADzBwEA8wcBAPIGAgDzBwEA8gYAAPMHAQDzBwEA8gYAAPMHAQDyBgIA7gYAAPIGAADyBgAA8AAAAAMHAQDzBwEA8wcBAPAAAAACBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDuBgAA8gYAAPMHAQDzBwEA8gYCAPIGAgDyBgIA8gYCAPIGAgDzBwEA8wcBAPIGAADyDgoI+goEBP4KBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/goEBP4KBAT+CgQE/g4KCPsHAQDyhoKA8oaCgPIGAgDzBwEA8gYCAPMHAQDyBgAA8gYAAPMHAQDzBwEA8gYAAPKGgoDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDyBgIA8wcBAPMHAQDyBgIA8wcBAPIGAgDuBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8oaCgPIGAADyBgAA8gYAAPIGAgDuBgIA7gYCAO8HAQDyBgIA7gYCAO4GAADyBgAA8wcBAPMHAQDyBgIA7wcBAPMHAQDyBgIA8gYAAPIGAgDuBgAA8gYAAPMHAQDzBwEA8gYCAPIGAgDyBgIA8oaCgPIGAgDzBwEA8gYCAPIGAADyhoCA98/LyPoKBAT+CgQE/goEBP4GAAD+CgQE/goEBP4KBAT+BgAA/gYAAP4KBAT+CgQE/mZiYPYGAADyBgIA8oaCgPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADzBwEA8gYCAPIGAgDzBwEA8oaCgPIGAgDvBwEA8gYCAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYCAPIGAgDzBwEA8gYCAPIGAADzBwEA8wcBAPMHAQDyBgIA8gYAAPMHAQDzBwEA8gYCAPIGAADyBgAA8wcBAPMHAQDzBwEA8gYAAPIGAgDzBwEA8wcBAPMHAQDyBgIA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgIA8gYAAPIGAgDuBgIA7wcBAPMHAQDyBgAA8gYAAPMHAQDzBwEA8gYCAPIGAADyBgAA8gYAAPIGAADzBwEA8wcBAPIGAgDyBgIA8gYCAPIGAgDzBwEA8wcBAPIGAADyBgAA8hYSEPoKBAT+BgAA/goEBP4GAAD+CgQE/goEBP4GAAD+CgQE/gYAAP4KBAT+lpKQ+gYCAPIGAgDzBwEA8gYCAPMHAQDzBwEA8gYCAPIGAgDyBgIA8wcBAPIGAADzBwEA8gYAAPIGAgDuBgIA7wcBAPIGAgDuBgAA8gYCAPIGAADyBgAA8gYCAPMHAQDyBgIA8wcBAPIGAgDyBgIA8wcBAPIGAgDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyhoKA8wcBAPMHAQDzBwEA8wcBAPIGAgDuBgAA8gYCAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPIGAgDzBwMA8wcBAPMHAQDzBwEA8AAAAAIGAADzBwEA8AAAAAIGAADyBgIA8gYAAPIGAgDvBwEA8oaCgPIGAgDyBgAA8wcBAPIGAADwAAAAAgYAAPMHAQDyBgAA8gYCAO4GAADzBwEA8wcBAPIGAgDyBgIA8gYCAPIGAgDzBwEA8gYAAPIGAADyBgAA8kZCQPYKBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/goEBP4KBAT+RkJA9wcBAPIGAgDyBgIA8gYCAPKGgoDzBwEA8wcBAPKGgoDzBwEA8wcBAPMHAQDyBgIA7gYCAO4GAADyBgIA8gYAAPIGAADyBgIA7gYCAO4GAgDyBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDyBgIA8wcBAPIGAgDyBgIA8gYCAPMHAQDyBgIA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPMHAQDyBgAA8wcBAPMHAQDyBgAA8gYCAO8HAQDzBwEA8wcBAPMHAQDzBwEA8gYCAO4GAgDvBwEA8gYAAPIGAADyBgAA8gYCAO4GAADzBwEA8wcBAPIGAADyBgAA8wcBAPMHAQDyBgIA7gYCAO8HAQDyBgAA8AAAAAIGAADyBgAA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYAAPMPCwj6BgAA/gYAAP4KBAT+CgQE/goEBP4KBAT+BgAA/goEBP7Oysj6BgIA8wcBAPIGAgDyBgIA8gYCAPIGAgDyBgIA8oaCgPKGgoDyBgIA8gYCAPIGAgDvBwEA8gYAAPMHAQDyBgAA8gYAAPIGAgDvBwEA8gYAAPMHAQDzBwEA8gYAAPMHAQDzBwEA8gYCAPIGAgDyBgAA8wcBAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDuBgAA8wcBAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYAAPIGAADyBgAA8wcBAPIGAgDuBgAA8gYAAPMHAQDyBgIA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAgDuBgAA8gYCAO4GAADzBwEA8gYAAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDyBgIA8gYAAPIGAAD6BgAA/gYAAP4KBAT+CgQE/goEBP4OCAj+BgAA/goEBP6WkJD7BwEA8wcBAPIGAADyBgAA8gYCAPKGgoDyBgIA7wcBAPMHAQDzBwEA8wcBAPKGgoDyBgIA8gYCAO4GAADwAAAAAgYCAO4GAADzBwEA8gYAAPIGAgDwAAAAAgYAAPMHAQDyBgIA8wcBAPMHAQDzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgIA8oaCgPMHAQDyBgAA8gYAAPMHAQDzBwEA8gYAAPIGAgDuBgAA8wcBAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADyBgIA8wcBAPIGAgDyBgIA8gYCAPIGAgDzBwEA8wcBAPIGAADyhoKA8wcBAPMHAQDzz8vI+goEBP4KBAT+CgQE/goEBP4OCAj+CgQE/4+LiPoGAgDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDzBwEA8wcBAPKGgoDyBgIA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgAA8gYCAO4GAADzBwEA8wcBAPIGAADyBgAA8wcBAPIGAADzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAADyBgAA8wcBAPIGAADyBgAA8gYAAPIGAgDvBwEA8gYAAPIGAADyBgAA8wcBAPKGgoDyBgAA8gYCAPIGAgDyhoKA8oaCgPIGAgDzBwEA8gYCAPMHAQDzBwEA8gYAAPIGAADyBgAA8wcBAPAAAAADBwEA8wcBAPIGAgDuBgIA7gYAAPIGAgDyBgAA8wcBAPIGAADyBgIA7gYAAPMHAQDyBgIA7gYCAO4GAgDvBwEA8wcBAPMHAQDyBgIA8gYCAPIGAgDzBwEA8oaCgPMHAQDzBwEA8wcBAPIGAADyVlJQ+goEBP4KBAT+CgQE/goEBP4KBAT+CgQE/paSkPoGAgDyBgIA8wcBAPMHAQDyhoKA8gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8gYAAPIGAgDyBgIA8gYAAPIGAADyBgAA8gYCAPIGAADzBwEA8gYAAPIGAgDvBwEA8oaCgPIGAgDyBgIA8gYAAPIGAADzBwEA8gYCAPIGAgDzBwEA8gYCAPIGAgDyBgAA8oaCgPIGAADzBwEA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYCAPIGAgDzBwEA8gYCAPMHAQDzBwEA8gYCAPIGAgDyBgIA8gYCAPMHAQDzBwEA8gYAAPMHAQDyBgIA7gYAAPIGAgDuBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgIA8wcBAPIGAADwAAAAAgYAAPIGAADyBgAA8gYAAPIGAADyBgIA7wcBAPIGAgDyBgIA8gYAAPIGAADzBwEA8gYAAPMHAQDzBwEA8wcBAPMHAQDyJiAg+goEBP4KBAT+CgQE/gYAAP4KBAT+BgAA/iYgIPoGAADyBgIA8gYAAPMHAQDyBgIA8wcBAPIGAgDyBgIA8gYCAPIGAgDzBwEA8gYAAPIGAADzBwEA8gYCAO4GAgDuBgIA7gYAAPIGAADyBgAA8gYAAPMHAQDyBgAA8wcBAPIGAADyBgAA8gYCAO4GAADyhoKA8gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7gYAAPAAAAACBgAA8gYCAO4GAgDvBwEA8gYCAPIGAADyBgAA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgIA8gYCAPIGAgDyBgIA8gYCAPMHAQDyhoKA8wcBAPIGAgDyBgAA8wcBAPMHAQDyBgAA8AAAAAIGAgDuBgIA8wcBAPAAAAACBgAA8wcBAPIGAgDuBgAA8gYAAPIGAADzBwEA8gYAAPIGAADyBgAA8gYCAO4GAADyBgIA8gYCAO8HAQDyBgAA8wcBAPMHAQDyBgAA8wcBAPMHAQDyBgAA88/LyPoGAAD+CgQE/goEBP4KBAT/j4uI+gYAAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPKGgoDyBgIA8gYCAPIGAgDyBgIA7gYCAO8HAQDyBgAA8gYAAPIGAADyBgIA7gYAAPIGAgDsAAAAAAAAAAMHAQDyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8wcBAPIGAgDuBgIA7gYAAPMHAQDwAAAAAgYAAPIGAgDuBgIA7gYAAPMHAQDzBwEA8gYAAPMHAQDyBgAA8gYCAPIGAgDzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDyBgAA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgAA8gYAAPKGgoDyBgAA8wcBAPIGAADyBgAA8gYAAPMHAQDyBgAA8gYAAPIGAADyBgIA7wcBAPIGAgDzBwEA8gYAAPAAAAACBgAA8gYAAPMHAQDzBwEA8wcBAPMHAQDyBgIA8wcBAPMHAQDyBgAA8paSkPoKBAT+CgQE/goEBP4KBAT+hoKA+gYAAPMHAQDyhoKA8gYCAPIGAADyBgIA8gYCAPMHAQDyBgIA8oaCgPIGAADyBgAA8gYAAPMHAQDzBwEA8oaCgPIGAgDyBgIA7gYCAPIGAADyBgAA8wcBAPIGAgDyhoKA8wcBAPIGAADyhoKA8gYAAPIGAADyBgIA7gYAAPIGAADyBgAA8gYAAPIGAADyBgAA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgAA8gYAAPIGAADzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAADzBwEA8gYAAPIGAADzBwEA8gYAAPMHAQDyBgIA8gYAAPIGAgDyBgIA8wcBAPMHAQDwAAAAAgYCAO8HAQDyBgAA8gYCAOwAAAACBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDvBwEA8wcBAPMHAQDzBwEA8gYAAPIGAADyBgIA7wcBAPMHAQDzBwEA8gYAAPMHAQDyBgIA8wcBAPMHAQDzBwEA8xcREPoKBAT+CgQE/goEBP4KBAT+pqCg+wcBAPIGAgDyBgIA8wcBAPIGAADzBwEA8gYCAPIGAgDyBgIA8wcBAPMHAQDyBgIA8gYCAPIGAADyBgAA8gYCAPMHAQDyBgIA7wcBAPIGAADyBgAA8wcBAPIGAADzBwEA8wcBAPIGAgDuBgAA8gYCAO4GAADyBgAA8gYAAPIGAgDuBgAA8gYAAPIGAgDuBgAA8gYAAPIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDuBgAA8gYAAPMHAQDzBwEA8gYAAPIGAADyBgIA8wcBAPMHAQDzBwEA8wcBAPIGAgDzBwEA8gYCAPMHAQDzBwEA8wcBAPIGAgDzBwEA8wcBAPIGAADzBwEA8gYCAO4GAADzBwEA8gYAAPIGAADzBwEA8wcBAPMHAQDzBwEA8wcBAPMHAQDzBwEA8gYCAPMHAQDzBwEA8wcBAPMHAQDyBgIA8gYCAPMHAQDzBwEA8wcBAPIGAADyBgAA8kZAQPYGAAD+CgQE/goEBP4KBAT+JiIg9gYCAPIGAgDyBgIA8wcBAPIGAgDyBgAA8gYCAPMHAQDyBgAA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgAA8gYAAPIGAADyBgIA7gYAAPMHAQDyBgIA7gYCAO4GAgDsAAAAAgYCAO4GAADyBgAA8wcBAPIGAADyBgAA8gYCAO4GAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAADyBgIA7gYAAPIGAgDyBgIA7gYAAPAAAAACBgAA8wcBAPMHAQDzBwEA8wcBAPIGAADzBwEA8wcBAPIGAgDyBgAA8wcBAPIGAgDzBwEA8wcBAPKGgoDyBgAA8wcBAPIGAADzBwEA8AAAAAIGAADyBgIA7gYAAPMHAQDyBgAA8gYAAPIGAADyBgAA8wcBAPIGAADzBwEA8gYCAPIGAADyBgIA7wcBAPIGAgDyBgIA8gYAAPMHAQDyBgIA8gYCAPMHAQDyBgIA8wcBAPMHAQDyBgAA8wcBAPOXkZD7h4OA+8/LyPunoaD7BwEA8gYCAPIGAgDzBwEA8gYAAPIGAgDvBwEA8wcBAPIGAADyBgIA8wcBAPIGAADyBgIA8wcBAPMHAQDyBgAA8gYAAPIGAADyBgAA8gYAAPIGAgDvBwEA8wcBAPIGAgDuBgAA8gYAAPIGAgDuBgAA8wcBAPIGAgDyBgIA7gYCAO4GAADzBwEA8wcBAPMHAQDzBwEA8wcBAPIGAgDuBgIA7gYCAPMHAQDyBgIA7gYAAPIGAADyBgAA8",
+    "96-20260520": "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m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPp2cnD6fnp4+o6KiPqmoqD6pqKg+q6qqPqOioj6Pjo4+7exsPtHQUD6dnBw+6ejoPcHAwD3x8HA9gYAAPcHAQDyBgIA70dBQPamoqD3p6Og9paQkPs3MTD7Z2Fg+6ehoPoOCgj6NjIw+m5qaPqOioj6npqY+p6amPqWkpD6hoKA+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPp2cnD6fnp4+paSkPqWkpD6pqKg+q6qqPqempj6bmpo+jYyMPoWEhD7p6Gg+1dRUPs3MTD6lpCQ+2djYPZGQkD3BwEA9vbw8PtHQUD7x8HA+iYiIPpeWlj6XlpY+lZSUPpeWlj6ZmJg+m5qaPpuamj6dnJw+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+nZycPp2cnD6bmpo+mZiYPpeWlj6XlpY+mZiYPpmYmD6FhIQ+4eBgPsHAQD6pqCg+/fx8Po2MjD6dnJw+sbCwPrm4uD63trY+sbCwPquqqj6npqY+o6KiPp+enj6fnp4+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp+enj6joqI+p6amPquqqj6xsLA+ubi4Prm4uD6xsLA+nZycPomIiD719HQ++fh4PouKij6bmpo+sbCwPrm4uD63trY+sbCwPquqqj6pqKg+o6KiPp+enj6dnJw+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6dnJw+nZycPp+enj6joqI+p6amPq2srD6zsrI+t7a2Prm4uD6xsLA+nZycPo2MjD79/Hw+qagoPsXERD7d3Fw+h4aGPpmYmD6ZmJg+lZSUPpeWlj6ZmJg+nZycPpuamj6dnJw+nZycPp2cnD6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPp2cnD6dnJw+nZycPpuamj6bmpo+mZiYPpmYmD6XlpY+l5aWPpeWlj6HhoY+7exsPtXUVD69vDw+wcBAPZGQkD3Z2Ng9paQkPs3MTD7Z2Fg+6ehoPoWEhD6NjIw+m5qaPqWkpD6pqKg+qaioPqWkpD6joqI+n56ePp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6dnJw+oaCgPqOioj6pqKg+p6amPqOioj6bmpo+jYyMPoOCgj7p6Gg+1dRUPsnISD6lpCQ+6ejoPaGgoD3h4GA9gYCAO8HAQDzh4OA88fBwPcnIyD3p6Og9nZwcPtHQUD7t7Gw+j46OPqGgoD6pqKg+qaioPqmoqD6joqI+n56ePp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+oaCgPqWkpD6pqKg+paSkPqGgoD6Pjo4+7exsPtHQUD6dnBw+6ejoPcnIyD3h4GA94eDgPMHAQDyBgIA7AAAAAAAAAACBgIA7AAAAAIGAADyBgIA80dBQPbm4uD3h4OA9oaAgPsnISD7x8HA+jYyMPo+Ojj6RkJA+nZycPp2cnD6hoKA+n56ePp2cnD6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp+enj6hoKA+n56ePp2cnD6dnJw+l5aWPpOSkj6Pjo4+/fx8PtXUVD6hoCA+4eDgPbGwsD3R0FA9oaCgPIGAgDuBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgAA8AAAAAIGAgDuBgAA8wcBAPKGgoDzBwMA80dBQPbm4uD2JiAg+xcREPuHgYD6DgoI+nZycPqempj6vrq4+p6amPqGgoD6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6fnp4+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+n56ePpuamj6bmpo+m5qaPpuamj6bmpo+nZycPqWkpD6pqKg+q6qqPquqqj6lpKQ+k5KSPoGAgD7d3Fw+oaAgPsnIyD3R0FA9wcDAPMHAwDzBwEA8gYAAPAAAAACBgAA8gYAAPAAAAACBgIA7gYCAO4GAADwAAAAAgYCAO4GAADyBgIA7AAAAAAAAAACBgIA7gYCAO8HAQDzh4OA8ubi4PYmICD7JyEg+h4aGPpWUlD6npqY+p6amPp+enj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+n56ePpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+nZycPp+enj6joqI+oaCgPpuamj6VlJQ+7exsPrW0ND6FhAQ+4eBgPaGgoDyBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAADyBgIA7gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAADyBgIA7wcBAPJGQED2JiIg9hYQEPrm4OD7x8HA+jYyMPpeWlj6npqY+paSkPqGgoD6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPqGgoD6joqI+oaCgPpWUlD6NjIw+/fx8Ps3MTD6ZmBg+sbCwPYGAgD2hoCA9AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYCAO4GAADyBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPIGAADyBgIA7AAAAAIGAADyBgIA8sbAwPZmYmD2ZmBg+4eBgPpGQkD6vrq4+sbCwPqempj6fnp4+n56ePp2cnD6ZmJg+m5qaPpuamj6dnJw+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+mZiYPpuamj6dnJw+n56ePqmoqD6pqKg+paSkPo2MjD7t7Gw+sbAwPsnIyD2BgIA9oaCgPIGAADyBgAA8AAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyxsDA9+fj4PcXERD6Lioo+lZSUPpeWlj6bmpo+n56ePp+enj6dnJw+m5qaPpuamj6dnJw+nZycPpuamj6fnp4+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6dnJw+nZycPpeWlj6NjIw+/fx8PrW0ND6NjAw+kZCQPYGAADyBgIA7gYAAPAAAAAAAAAAAAAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8AAAAAIGAgDuBgAA8gYCAOwAAAAAAAAAAAAAAAAAAAACBgIA7gYCAOwAAAAAAAAAA4eDgPPHwcD35+Pg9wcBAPvn4eD6VlJQ+oaCgPqempj6lpKQ+n56ePpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6fnp4+o6KiPqempj6joqI+m5qaPoGAgD65uDg+6ejoPdHQUD2RkBA9gYCAPAAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBgIA7AAAAAAAAAAAAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8gYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDuBgAA9sbCwPbm4OD6FhIQ+mZiYPqmoqD6npqY+oaCgPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6fnp4+p6amPqmoqD6dnJw+j46OPsnISD7BwMA9gYAAPYGAgDuBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDuBgIA7AAAAAIGAgDuBgIA7gYAAPIGAADyBgIA7AAAAAIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPIGAgDsAAAAAgYAAPIGAgDuBgIA7gYCAOwAAAACBgAA8AAAAAAAAAACBgAA8gYCAPImIiD2trCw+4eBgPo2MjD6dnJw+nZycPqOioj6hoKA+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPp2cnD6bmpo+n56ePp+enj6fnp4+n56ePo+Ojj7p6Gg+vbw8PqGgoD3BwEA8AAAAAIGAADyBgAA8AAAAAIGAADwAAAAAAAAAAAAAAAAAAAAAgYAAPIGAgDsAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDuBgIA7gYAAPIGAgDuBgIA7gYCAO4GAADwAAAAAgYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDyZmJg9jYwMPt3cXD6Pjo4+n56ePquqqj6pqKg+nZycPpuamj6bmpo+nZycPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPp+enj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6bmpo+m5qaPpuamj6fnp4+paSkPqmoqD6hoKA+j46OPt3cXD6NjAw+oaCgPaGgoDwAAAAAAAAAAIGAgDuBgAA8gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYAAPAAAAACBgIA7gYCAO4GAADwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7gYAAPAAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAOwAAAACBgIA8kZAQPYWEBD7V1FQ+iYiIPqWkpD6lpKQ+nZycPp2cnD6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+paSkPqWkpD6Lioo+1dRUPoWEBD6hoCA9gYCAPAAAAAAAAAAAAAAAAAAAAACBgIA7gYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAADwAAAAAgYCAO4GAgDuBgIA7gYAAPMHAQDyBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAgYAAPIGAgDsAAAAAAAAAAAAAAAAAAAAAgYCAOwAAAACBgIA7gYCAO5GQED3h4OA9sbAwPoOCgj6VlJQ+n56ePqWkpD6joqI+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+oaCgPqWkpD6fnp4+l5aWPoWEhD6xsDA+2djYPZGQED2BgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAADwAAAAAgYCAOwAAAACBgIA7gYAAPIGAADwAAAAAgYCAO4GAADyBgAA8AAAAAAAAAACBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADwAAAAAAAAAAIGAADyBgAA8gYCAO4GAgDuBgAA8gYAAPAAAAAAAAAAAgYAAPIGAgDyhoCA9wcDAPcHAQD6FhIQ+oaCgPquqqj6npqY+nZycPpuamj6dnJw+nZycPp2cnD6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+paSkPq+urj6joqI+hYSEPsHAQD7BwMA9oaAgPcHAQDwAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8wcBAPAAAAACBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADyBgIA7gYCAO4GAADyBgAA8gYCAOwAAAACBgAA8gYAAPIGAgDuBgIA7gYCAO4GAADwAAAAAgYCAO4GAgDuBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDsAAAAAgYAAPIGAgDsAAAAAgYAAPMHAwD2xsDA+g4KCPqOioj6hoKA+n56ePp+enj6bmpo+m5qaPp2cnD6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6dnJw+m5qaPp2cnD6dnJw+n56ePqOioj6FhIQ+sbAwPsHAwD3BwEA8AAAAAAAAAAAAAAAAgYCAO4GAADwAAAAAgYAAPAAAAACBgIA7gYCAOwAAAACBgAA8gYAAPIGAgDuBgAA8AAAAAIGAADyBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAAAAAAIGAgDuBgAA8gYAAPAAAAAAAAAAAgYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAADwAAAAAAAAAAIGAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO+Hg4DzBwMA9sbAwPoWEhD6XlpY+paSkPqempj6hoKA+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+n56ePqWkpD6lpKQ+lZSUPoWEhD6xsDA+ubi4PcHAwDwAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgIA7gYCAO4GAADyBgIA7gYCAOwAAAAAAAAAAgYCAO4GAADzBwMA8ubi4PcHAQD6FhIQ+paSkPqmoqD6hoKA+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+n56ePqempj6lpKQ+hYSEPsHAQD65uLg94eDgPIGAADwAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7gYCAO4GAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAgDsAAAAAgYCAO4GAgDuBgAA8AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDuBgIA7gYAAPMHAwD2xsDA+i4qKPp2cnD6bmpo+o6KiPqGgoD6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6fnp4+m5qaPpuamj6bmpo+m5qaPp+enj6hoKA+nZycPqGgoD6JiIg+sbAwPrGwsD2BgAA8AAAAAAAAAADBwEA8gYAAPAAAAACBgAA8AAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7gYCAO4GAADyBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAgYAAPIGAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7AAAAAIGAADyBgAA8AAAAAKGgID3h4OA92dhYPo2MjD6dnJw+q6qqPqempj6dnJw+mZiYPpuamj6bmpo+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6dnJw+m5qaPpuamj6ZmJg+nZycPqWkpD6pqKg+n56ePpGQkD7V1FQ+2djYPZGQED2BgIA7gYCAOwAAAACBgIA7gYAAPAAAAAAAAAAAAAAAAAAAAACBgAA8AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAADwAAAAAgYCAO4GAADwAAAAAAAAAAAAAAACBgIA7gYCAOwAAAACBgAA8gYAAPAAAAACBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYAAPMHAQDyhoCA9hYQEPt3cXD6NjIw+qaioPqempj6dnJw+m5qaPpuamj6dnJw+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+nZycPpuamj6bmpo+nZycPqempj6pqKg+j46OPt3cXD6FhAQ+kZAQPcHAQDyBgIA7gYAAPAAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAAAAAACBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgAA8gYAAPIGAgDuBgAA8AAAAAIGAgDuBgAA8gYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAADyBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAACBgAA8AAAAAAAAAACBgAA8AAAAAAAAAACBgAA8AAAAAIGAgDuBgAA8oaAgPZGQED7p6Gg+n56ePqOioj6dnJw+nZycPp+enj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6dnJw+nZycPpuamj6bmpo+nZycPp2cnD6dnJw+m5qaPqGgoD6bmpo+4eBgPo2MDD6hoCA9gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYCAO4GAADwAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgAA8AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8gYCAO4GAADwAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADyBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgIA7gYCAPKGgoD29vDw+j46OPpuamj6dnJw+oaCgPp+enj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPp2cnD6hoKA+oaCgPpeWlj6HhoY+sbAwPpmYmD3BwEA8AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAADyBgIA7gYCAO4GAADwAAAAAgYCAO4GAgDuBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDyhoKA9zcxMPoOCgj6XlpY+paSkPqOioj6dnJw+m5qaPpuamj6bmpo+nZycPpuamj6bmpo+nZycPp2cnD6bmpo+m5qaPpuamj6bmpo+m5qaPqGgoD6rqqo+mZiYPv38fD69vDw+kZCQPYGAgDwAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPMHAQDwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYAAPAAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAADwAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYCAO4GAADyBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDsAAAAAgYAAPAAAAACBgIA7gYAAPIGAADwAAAAAgYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAAAAAAAAAAADBwEA8wcDAPcHAQD6Pjo4+q6qqPqOioj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPqWkpD6xsLA+lZSUPsHAQD6xsLA9wcBAPIGAgDuBgIA7AAAAAAAAAACBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYAAPIGAADyBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7gYAAPIGAgDsAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYAAPeno6D2BgIA+paSkPp+enj6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPqWkpD6vrq4+iYiIPoGAAD6BgAA9AAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgIA7gYCAO4GAADwAAAAAgYAAPIGAADzBwEA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO+HgYD29vDw+j46OPpWUlD6fnp4+oaCgPp2cnD6dnJw+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPp+enj6joqI+n56ePpmYmD6RkJA+xcREPtHQUD2BgIA7gYAAPIGAADwAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgAA8AAAAAIGAgDsAAAAAAAAAAMHAQDyBgAA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAACBgIA7AAAAAIGAADyBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAgDuBgIA7gYCAOwAAAACBgIA7gYAAPIGAgDuBgIA7gYAAPIGAADyBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7gYAAPKGgID2NjAw+8fBwPo+Ojj6joqI+p6amPp+enj6bmpo+nZycPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPqGgoD6rqqo+p6amPo2MjD7h4GA++fj4PeHg4DwAAAAAgYAAPIGAADwAAAAAAAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYAAPIGAgDuBgAA8AAAAAIGAgDsAAAAAgYCAOwAAAACBgIA7gYAAPIGAgDsAAAAAgYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAOwAAAACBgIA7wcBAPIGAgDuBgIA7gYCAOwAAAACBgIA7gYAAPMHAQDwAAAAAgYCAOwAAAACBgIA7gYAAPIGAgDsAAAAAAAAAAIGAgDuBgIA7gYCAO4GAgDyZmJg9sbAwPvn4eD6joqI+q6qqPp+enj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6bmpo+m5qaPqGgoD6trKw+o6KiPvHwcD6RkBA+oaAgPYGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAIGAADyBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDsAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADyBgIA7gYCAOwAAAACBgIA7gYAAPMHAQDyBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAAAAAACBgAA8ycjIPcnISD6bmpo+q6qqPp+enj6bmpo+m5qaPpuamj6bmpo+m5qaPpuamj6fnp4+nZycPp2cnD6npqY+l5aWPrW0ND6ZmJg9AAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAOwAAAACBgIA7gYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAAAAAAAA4eBgPaGgID6XlpY+paSkPp2cnD6dnJw+nZycPpuamj6bmpo+nZycPp+enj6fnp4+n56ePpmYmD6dnJw+h4aGPoWEBD7BwEA9gYAAPAAAAACBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYAAPAAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8gYCAO4GAADwAAAAAgYAAPAAAAAAAAAAAgYAAPMHAQDwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDuBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgAA8gYAAPAAAAAAAAAAAAAAAAIGAgDuBgIA7oaCgPMHAwD3x8HA+kZCQPpeWlj6hoKA+oaCgPp2cnD6bmpo+nZycPp2cnD6joqI+o6KiPpOSkj6DgoI+xcREPoGAgD2hoKA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAAAAAAAAAAACBgIA7gYCAO4GAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8gYCAO4GAADwAAAAAgYCAO4GAgDsAAAAAAAAAAIGAADyBgIA7gYCAO4GAgDuBgAA8AAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYAAPPHwcD25uDg+gYCAPpWUlD6lpKQ+paSkPpuamj6bmpo+m5qaPp2cnD6lpKQ+qaioPo+Ojj7h4GA+iYgIPoGAAD2BgAA8gYCAO4GAgDuBgIA7gYCAO4GAADyBgIA7AAAAAAAAAACBgIA7gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYAAPAAAAACBgIA7gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAO4GAADyBgIA7gYCAO4GAADwAAAAAAAAAAAAAAACBgAA8gYCAOwAAAACBgIA7gYAAPJGQED2FhAQ+3dxcPo+Ojj6rqqo+p6amPp2cnD6bmpo+m5qaPp2cnD6pqKg+q6qqPo2MjD69vDw+ubi4PYGAADyBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgAA8AAAAAAAAAACBgIA7AAAAAIGAADwAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAAAAAAIGAADzBwEA8gYCAO4GAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAAAAAAAAAAAAAIGAADyBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAADR0FA9nZwcPvn4eD6pqKg+qaioPpuamj6dnJw+nZycPp2cnD6pqKg+p6amPvX0dD6VlBQ+4eDgPIGAgDuBgIA7gYCAOwAAAAAAAAAAgYAAPIGAADwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAAAAAACBgIA7AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAwcBAPIGAADwAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYCAOwAAAACBgIA7gYAAPAAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAIGAADyBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA8ubi4PdHQUD6joqI+paSkPpuamj6fnp4+n56ePp2cnD6lpKQ+oaCgPtHQUD7BwMA9wcBAPIGAgDuBgAA8gYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgIA7gYAAPAAAAAAAAAAAAAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7gYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAAAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgAA8AAAAAAAAAACBgIA7gYCAO4GAADyBgIA7AAAAAIGAADwAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAIGAgDuBgIA7gYCAOwAAAACBgIA70dBQPaGgID6RkJA+nZycPpmYmD6joqI+o6KiPp2cnD6bmpo+j46OPqGgID7BwEA9gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgIA7gYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAAAAAACBgIA7gYCAO4GAADyBgIA7gYAAPAAAAACBgIA7gYCAO4GAADyBgIA7gYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPIGAgDuBgIA7gYCAO4GAgDuBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDuBgAA8AAAAAIGAgDsAAAAAgYAAPIGAADyBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAwcDAPOHg4D3x8HA+j46OPpmYmD6npqY+qaioPpuamj6NjIw+8fBwPuHg4D3BwMA8AAAAAIGAgDuBgAA8gYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDuBgIA7gYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7gYCAO4GAgDuBgAA8gYAAPAAAAACBgIA7gYAAPIGAADyBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPIGAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8gYCAO4GAADzBwEA8gYAAPAAAAAAAAAAAgYAAPMHAQDyBgIA7gYAAPIGAgDuBgAA8AAAAAIGAgDuBgAA8gYAAPIGAgDuBgIA7gYAAPIGAADwAAAAAAAAAAIGAADyBgIA7wcDAPLm4uD3R0FA+h4aGPpeWlj6rqqo+raysPpmYmD6FhIQ+0dBQPsHAwD3BwMA8AAAAAAAAAACBgAA8wcBAPAAAAACBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDuBgIA7gYCAOwAAAAAAAAAAgYAAPIGAADyBgIA7gYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPIGAgDuBgAA8gYCAO4GAgDsAAAAAAAAAAIGAADyBgIA8gYCAO4GAgDsAAAAAgYCAOwAAAAAAAAAAgYCAO4GAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgAA8gYAAPIGAgDuBgAA8AAAAAIGAgDuBgIA7gYCAO4GAADyBgAA8AAAAAIGAgDuBgAA8gYAAPIGAgDsAAAAAgYAAPIGAADwAAAAAgYCAO4GAADzBwEA8gYCAOwAAAACBgIA7gYAAPAAAAACBgIA7gYCAO4GAADyBgIA7AAAAAIGAADyBgIA7wcBAPNHQUD2dnBw+6ehoPpWUlD6xsLA+sbCwPpeWlj7p6Gg+nZwcPtHQUD3BwEA8AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAgDuBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAADBwEA8gYAAPAAAAACBgAA8gYCAO4GAADyBgIA7AAAAAIGAADyBgAA8gYCAO4GAgDsAAAAAgYAAPIGAgDsAAAAAAAAAAIGAgDuBgAA8gYCAOwAAAACBgIA7AAAAAAAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAIGAgDuBgAA8gYCAO4GAgDsAAAAAgYCAO4GAgDuBgIA7gYCAOwAAAAAAAAAAgYCAOwAAAAAAAAAAAAAAAIGAgDzp6Og92dhYPpeWlj63trY+t7a2PpmYmD7V1FQ+6ejoPYGAgDwAAAAAAAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDvBwEA8gYAAPIGAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAADyBgAA8gYCAO4GAgDuBgIA7gYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYCAO4GAgDuBgIA7gYCAO4GAADwAAAAAAAAAAIGAgDuBgIA7gYCAO4GAgDuBgIA7AAAAAAAAAAAAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDsAAAAAAAAAAIGAgDvJyMg9zcxMPpeWlj65uLg+u7q6PpmYmD7NzEw+wcDAPYGAgDsAAAAAgYCAO4GAgDuBgAA8AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDuBgIA7AAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAgYCAO4GAgDuBgAA8gYCAOwAAAACBgIA7AAAAAIGAgDuBgAA8gYCAO4GAADyBgIA7AAAAAIGAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAACBgIA7AAAAAIGAgDuBgAA8AAAAAIGAADwAAAAAgYCAOwAAAAAAAAAAgYAAPIGAADwAAAAAgYCAO4GAADyBgIA7AAAAAAAAAACBgAA8gYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYAAPAAAAAAAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAADx8HA9qagoPoeGhj6xsLA+sbCwPoeGhj6hoCA+4eBgPYGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAgDsAAAAAgYCAOwAAAAAAAAAAAAAAAAAAAACBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAAAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAAAAAAAAAAAAAAAAAgYAAPIGAADyBgIA7gYCAO4GAADyBgAA8AAAAAAAAAACBgAA8wcBAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADzBwEA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADyBgIA7gYCAO4GAgDuBgAA8gYCAOwAAAACBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYCAO4GAADwAAAAAgYCAOwAAAACBgIA7gYCAOwAAAACBgAA98fDwPe3sbD6dnJw+m5qaPuHgYD7Z2Ng94eDgPIGAADyBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDsAAAAAgYAAPIGAADwAAAAAgYCAOwAAAACBgIA7AAAAAAAAAACBgAA8gYAAPAAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAIGAADwAAAAAgYCAO4GAgDuBgIA7gYAAPIGAADwAAAAAgYCAO4GAADyBgIA7gYCAO4GAgDuBgIA7gYAAPAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAgDuBgIA7AAAAAIGAADyBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgAA8AAAAAAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYAAPIGAgDsAAAAAgYCAO4GAADyBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgAA8gYCAOwAAAADBwEA8qaioPdXUVD6NjIw+iYiIPsXERD6RkJA9gYCAPAAAAACBgIA7gYCAO4GAgDuBgIA7gYAAPIGAgDsAAAAAAAAAAIGAgDuBgIA7gYAAPAAAAAAAAAAAgYCAOwAAAAAAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAADwAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDuBgIA7gYCAO4GAgDuBgAA8AAAAAIGAgDsAAAAAgYCAO4GAgDuBgIA7AAAAAAAAAACBgIA7gYCAOwAAAAAAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAAAAAAIGAgDsAAAAAgYCAO4GAADyBgAA8gYCAO4GAgDsAAAAAgYAAPAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7AAAAAIGAgDuBgIA7AAAAAIGAADyBgAA8AAAAAAAAAAAAAAAAgYAAPIGAADyBgIA7gYAAPIGAgDsAAAAA4eBgPb28PD79/Hw++fh4PqWkJD7BwEA9AAAAAAAAAACBgIA7AAAAAIGAgDuBgAA8gYAAPIGAgDuBgIA7AAAAAAAAAAAAAAAAgYAAPAAAAAAAAAAAgYCAO4GAgDsAAAAAAAAAAAAAAACBgIA7AAAAAAAAAACBgIA7gYCAOwAAAACBgIA7gYCAO4GAADwAAAAAgYCAO4GAgDuBgIA7AAAAAIGAgDsAAAAAgYCAO4GAADyBgIA7gYCAO4GAgDsAAAAAgYCAOwAAAACBgIA7"
+  };
+  var decodedAlphaMaps = /* @__PURE__ */ new Map();
+  function decodeD4SignedAlphaMap(base64, size) {
+    const bytes = decodeBase64(base64);
+    const half = size / 2;
+    const fundamentalLength = half * (half + 1) / 2;
+    if (bytes.length !== fundamentalLength * 2) {
+      throw new Error(`Invalid D4 signed alpha payload length: ${bytes.length}`);
+    }
+    const fundamental = new Int16Array(fundamentalLength);
+    for (let index = 0; index < fundamentalLength; index++) {
+      const unsigned = bytes[index * 2] | bytes[index * 2 + 1] << 8;
+      fundamental[index] = unsigned >= 32768 ? unsigned - 65536 : unsigned;
+    }
+    const alphaMap = new Float32Array(size * size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let a = Math.min(x, size - 1 - x);
+        let b = Math.min(y, size - 1 - y);
+        if (a > b) [a, b] = [b, a];
+        const fundamentalIndex = a * half - a * (a - 1) / 2 + (b - a);
+        alphaMap[y * size + x] = fundamental[fundamentalIndex] / 32767;
+      }
+    }
+    return alphaMap;
+  }
+  function decodeBase64(base64) {
+    if (typeof Buffer !== "undefined") {
+      return Uint8Array.from(Buffer.from(base64, "base64"));
+    }
+    if (typeof atob !== "undefined") {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+    throw new Error("No base64 decoder available in current runtime");
+  }
+  function getEmbeddedAlphaMap(size) {
+    const knownSize = String(size);
+    if (knownSize === "96-outline-dark") {
+      if (!decodedAlphaMaps.has(knownSize)) {
+        decodedAlphaMaps.set(
+          knownSize,
+          decodeD4SignedAlphaMap(EMBEDDED_OUTLINE_DARK_D4_INT16_BASE64, 96)
+        );
+      }
+      return new Float32Array(decodedAlphaMaps.get(knownSize));
+    }
+    if (knownSize === "96-outline-light") {
+      if (!decodedAlphaMaps.has(knownSize)) {
+        decodedAlphaMaps.set(
+          knownSize,
+          decodeD4SignedAlphaMap(EMBEDDED_OUTLINE_LIGHT_D4_INT16_BASE64, 96)
+        );
+      }
+      return new Float32Array(decodedAlphaMaps.get(knownSize));
+    }
+    if (!(knownSize in EMBEDDED_ALPHA_MAP_BASE64)) {
+      return null;
+    }
+    if (!decodedAlphaMaps.has(knownSize)) {
+      const bytes = decodeBase64(EMBEDDED_ALPHA_MAP_BASE64[knownSize]);
+      const expectedLength = EMBEDDED_ALPHA_MAP_LENGTHS[knownSize];
+      const view = new Float32Array(bytes.buffer, bytes.byteOffset, expectedLength);
+      decodedAlphaMaps.set(knownSize, new Float32Array(view));
+    }
+    return new Float32Array(decodedAlphaMaps.get(knownSize));
+  }
+
+  // src/core/blendModes.js
+  var ALPHA_NOISE_FLOOR = 3 / 255;
+  var ALPHA_THRESHOLD = 2e-3;
+  var MAX_ALPHA = 0.99;
+  var LOGO_VALUE = 255;
+  function removeWatermark(imageData, alphaMap, position, options = {}) {
+    const { x, y, width, height } = position;
+    const alphaGain = Number.isFinite(options.alphaGain) && options.alphaGain > 0 ? options.alphaGain : 1;
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        const imgIdx = ((y + row) * imageData.width + (x + col)) * 4;
+        const alphaIdx = row * width + col;
+        const rawAlpha = alphaMap[alphaIdx];
+        const alphaMagnitude = Math.abs(rawAlpha);
+        const logoValue = Number.isFinite(options.logoValue) ? options.logoValue : rawAlpha < 0 ? 0 : LOGO_VALUE;
+        const signalAlpha = Math.max(0, alphaMagnitude - ALPHA_NOISE_FLOOR) * alphaGain;
+        if (signalAlpha < ALPHA_THRESHOLD) {
+          continue;
+        }
+        const alpha = Math.min(alphaMagnitude * alphaGain, MAX_ALPHA);
+        const oneMinusAlpha = 1 - alpha;
+        for (let c = 0; c < 3; c++) {
+          const watermarked = imageData.data[imgIdx + c];
+          const original = (watermarked - alpha * logoValue) / oneMinusAlpha;
+          imageData.data[imgIdx + c] = Math.max(0, Math.min(255, Math.round(original)));
+        }
+      }
+    }
+  }
+
+  // src/core/geminiSizeCatalog.js
+  var WATERMARK_CONFIG_BY_TIER = Object.freeze({
+    "0.5k": Object.freeze({ logoSize: 48, marginRight: 32, marginBottom: 32 }),
+    "1k": Object.freeze({ logoSize: 96, marginRight: 64, marginBottom: 64 }),
+    "2k": Object.freeze({ logoSize: 96, marginRight: 64, marginBottom: 64 }),
+    "4k": Object.freeze({ logoSize: 96, marginRight: 64, marginBottom: 64 }),
+    "2k-new-margin": Object.freeze({
+      logoSize: 96,
+      marginRight: 192,
+      marginBottom: 192,
+      alphaVariant: "20260520"
+    })
+  });
+  var GEMINI_3X_CURRENT_1K_WATERMARK_CONFIG = Object.freeze({
+    logoSize: 48,
+    marginRight: 32,
+    marginBottom: 32
+  });
+  var GEMINI_3X_LEGACY_1K_WATERMARK_CONFIG = Object.freeze({
+    logoSize: 96,
+    marginRight: 64,
+    marginBottom: 64
+  });
+  var GEMINI_3X_CURRENT_1K_LARGE_MARGIN_WATERMARK_CONFIG = Object.freeze({
+    logoSize: 48,
+    marginRight: 96,
+    marginBottom: 96
+  });
+  var GEMINI_3X_CURRENT_2K_LARGE_MARGIN_SIZE_KEYS = /* @__PURE__ */ new Set([
+    "2048x2048",
+    "2400x1792"
+  ]);
+  var GEMINI_3X_V2_SMALL_WATERMARK_CONFIG = Object.freeze({
+    logoSize: 36,
+    marginRight: 96,
+    marginBottom: 96,
+    alphaVariant: "v2"
+  });
+  var KNOWN_FIXED_GEMINI_WATERMARK_CONFIGS_BY_SIZE = Object.freeze({
+    // Issue #153: retain the existing template at the measured JPEG anchor.
+    "2752x1536": Object.freeze([
+      Object.freeze({ logoSize: 48, marginRight: 89, marginBottom: 89, fixedVariant: true })
+    ]),
+    "1408x768": Object.freeze([
+      Object.freeze({ logoSize: 46, marginRight: 32, marginBottom: 32, fixedVariant: true })
+    ])
+  });
+  function createEntries(modelFamily, resolutionTier, rows) {
+    return rows.map(([aspectRatio, width, height]) => ({
+      modelFamily,
+      resolutionTier,
+      aspectRatio,
+      width,
+      height
+    }));
+  }
+  var OFFICIAL_GEMINI_IMAGE_SIZES = Object.freeze([
+    ...createEntries("gemini-3.x-image", "0.5k", [
+      ["1:1", 512, 512],
+      ["1:4", 256, 1024],
+      ["1:8", 192, 1536],
+      ["2:3", 424, 632],
+      ["3:2", 632, 424],
+      ["3:4", 448, 600],
+      ["4:1", 1024, 256],
+      ["4:3", 600, 448],
+      ["4:5", 464, 576],
+      ["5:4", 576, 464],
+      ["8:1", 1536, 192],
+      ["9:16", 384, 688],
+      ["16:9", 688, 384],
+      ["21:9", 792, 168]
+    ]),
+    ...createEntries("gemini-3.x-image", "1k", [
+      ["1:1", 1024, 1024],
+      ["1:4", 512, 2048],
+      ["1:8", 384, 3072],
+      ["2:3", 848, 1264],
+      ["3:2", 1264, 848],
+      ["3:4", 896, 1200],
+      ["4:1", 2048, 512],
+      ["4:3", 1200, 896],
+      ["4:5", 928, 1152],
+      ["5:4", 1152, 928],
+      ["8:1", 3072, 384],
+      ["9:16", 768, 1376],
+      ["16:9", 1376, 768],
+      ["16:9", 1408, 768],
+      ["21:9", 1584, 672]
+    ]),
+    ...createEntries("gemini-3.x-image", "2k", [
+      ["1:1", 2048, 2048],
+      ["1:4", 1024, 4096],
+      ["1:8", 768, 6144],
+      ["2:3", 1696, 2528],
+      ["3:2", 2528, 1696],
+      ["3:4", 1792, 2400],
+      ["4:1", 4096, 1024],
+      ["4:3", 2400, 1792],
+      ["4:5", 1856, 2304],
+      ["5:4", 2304, 1856],
+      ["8:1", 6144, 768],
+      ["9:16", 1536, 2752],
+      ["16:9", 2752, 1536],
+      ["21:9", 3168, 1344]
+    ]),
+    ...createEntries("gemini-3.x-image", "2k-new-margin", [
+      ["16:9", 2816, 1536]
+    ]),
+    ...createEntries("gemini-3.x-image", "4k", [
+      ["1:1", 4096, 4096],
+      ["1:4", 2048, 8192],
+      ["1:8", 1536, 12288],
+      ["2:3", 3392, 5056],
+      ["3:2", 5056, 3392],
+      ["3:4", 3584, 4800],
+      ["4:1", 8192, 2048],
+      ["4:3", 4800, 3584],
+      ["4:5", 3712, 4608],
+      ["5:4", 4608, 3712],
+      ["8:1", 12288, 1536],
+      ["9:16", 3072, 5504],
+      ["16:9", 5504, 3072],
+      ["21:9", 6336, 2688]
+    ]),
+    ...createEntries("gemini-2.5-flash-image", "1k", [
+      ["1:1", 1024, 1024],
+      ["2:3", 832, 1248],
+      ["3:2", 1248, 832],
+      ["3:4", 864, 1184],
+      ["4:3", 1184, 864],
+      ["4:5", 896, 1152],
+      ["5:4", 1152, 896],
+      ["9:16", 768, 1344],
+      ["16:9", 1344, 768],
+      ["21:9", 1536, 672]
+    ])
+  ]);
+  var OFFICIAL_GEMINI_IMAGE_SIZE_INDEX = /* @__PURE__ */ new Map();
+  for (const entry of OFFICIAL_GEMINI_IMAGE_SIZES) {
+    const key = `${entry.width}x${entry.height}`;
+    if (!OFFICIAL_GEMINI_IMAGE_SIZE_INDEX.has(key)) {
+      OFFICIAL_GEMINI_IMAGE_SIZE_INDEX.set(key, entry);
+    }
+  }
+  function normalizeDimension(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    const rounded = Math.round(numeric);
+    return rounded > 0 ? rounded : null;
+  }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function getEntryConfig(entry) {
+    if (entry?.modelFamily === "gemini-3.x-image" && entry.resolutionTier === "1k") {
+      return GEMINI_3X_CURRENT_1K_WATERMARK_CONFIG;
+    }
+    return WATERMARK_CONFIG_BY_TIER[entry.resolutionTier] ?? null;
+  }
+  function getEntryLegacyConfigs(entry) {
+    if (entry?.modelFamily === "gemini-3.x-image" && entry.resolutionTier === "1k") {
+      return [GEMINI_3X_LEGACY_1K_WATERMARK_CONFIG];
+    }
+    return [];
+  }
+  function buildConfigKey(config) {
+    return `${config.logoSize}:${config.marginRight}:${config.marginBottom}:${config.alphaVariant ?? "default"}`;
+  }
+  function createCatalogEntry(config, metadata = {}) {
+    return {
+      config,
+      metadata: {
+        family: metadata.family ?? "catalog",
+        sourcePriority: metadata.sourcePriority ?? 9,
+        evidenceGate: metadata.evidenceGate ?? "required",
+        modelFamily: metadata.modelFamily ?? null,
+        resolutionTier: metadata.resolutionTier ?? null,
+        aspectRatio: metadata.aspectRatio ?? null,
+        source: metadata.source ?? null
+      }
+    };
+  }
+  function createNewMarginVariantConfig(baseConfig, width, height) {
+    if (!baseConfig || baseConfig.logoSize !== 96) return null;
+    if (baseConfig.marginRight === 192 && baseConfig.marginBottom === 192) return null;
+    const config = {
+      logoSize: 96,
+      marginRight: 192,
+      marginBottom: 192,
+      alphaVariant: "20260520"
+    };
+    const x = width - config.marginRight - config.logoSize;
+    const y = height - config.marginBottom - config.logoSize;
+    return x >= 0 && y >= 0 ? config : null;
+  }
+  function createUnknownSizeNewMarginVariantConfig(baseConfig, width, height) {
+    if (!baseConfig || baseConfig.logoSize !== 96) return null;
+    if (Math.min(width, height) < 1024) return null;
+    return createNewMarginVariantConfig(baseConfig, width, height);
+  }
+  function createCurrentLargeMarginVariantConfig(baseConfig, width, height, { allowAnyBase = false } = {}) {
+    if (!allowAnyBase && (!baseConfig || baseConfig.logoSize !== 48)) return null;
+    if (baseConfig?.marginRight === 96 && baseConfig?.marginBottom === 96) return null;
+    const config = { ...GEMINI_3X_CURRENT_1K_LARGE_MARGIN_WATERMARK_CONFIG };
+    const x = width - config.marginRight - config.logoSize;
+    const y = height - config.marginBottom - config.logoSize;
+    return x >= 0 && y >= 0 ? config : null;
+  }
+  function createV2SmallVariantConfig(width, height) {
+    const normalizedWidth = normalizeDimension(width);
+    const normalizedHeight = normalizeDimension(height);
+    if (!normalizedWidth || !normalizedHeight) return null;
+    if (Math.max(normalizedWidth, normalizedHeight) > 2048) return null;
+    const longSide = Math.max(normalizedWidth, normalizedHeight);
+    const shortSide = Math.min(normalizedWidth, normalizedHeight);
+    const sourceLongDim = shortSide >= 566 ? 2752 : shortSide >= 550 ? 2816 : 2848;
+    const margin = Math.round(192 * (longSide / sourceLongDim));
+    const config = {
+      ...GEMINI_3X_V2_SMALL_WATERMARK_CONFIG,
+      marginRight: margin,
+      marginBottom: margin
+    };
+    const x = normalizedWidth - config.marginRight - config.logoSize;
+    const y = normalizedHeight - config.marginBottom - config.logoSize;
+    return x >= 0 && y >= 0 ? config : null;
+  }
+  function createProjectedConfig(baseConfig, scaleX, scaleY, { minLogoSize, maxLogoSize, roundLogoSize = Math.round }) {
+    if (!baseConfig) return null;
+    return {
+      logoSize: clamp(
+        roundLogoSize(baseConfig.logoSize * ((scaleX + scaleY) / 2)),
+        minLogoSize,
+        maxLogoSize
+      ),
+      marginRight: Math.max(8, Math.round(baseConfig.marginRight * scaleX)),
+      marginBottom: Math.max(8, Math.round(baseConfig.marginBottom * scaleY)),
+      ...baseConfig.alphaVariant ? { alphaVariant: baseConfig.alphaVariant } : {}
+    };
+  }
+  function getNearOfficialProjectionConfigs(entry, baseConfig) {
+    const configs = [{ config: baseConfig, family: "near-official-projected", source: `${entry.width}x${entry.height}` }];
+    if (entry?.modelFamily === "gemini-3.x-image" && entry.resolutionTier === "1k") {
+      configs.push({
+        config: GEMINI_3X_CURRENT_1K_LARGE_MARGIN_WATERMARK_CONFIG,
+        family: "near-official-current-large-margin",
+        source: `${entry.width}x${entry.height}-large-margin`,
+        roundLogoSize: Math.ceil
+      });
+    }
+    return configs;
+  }
+  function matchOfficialGeminiImageSize(width, height) {
+    const normalizedWidth = normalizeDimension(width);
+    const normalizedHeight = normalizeDimension(height);
+    if (!normalizedWidth || !normalizedHeight) return null;
+    return OFFICIAL_GEMINI_IMAGE_SIZE_INDEX.get(`${normalizedWidth}x${normalizedHeight}`) ?? null;
+  }
+  function resolveOfficialGeminiWatermarkConfig(width, height) {
+    const match = matchOfficialGeminiImageSize(width, height);
+    if (!match) return null;
+    return getEntryConfig(match);
+  }
+  function isOfficialOrKnownGeminiDimensions(width, height) {
+    return matchOfficialGeminiImageSize(width, height) !== null;
+  }
+  function resolveKnownFixedGeminiWatermarkConfigs(width, height) {
+    const normalizedWidth = normalizeDimension(width);
+    const normalizedHeight = normalizeDimension(height);
+    if (!normalizedWidth || !normalizedHeight) return [];
+    const configs = KNOWN_FIXED_GEMINI_WATERMARK_CONFIGS_BY_SIZE[`${normalizedWidth}x${normalizedHeight}`];
+    return Array.isArray(configs) ? configs.map((config) => ({ ...config })) : [];
+  }
+  function resolveKnownFixedGeminiWatermarkConfigEntries(width, height) {
+    return resolveKnownFixedGeminiWatermarkConfigs(width, height).map((config) => createCatalogEntry(config, {
+      family: "fixed-size-variant",
+      sourcePriority: 5,
+      evidenceGate: config.logoSize === 48 && config.marginRight === 89 ? "strong" : "required",
+      source: "known-fixed-size"
+    }));
+  }
+  function resolveOfficialGeminiSearchConfigs(width, height, options = {}) {
+    return resolveOfficialGeminiSearchConfigEntries(width, height, options).map((entry) => entry.config);
+  }
+  function resolveOfficialGeminiSearchConfigEntries(width, height, {
+    maxRelativeAspectRatioDelta = 0.02,
+    maxScaleMismatchRatio = 0.12,
+    minLogoSize = 24,
+    maxLogoSize = 192,
+    limit = 3
+  } = {}) {
+    const normalizedWidth = normalizeDimension(width);
+    const normalizedHeight = normalizeDimension(height);
+    if (!normalizedWidth || !normalizedHeight) return [];
+    const exactOfficialConfig = resolveOfficialGeminiWatermarkConfig(
+      normalizedWidth,
+      normalizedHeight
+    );
+    if (exactOfficialConfig) {
+      const match = matchOfficialGeminiImageSize(normalizedWidth, normalizedHeight);
+      const entries = [
+        createCatalogEntry({ ...exactOfficialConfig }, {
+          family: "exact-official-current",
+          sourcePriority: 0,
+          evidenceGate: "standard",
+          modelFamily: match?.modelFamily ?? null,
+          resolutionTier: match?.resolutionTier ?? null,
+          aspectRatio: match?.aspectRatio ?? null,
+          source: "official-size"
+        })
+      ];
+      if (match?.modelFamily === "gemini-3.x-image" && match.resolutionTier === "1k") {
+        const currentLargeMarginVariant = createCurrentLargeMarginVariantConfig(
+          exactOfficialConfig,
+          normalizedWidth,
+          normalizedHeight
+        );
+        if (currentLargeMarginVariant) {
+          entries.push(createCatalogEntry(currentLargeMarginVariant, {
+            family: "known-current-variant",
+            sourcePriority: 1,
+            evidenceGate: "required",
+            modelFamily: match.modelFamily,
+            resolutionTier: match.resolutionTier,
+            aspectRatio: match.aspectRatio,
+            source: "202606-large-margin"
+          }));
+        }
+        const v2SmallVariant = createV2SmallVariantConfig(
+          normalizedWidth,
+          normalizedHeight
+        );
+        if (v2SmallVariant) {
+          entries.push(createCatalogEntry(v2SmallVariant, {
+            family: "gemini-v2-small",
+            sourcePriority: 2,
+            evidenceGate: "medium",
+            modelFamily: match.modelFamily,
+            resolutionTier: match.resolutionTier,
+            aspectRatio: match.aspectRatio,
+            source: "allenk-v2-small"
+          }));
+        }
+      }
+      if (match?.modelFamily === "gemini-3.x-image" && match.resolutionTier === "2k" && GEMINI_3X_CURRENT_2K_LARGE_MARGIN_SIZE_KEYS.has(
+        `${normalizedWidth}x${normalizedHeight}`
+      )) {
+        const currentLargeMarginVariant = createCurrentLargeMarginVariantConfig(
+          exactOfficialConfig,
+          normalizedWidth,
+          normalizedHeight,
+          { allowAnyBase: true }
+        );
+        if (currentLargeMarginVariant) {
+          entries.push(createCatalogEntry(currentLargeMarginVariant, {
+            family: "known-current-variant",
+            sourcePriority: 1,
+            evidenceGate: "required",
+            modelFamily: match.modelFamily,
+            resolutionTier: match.resolutionTier,
+            aspectRatio: match.aspectRatio,
+            source: "202608-2k-large-margin"
+          }));
+        }
+      }
+      for (const legacyConfig of getEntryLegacyConfigs(match)) {
+        entries.push(createCatalogEntry({ ...legacyConfig }, {
+          family: "exact-official-legacy",
+          sourcePriority: 3,
+          evidenceGate: "required",
+          modelFamily: match?.modelFamily ?? null,
+          resolutionTier: match?.resolutionTier ?? null,
+          aspectRatio: match?.aspectRatio ?? null,
+          source: "legacy-96px"
+        }));
+      }
+      if (!(match?.modelFamily === "gemini-3.x-image" && match.resolutionTier === "1k")) {
+        const newMarginVariant = createNewMarginVariantConfig(
+          exactOfficialConfig,
+          normalizedWidth,
+          normalizedHeight
+        );
+        if (newMarginVariant) {
+          entries.push(createCatalogEntry(newMarginVariant, {
+            family: "confirmed-exception",
+            sourcePriority: 3,
+            evidenceGate: "required",
+            modelFamily: match?.modelFamily ?? null,
+            resolutionTier: match?.resolutionTier ?? null,
+            aspectRatio: match?.aspectRatio ?? null,
+            source: "20260520-2816x1536"
+          }));
+        }
+      }
+      return entries;
+    }
+    const targetAspectRatio = normalizedWidth / normalizedHeight;
+    const candidates = OFFICIAL_GEMINI_IMAGE_SIZES.flatMap((entry) => {
+      const baseConfig = getEntryConfig(entry);
+      if (!baseConfig) return [];
+      const scaleX = normalizedWidth / entry.width;
+      const scaleY = normalizedHeight / entry.height;
+      const scale = (scaleX + scaleY) / 2;
+      const entryAspectRatio = entry.width / entry.height;
+      const relativeAspectRatioDelta = Math.abs(targetAspectRatio - entryAspectRatio) / entryAspectRatio;
+      const scaleMismatchRatio = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY);
+      if (relativeAspectRatioDelta > maxRelativeAspectRatioDelta) return [];
+      if (scaleMismatchRatio > maxScaleMismatchRatio) return [];
+      return getNearOfficialProjectionConfigs(entry, baseConfig).map((projection) => {
+        const config = createProjectedConfig(projection.config, scaleX, scaleY, {
+          minLogoSize,
+          maxLogoSize,
+          roundLogoSize: projection.roundLogoSize
+        });
+        const x = normalizedWidth - config.marginRight - config.logoSize;
+        const y = normalizedHeight - config.marginBottom - config.logoSize;
+        if (x < 0 || y < 0) return null;
+        return {
+          config,
+          metadata: {
+            family: projection.family,
+            sourcePriority: 4,
+            evidenceGate: "required",
+            modelFamily: entry.modelFamily,
+            resolutionTier: entry.resolutionTier,
+            aspectRatio: entry.aspectRatio,
+            source: projection.source
+          },
+          score: relativeAspectRatioDelta * 100 + scaleMismatchRatio * 20 + Math.abs(Math.log2(Math.max(scale, 1e-6)))
+        };
+      }).filter(Boolean);
+    }).filter(Boolean).sort((a, b) => a.score - b.score);
+    const deduped = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const candidate of candidates) {
+      const key = `${candidate.config.logoSize}:${candidate.config.marginRight}:${candidate.config.marginBottom}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(createCatalogEntry(candidate.config, candidate.metadata));
+      if (deduped.length >= limit) break;
+    }
+    return deduped;
+  }
+  function resolveGeminiWatermarkSearchConfigs(width, height, defaultConfig) {
+    return resolveGeminiWatermarkSearchCatalogEntries(width, height, defaultConfig).map((entry) => entry.config);
+  }
+  function resolveGeminiWatermarkSearchCatalogEntries(width, height, defaultConfig) {
+    const entries = [];
+    if (defaultConfig) {
+      entries.push(createCatalogEntry(defaultConfig, {
+        family: "default-standard",
+        sourcePriority: 0,
+        evidenceGate: "standard",
+        source: "default-config"
+      }));
+    }
+    entries.push(...resolveKnownFixedGeminiWatermarkConfigEntries(width, height));
+    entries.push(...resolveOfficialGeminiSearchConfigEntries(width, height));
+    const currentLargeMarginVariant = createCurrentLargeMarginVariantConfig(defaultConfig, width, height);
+    if (currentLargeMarginVariant) {
+      entries.push(createCatalogEntry(currentLargeMarginVariant, {
+        family: "known-current-variant",
+        sourcePriority: 1,
+        evidenceGate: "required",
+        source: "default-large-margin"
+      }));
+    }
+    if (!isOfficialOrKnownGeminiDimensions(width, height)) {
+      const unknownSizeNewMarginVariant = createUnknownSizeNewMarginVariantConfig(defaultConfig, width, height);
+      if (unknownSizeNewMarginVariant) {
+        entries.push(createCatalogEntry(unknownSizeNewMarginVariant, {
+          family: "known-new-margin-variant",
+          sourcePriority: 2,
+          evidenceGate: "required",
+          source: "unknown-size-new-margin"
+        }));
+      }
+      const unknownSizeCurrentLargeMarginVariant = createCurrentLargeMarginVariantConfig(defaultConfig, width, height, {
+        allowAnyBase: true
+      });
+      if (unknownSizeCurrentLargeMarginVariant) {
+        entries.push(createCatalogEntry(unknownSizeCurrentLargeMarginVariant, {
+          family: "known-current-variant",
+          sourcePriority: 1,
+          evidenceGate: "required",
+          source: "unknown-size-large-margin"
+        }));
+      }
+    }
+    const deduped = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const config = entry?.config;
+      if (!config) continue;
+      const key = buildConfigKey(config);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(entry);
+    }
+    return deduped;
+  }
+
+  // src/core/adaptiveDetector.js
+  var DEFAULT_THRESHOLD = 0.35;
+  var EPSILON = 1e-8;
+  var REFERENCE_WATERMARK_SIZE = 96;
+  var MIN_COARSE_ADJUSTED_SCORE = 0.08;
+  var UNDERSIZED_SEARCH_MIN_BASE_SIZE = 80;
+  var UNDERSIZED_SEARCH_SIZES = [40];
+  var UNDERSIZED_MIN_SPATIAL_SCORE = 0.9;
+  var UNDERSIZED_MIN_GRADIENT_SCORE = 0.75;
+  var UNDERSIZED_MIN_CONFIDENCE_GAIN = 0.12;
+  var clamp2 = (v, min, max) => Math.max(min, Math.min(max, v));
+  function meanAndVariance(values) {
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) sum += values[i];
+    const mean = sum / values.length;
+    let sq = 0;
+    for (let i = 0; i < values.length; i++) {
+      const d = values[i] - mean;
+      sq += d * d;
+    }
+    return { mean, variance: sq / values.length };
+  }
+  function normalizedCrossCorrelation(a, b) {
+    if (a.length !== b.length || a.length === 0) return 0;
+    const statsA = meanAndVariance(a);
+    const statsB = meanAndVariance(b);
+    const den = Math.sqrt(statsA.variance * statsB.variance) * a.length;
+    if (den < EPSILON) return 0;
+    let num = 0;
+    for (let i = 0; i < a.length; i++) {
+      num += (a[i] - statsA.mean) * (b[i] - statsB.mean);
+    }
+    return num / den;
+  }
+  function getRegion(data, width, x, y, size) {
+    const out = new Float32Array(size * size);
+    for (let row = 0; row < size; row++) {
+      const srcBase = (y + row) * width + x;
+      const dstBase = row * size;
+      for (let col = 0; col < size; col++) {
+        out[dstBase + col] = data[srcBase + col];
+      }
+    }
+    return out;
+  }
+  function toRegionGrayscale(imageData, region) {
+    const { width, height, data } = imageData;
+    const size = region.size ?? Math.min(region.width, region.height);
+    if (!size || size <= 0) return new Float32Array(0);
+    if (region.x < 0 || region.y < 0 || region.x + size > width || region.y + size > height) {
+      return new Float32Array(0);
+    }
+    const out = new Float32Array(size * size);
+    for (let row = 0; row < size; row++) {
+      for (let col = 0; col < size; col++) {
+        const idx = ((region.y + row) * width + (region.x + col)) * 4;
+        out[row * size + col] = (0.2126 * data[idx] + 0.7152 * data[idx + 1] + 0.0722 * data[idx + 2]) / 255;
+      }
+    }
+    return out;
+  }
+  function toGrayscale(imageData) {
+    const { width, height, data } = imageData;
+    const out = new Float32Array(width * height);
+    for (let i = 0; i < out.length; i++) {
+      const j = i * 4;
+      out[i] = (0.2126 * data[j] + 0.7152 * data[j + 1] + 0.0722 * data[j + 2]) / 255;
+    }
+    return out;
+  }
+  function sobelMagnitude(gray, width, height) {
+    const grad = new Float32Array(width * height);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = y * width + x;
+        const gx = -gray[i - width - 1] - 2 * gray[i - 1] - gray[i + width - 1] + gray[i - width + 1] + 2 * gray[i + 1] + gray[i + width + 1];
+        const gy = -gray[i - width - 1] - 2 * gray[i - width] - gray[i - width + 1] + gray[i + width - 1] + 2 * gray[i + width] + gray[i + width + 1];
+        grad[i] = Math.sqrt(gx * gx + gy * gy);
+      }
+    }
+    return grad;
+  }
+  function stdDevRegion(data, width, x, y, size) {
+    let sum = 0;
+    let sq = 0;
+    let n = 0;
+    for (let row = 0; row < size; row++) {
+      const base = (y + row) * width + x;
+      for (let col = 0; col < size; col++) {
+        const v = data[base + col];
+        sum += v;
+        sq += v * v;
+        n++;
+      }
+    }
+    if (n === 0) return 0;
+    const mean = sum / n;
+    const variance = Math.max(0, sq / n - mean * mean);
+    return Math.sqrt(variance);
+  }
+  function buildTemplateGradient(alphaMap, size) {
+    return sobelMagnitude(alphaMap, size, size);
+  }
+  function scoreCandidate({ gray, grad, width, height }, alphaMap, templateGrad, candidate) {
+    const { x, y, size } = candidate;
+    if (x < 0 || y < 0 || x + size > width || y + size > height) {
+      return null;
+    }
+    const grayRegion = getRegion(gray, width, x, y, size);
+    const gradRegion = getRegion(grad, width, x, y, size);
+    const spatial = normalizedCrossCorrelation(grayRegion, alphaMap);
+    const gradient = normalizedCrossCorrelation(gradRegion, templateGrad);
+    let varianceScore = 0;
+    if (y > 8) {
+      const refY = Math.max(0, y - size);
+      const refH = Math.min(size, y - refY);
+      if (refH > 8) {
+        const wmStd = stdDevRegion(gray, width, x, y, size);
+        const refStd = stdDevRegion(gray, width, x, refY, refH);
+        if (refStd > EPSILON) {
+          varianceScore = clamp2(1 - wmStd / refStd, 0, 1);
+        }
+      }
+    }
+    const confidence = Math.max(0, spatial) * 0.5 + Math.max(0, gradient) * 0.3 + varianceScore * 0.2;
+    return {
+      confidence: clamp2(confidence, 0, 1),
+      spatialScore: spatial,
+      gradientScore: gradient,
+      varianceScore
+    };
+  }
+  function createScaleList(minSize, maxSize) {
+    const set = /* @__PURE__ */ new Set();
+    for (let s = minSize; s <= maxSize; s += 8) set.add(s);
+    if (48 >= minSize && 48 <= maxSize) set.add(48);
+    if (96 >= minSize && 96 <= maxSize) set.add(96);
+    return [...set].sort((a, b) => a - b);
+  }
+  function computeSizeAdjustedConfidence(confidence, size, referenceSize = REFERENCE_WATERMARK_SIZE) {
+    if (!Number.isFinite(confidence) || !Number.isFinite(size) || !Number.isFinite(referenceSize) || size <= 0 || referenceSize <= 0) {
+      return 0;
+    }
+    const sizeWeight = Math.min(1, Math.cbrt(size / referenceSize));
+    return confidence * sizeWeight;
+  }
+  function compareAdaptiveCandidatePriority(left, right) {
+    const leftScore = Number.isFinite(left?.adjustedScore) ? left.adjustedScore : computeSizeAdjustedConfidence(left?.confidence, left?.size);
+    const rightScore = Number.isFinite(right?.adjustedScore) ? right.adjustedScore : computeSizeAdjustedConfidence(right?.confidence, right?.size);
+    if (Math.abs(leftScore - rightScore) > 1e-12) {
+      return leftScore - rightScore;
+    }
+    const leftSize = Number.isFinite(left?.size) ? left.size : 0;
+    const rightSize = Number.isFinite(right?.size) ? right.size : 0;
+    const leftDistance = Math.abs(leftSize - REFERENCE_WATERMARK_SIZE);
+    const rightDistance = Math.abs(rightSize - REFERENCE_WATERMARK_SIZE);
+    if (leftDistance !== rightDistance) {
+      return rightDistance - leftDistance;
+    }
+    const leftConfidence = Number.isFinite(left?.confidence) ? left.confidence : 0;
+    const rightConfidence = Number.isFinite(right?.confidence) ? right.confidence : 0;
+    if (leftConfidence !== rightConfidence) {
+      return leftConfidence - rightConfidence;
+    }
+    if (leftSize !== rightSize) {
+      return leftSize - rightSize;
+    }
+    const leftX = Number.isFinite(left?.x) ? left.x : Infinity;
+    const rightX = Number.isFinite(right?.x) ? right.x : Infinity;
+    if (leftX !== rightX) {
+      return rightX - leftX;
+    }
+    const leftY = Number.isFinite(left?.y) ? left.y : Infinity;
+    const rightY = Number.isFinite(right?.y) ? right.y : Infinity;
+    return rightY - leftY;
+  }
+  function selectAdaptiveFineCandidate(currentBest, candidate) {
+    if (!currentBest) return candidate;
+    if (!candidate) return currentBest;
+    return compareAdaptiveCandidatePriority(candidate, currentBest) > 0 ? candidate : currentBest;
+  }
+  function buildSeedConfigs(width, height, defaultConfig) {
+    return resolveGeminiWatermarkSearchConfigs(width, height, defaultConfig);
+  }
+  function getTemplate(cache, alpha96, size) {
+    if (cache.has(size)) return cache.get(size);
+    const alpha = size === 96 ? alpha96 : interpolateAlphaMap(alpha96, 96, size);
+    const grad = buildTemplateGradient(alpha, size);
+    const tpl = { alpha, grad };
+    cache.set(size, tpl);
+    return tpl;
+  }
+  function findStrongUndersizedCandidate({
+    context,
+    templateCache,
+    alpha96,
+    defaultConfig,
+    baseline,
+    threshold
+  }) {
+    if (defaultConfig.logoSize < UNDERSIZED_SEARCH_MIN_BASE_SIZE) return null;
+    const { width, height } = context;
+    const marginRange = Math.max(32, Math.round(defaultConfig.logoSize * 0.75));
+    let coarseBest = null;
+    for (const size of UNDERSIZED_SEARCH_SIZES) {
+      const tpl = getTemplate(templateCache, alpha96, size);
+      const minMarginRight = clamp2(defaultConfig.marginRight - marginRange, 8, width - size - 1);
+      const maxMarginRight = clamp2(defaultConfig.marginRight + marginRange, minMarginRight, width - size - 1);
+      const minMarginBottom = clamp2(defaultConfig.marginBottom - marginRange, 8, height - size - 1);
+      const maxMarginBottom = clamp2(defaultConfig.marginBottom + marginRange, minMarginBottom, height - size - 1);
+      for (let mr = minMarginRight; mr <= maxMarginRight; mr += 8) {
+        const x = width - mr - size;
+        for (let mb = minMarginBottom; mb <= maxMarginBottom; mb += 8) {
+          const y = height - mb - size;
+          const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+          if (!score || coarseBest && score.confidence <= coarseBest.confidence) continue;
+          coarseBest = { x, y, size, ...score };
+        }
+      }
+    }
+    if (!coarseBest) return null;
+    let best = coarseBest;
+    for (let size = coarseBest.size - 2; size <= coarseBest.size + 2; size += 2) {
+      const tpl = getTemplate(templateCache, alpha96, size);
+      for (let x = coarseBest.x - 8; x <= coarseBest.x + 8; x += 2) {
+        if (x < 0 || x + size > width) continue;
+        for (let y = coarseBest.y - 8; y <= coarseBest.y + 8; y += 2) {
+          if (y < 0 || y + size > height) continue;
+          const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+          if (score && score.confidence > best.confidence) {
+            best = { x, y, size, ...score };
+          }
+        }
+      }
+    }
+    if (best.confidence < threshold || best.confidence < baseline.confidence + UNDERSIZED_MIN_CONFIDENCE_GAIN || best.spatialScore < UNDERSIZED_MIN_SPATIAL_SCORE || best.gradientScore < UNDERSIZED_MIN_GRADIENT_SCORE) {
+      return null;
+    }
+    return best;
+  }
+  function warpAlphaMap(alphaMap, size, { dx = 0, dy = 0, scale = 1 } = {}) {
+    if (size <= 0) return new Float32Array(0);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(scale) || scale <= 0) {
+      return new Float32Array(0);
+    }
+    if (dx === 0 && dy === 0 && scale === 1) return new Float32Array(alphaMap);
+    const sample2 = (x, y) => {
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const fx = x - x0;
+      const fy = y - y0;
+      const ix0 = clamp2(x0, 0, size - 1);
+      const iy0 = clamp2(y0, 0, size - 1);
+      const ix1 = clamp2(x0 + 1, 0, size - 1);
+      const iy1 = clamp2(y0 + 1, 0, size - 1);
+      const p00 = alphaMap[iy0 * size + ix0];
+      const p10 = alphaMap[iy0 * size + ix1];
+      const p01 = alphaMap[iy1 * size + ix0];
+      const p11 = alphaMap[iy1 * size + ix1];
+      const top = p00 + (p10 - p00) * fx;
+      const bottom = p01 + (p11 - p01) * fx;
+      return top + (bottom - top) * fy;
+    };
+    const out = new Float32Array(size * size);
+    const c = (size - 1) / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const sx = (x - c) / scale + c + dx;
+        const sy = (y - c) / scale + c + dy;
+        out[y * size + x] = sample2(sx, sy);
+      }
+    }
+    return out;
+  }
+  function interpolateAlphaMap(sourceAlpha, sourceSize, targetSize) {
+    if (targetSize <= 0) return new Float32Array(0);
+    if (sourceSize === targetSize) return new Float32Array(sourceAlpha);
+    const out = new Float32Array(targetSize * targetSize);
+    const scale = (sourceSize - 1) / Math.max(1, targetSize - 1);
+    for (let y = 0; y < targetSize; y++) {
+      const sy = y * scale;
+      const y0 = Math.floor(sy);
+      const y1 = Math.min(sourceSize - 1, y0 + 1);
+      const fy = sy - y0;
+      for (let x = 0; x < targetSize; x++) {
+        const sx = x * scale;
+        const x0 = Math.floor(sx);
+        const x1 = Math.min(sourceSize - 1, x0 + 1);
+        const fx = sx - x0;
+        const p00 = sourceAlpha[y0 * sourceSize + x0];
+        const p10 = sourceAlpha[y0 * sourceSize + x1];
+        const p01 = sourceAlpha[y1 * sourceSize + x0];
+        const p11 = sourceAlpha[y1 * sourceSize + x1];
+        const top = p00 + (p10 - p00) * fx;
+        const bottom = p01 + (p11 - p01) * fx;
+        out[y * targetSize + x] = top + (bottom - top) * fy;
+      }
+    }
+    return out;
+  }
+  function computeRegionSpatialCorrelation({ imageData, alphaMap, region }) {
+    const patch = toRegionGrayscale(imageData, region);
+    if (patch.length === 0 || patch.length !== alphaMap.length) return 0;
+    return normalizedCrossCorrelation(patch, alphaMap);
+  }
+  function computeRegionGradientCorrelation({ imageData, alphaMap, region }) {
+    const patch = toRegionGrayscale(imageData, region);
+    if (patch.length === 0 || patch.length !== alphaMap.length) return 0;
+    const size = region.size ?? Math.min(region.width, region.height);
+    if (!size || size <= 2) return 0;
+    const patchGrad = sobelMagnitude(patch, size, size);
+    const alphaGrad = sobelMagnitude(alphaMap, size, size);
+    return normalizedCrossCorrelation(patchGrad, alphaGrad);
+  }
+  function shouldAttemptAdaptiveFallback({
+    processedImageData,
+    alphaMap,
+    position,
+    residualThreshold = 0.22,
+    originalImageData = null,
+    originalSpatialMismatchThreshold = 0
+  }) {
+    const residualScore = computeRegionSpatialCorrelation({
+      imageData: processedImageData,
+      alphaMap,
+      region: {
+        x: position.x,
+        y: position.y,
+        size: position.width ?? position.size
+      }
+    });
+    if (residualScore >= residualThreshold) {
+      return true;
+    }
+    if (originalImageData) {
+      const originalScore = computeRegionSpatialCorrelation({
+        imageData: originalImageData,
+        alphaMap,
+        region: {
+          x: position.x,
+          y: position.y,
+          size: position.width ?? position.size
+        }
+      });
+      if (originalScore <= originalSpatialMismatchThreshold) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function detectAdaptiveWatermarkRegion({
+    imageData,
+    alpha96,
+    defaultConfig,
+    threshold = DEFAULT_THRESHOLD
+  }) {
+    const { width, height } = imageData;
+    const gray = toGrayscale(imageData);
+    const grad = sobelMagnitude(gray, width, height);
+    const context = { gray, grad, width, height };
+    const templateCache = /* @__PURE__ */ new Map();
+    const seedConfigs = buildSeedConfigs(width, height, defaultConfig);
+    const seedCandidates = seedConfigs.map((config) => {
+      const size = config.logoSize;
+      const candidate = {
+        size,
+        x: width - config.marginRight - size,
+        y: height - config.marginBottom - size
+      };
+      if (candidate.x < 0 || candidate.y < 0 || candidate.x + size > width || candidate.y + size > height) {
+        return null;
+      }
+      const template = getTemplate(templateCache, alpha96, size);
+      const score = scoreCandidate(context, template.alpha, template.grad, candidate);
+      if (!score) return null;
+      return {
+        ...candidate,
+        ...score
+      };
+    }).filter(Boolean);
+    const bestSeed = seedCandidates.reduce(
+      (best2, candidate) => selectAdaptiveFineCandidate(best2, candidate),
+      null
+    );
+    if (bestSeed && bestSeed.confidence >= threshold + 0.08) {
+      return {
+        found: true,
+        confidence: bestSeed.confidence,
+        spatialScore: bestSeed.spatialScore,
+        gradientScore: bestSeed.gradientScore,
+        varianceScore: bestSeed.varianceScore,
+        region: {
+          x: bestSeed.x,
+          y: bestSeed.y,
+          size: bestSeed.size
+        }
+      };
+    }
+    const baseSize = defaultConfig.logoSize;
+    const minSize = clamp2(Math.round(baseSize * 0.65), 24, 144);
+    const maxSize = clamp2(
+      Math.min(Math.round(baseSize * 2.8), Math.floor(Math.min(width, height) * 0.4)),
+      minSize,
+      192
+    );
+    const scaleList = createScaleList(minSize, maxSize);
+    const marginRange = Math.max(32, Math.round(baseSize * 0.75));
+    const minMarginRight = clamp2(defaultConfig.marginRight - marginRange, 8, width - minSize - 1);
+    const maxMarginRight = clamp2(defaultConfig.marginRight + marginRange, minMarginRight, width - minSize - 1);
+    const minMarginBottom = clamp2(defaultConfig.marginBottom - marginRange, 8, height - minSize - 1);
+    const maxMarginBottom = clamp2(defaultConfig.marginBottom + marginRange, minMarginBottom, height - minSize - 1);
+    const topK = [];
+    const pushTopK = (candidate) => {
+      topK.push(candidate);
+      topK.sort((left, right) => -compareAdaptiveCandidatePriority(left, right));
+      if (topK.length > 5) topK.length = 5;
+    };
+    for (const seedCandidate of seedCandidates) {
+      pushTopK({
+        size: seedCandidate.size,
+        x: seedCandidate.x,
+        y: seedCandidate.y,
+        adjustedScore: computeSizeAdjustedConfidence(seedCandidate.confidence, seedCandidate.size)
+      });
+    }
+    for (const size of scaleList) {
+      const tpl = getTemplate(templateCache, alpha96, size);
+      for (let mr = minMarginRight; mr <= maxMarginRight; mr += 8) {
+        const x = width - mr - size;
+        if (x < 0) continue;
+        for (let mb = minMarginBottom; mb <= maxMarginBottom; mb += 8) {
+          const y = height - mb - size;
+          if (y < 0) continue;
+          const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+          if (!score) continue;
+          const adjustedScore = computeSizeAdjustedConfidence(score.confidence, size);
+          if (adjustedScore < MIN_COARSE_ADJUSTED_SCORE) continue;
+          pushTopK({
+            size,
+            x,
+            y,
+            adjustedScore
+          });
+        }
+      }
+    }
+    let best = bestSeed ?? {
+      x: width - defaultConfig.marginRight - defaultConfig.logoSize,
+      y: height - defaultConfig.marginBottom - defaultConfig.logoSize,
+      size: defaultConfig.logoSize,
+      confidence: 0,
+      spatialScore: 0,
+      gradientScore: 0,
+      varianceScore: 0
+    };
+    for (const coarse of topK) {
+      const scaleLo = clamp2(coarse.size - 10, minSize, maxSize);
+      const scaleHi = clamp2(coarse.size + 10, minSize, maxSize);
+      for (let size = scaleLo; size <= scaleHi; size += 2) {
+        const tpl = getTemplate(templateCache, alpha96, size);
+        for (let x = coarse.x - 8; x <= coarse.x + 8; x += 2) {
+          if (x < 0 || x + size > width) continue;
+          for (let y = coarse.y - 8; y <= coarse.y + 8; y += 2) {
+            if (y < 0 || y + size > height) continue;
+            const score = scoreCandidate(context, tpl.alpha, tpl.grad, { x, y, size });
+            if (!score) continue;
+            best = selectAdaptiveFineCandidate(best, {
+              x,
+              y,
+              size,
+              ...score
+            });
+          }
+        }
+      }
+    }
+    const undersizedCandidate = findStrongUndersizedCandidate({
+      context,
+      templateCache,
+      alpha96,
+      defaultConfig,
+      baseline: best,
+      threshold
+    });
+    if (undersizedCandidate) {
+      best = undersizedCandidate;
+    }
+    return {
+      ...undersizedCandidate ? { strongUndersizedMatch: true } : {},
+      found: best.confidence >= threshold,
+      confidence: best.confidence,
+      spatialScore: best.spatialScore,
+      gradientScore: best.gradientScore,
+      varianceScore: best.varianceScore,
+      region: {
+        x: best.x,
+        y: best.y,
+        size: best.size
+      }
+    };
+  }
+
+  // src/core/restorationMetrics.js
+  var NEAR_BLACK_THRESHOLD = 5;
+  var NEAR_WHITE_THRESHOLD = 250;
+  var TEXTURE_REFERENCE_MARGIN = 1;
+  var TEXTURE_STD_FLOOR_RATIO = 0.8;
+  var TEXTURE_DARKNESS_VISIBILITY_HARD_REJECT_THRESHOLD = 1.5;
+  var TEXTURE_DARKNESS_HARD_REJECT_PENALTY_THRESHOLD = 0.5;
+  var TEXTURE_FLATNESS_HARD_REJECT_PENALTY_THRESHOLD = 0.2;
+  var DEFAULT_HALO_MIN_ALPHA = 0.12;
+  var DEFAULT_HALO_MAX_ALPHA = 0.35;
+  var DEFAULT_HALO_OUTSIDE_ALPHA_MAX = 0.01;
+  var DEFAULT_HALO_OUTER_MARGIN = 3;
+  var DIFF_NEGATIVE_THRESHOLD = 1 / 255;
+  var DIFF_CLIP_ORIGINAL_THRESHOLD = 5;
+  var DIFF_CLIP_CANDIDATE_THRESHOLD = 0;
+  var DIFF_WHITE_CLIP_ORIGINAL_THRESHOLD = 255 - DIFF_CLIP_ORIGINAL_THRESHOLD;
+  var DIFF_WHITE_CLIP_CANDIDATE_THRESHOLD = 255 - DIFF_CLIP_CANDIDATE_THRESHOLD;
+  var RECOMPOSE_MAX_ALPHA = 0.99;
+  var DIFF_DARK_HALO_VISUAL_WEIGHT = 4e-3;
+  var DIFF_NEW_CLIP_VISUAL_WEIGHT = 0.5;
+  var RESIDUAL_VISIBILITY_CORE_MIN_ALPHA = 0.18;
+  var RESIDUAL_VISIBILITY_CORE_MAX_ALPHA = 0.35;
+  var RESIDUAL_VISIBILITY_OUTSIDE_ALPHA_MAX = 0.012;
+  var RESIDUAL_VISIBILITY_OUTER_MARGIN = 4;
+  var RESIDUAL_VISIBILITY_POSITIVE_HALO_LUM_THRESHOLD = 6;
+  var RESIDUAL_VISIBILITY_DARK_POLARITY_STRONG_HALO_LUM_THRESHOLD = 6;
+  var RESIDUAL_VISIBILITY_DARK_POLARITY_LOW_TEXTURE_HALO_LUM_THRESHOLD = 1.75;
+  var RESIDUAL_VISIBILITY_DARK_POLARITY_LOW_TEXTURE_MAX_STD_LUM = 30;
+  var RESIDUAL_VISIBILITY_GRADIENT_THRESHOLD = 0.22;
+  var RESIDUAL_VISIBILITY_SPATIAL_THRESHOLD = 0.18;
+  var FLAT_CLIPPED_METRIC_RISK_NEAR_BLACK_RATIO = 0.92;
+  var FLAT_CLIPPED_METRIC_RISK_NEWLY_CLIPPED_RATIO = 0.18;
+  var FLAT_CLIPPED_METRIC_RISK_MAX_POSITIVE_HALO_LUM = 2;
+  var FLAT_CLIPPED_METRIC_RISK_MIN_NEGATIVE_SPATIAL = 0.18;
+  var FLAT_LOW_VARIANCE_METRIC_RISK_MIN_NEGATIVE_SPATIAL = 0.18;
+  var FLAT_LOW_VARIANCE_METRIC_RISK_MAX_GRADIENT = 0.08;
+  var FLAT_LOW_VARIANCE_METRIC_RISK_MAX_STD_LUM = 1;
+  var FLAT_LOW_VARIANCE_METRIC_RISK_MAX_ABS_DELTA_LUM = 1;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MIN_NEGATIVE_SPATIAL = 0.18;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_GRADIENT = 0.12;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_POSITIVE_HALO_LUM = 2;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEAR_BLACK_RATIO = 0.25;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEWLY_CLIPPED_RATIO = 0.01;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_ARTIFACT_COST = 0.2;
+  var NONLOCALIZED_SPATIAL_METRIC_RISK_MIN_LOCAL_PROMINENCE = 0.06;
+  var POSITIVE_SPATIAL_BACKGROUND_COLLISION_MIN_SPATIAL = 0.14;
+  var POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_GRADIENT = 0.12;
+  var POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_POSITIVE_HALO_LUM = 32;
+  var POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_ARTIFACT_COST = 0.12;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_ABS_SPATIAL = 0.14;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_GRADIENT = 0.12;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_POSITIVE_HALO_LUM = 10;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_ARTIFACT_COST = 0.12;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_NEAR_BLACK_RATIO = 0.25;
+  var WEAK_HALO_BACKGROUND_COLLISION_MAX_NEWLY_CLIPPED_RATIO = 0.02;
+  var STRUCTURED_EDGE_BACKGROUND_COLLISION_MIN_GRADIENT = 0.2;
+  var STRUCTURED_EDGE_BACKGROUND_COLLISION_MIN_ARTIFACT_COST = 0.2;
+  var STRUCTURED_EDGE_BACKGROUND_COLLISION_MAX_NEAR_BLACK_RATIO = 0.1;
+  var STRUCTURED_EDGE_BACKGROUND_COLLISION_MAX_NEWLY_CLIPPED_RATIO = 0.01;
+  var RESIDUAL_LOCALIZATION_CONTROL_OFFSETS = [
+    [-1, 0],
+    [0, -1],
+    [-1, -1],
+    [-2, 0],
+    [0, -2],
+    [-2, -2]
+  ];
+  function meanAndVariance2(values) {
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += values[i];
+    }
+    const mean = values.length > 0 ? sum / values.length : 0;
+    let sq = 0;
+    for (let i = 0; i < values.length; i++) {
+      const delta = values[i] - mean;
+      sq += delta * delta;
+    }
+    return {
+      mean,
+      variance: values.length > 0 ? sq / values.length : 0
+    };
+  }
+  function normalizedCorrelation(a, b) {
+    if (a.length !== b.length || a.length === 0) return 0;
+    const statsA = meanAndVariance2(a);
+    const statsB = meanAndVariance2(b);
+    const den = Math.sqrt(statsA.variance * statsB.variance) * a.length;
+    if (den < 1e-8) return 0;
+    let num = 0;
+    for (let i = 0; i < a.length; i++) {
+      num += (a[i] - statsA.mean) * (b[i] - statsB.mean);
+    }
+    return num / den;
+  }
+  function sobelMagnitude2(values, width, height) {
+    const out = new Float32Array(width * height);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = y * width + x;
+        const gx = -values[i - width - 1] - 2 * values[i - 1] - values[i + width - 1] + values[i - width + 1] + 2 * values[i + 1] + values[i + width + 1];
+        const gy = -values[i - width - 1] - 2 * values[i - width] - values[i - width + 1] + values[i + width - 1] + 2 * values[i + width] + values[i + width + 1];
+        out[i] = Math.sqrt(gx * gx + gy * gy);
+      }
+    }
+    return out;
+  }
+  function cloneImageData(imageData) {
+    if (typeof ImageData !== "undefined" && imageData instanceof ImageData) {
+      return new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height
+      );
+    }
+    return {
+      width: imageData.width,
+      height: imageData.height,
+      data: new Uint8ClampedArray(imageData.data)
+    };
+  }
+  function calculateNearBlackRatio(imageData, position) {
+    let nearBlack = 0;
+    let total = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const idx = ((position.y + row) * imageData.width + (position.x + col)) * 4;
+        const r = imageData.data[idx];
+        const g = imageData.data[idx + 1];
+        const b = imageData.data[idx + 2];
+        if (r <= NEAR_BLACK_THRESHOLD && g <= NEAR_BLACK_THRESHOLD && b <= NEAR_BLACK_THRESHOLD) {
+          nearBlack++;
+        }
+        total++;
+      }
+    }
+    return total > 0 ? nearBlack / total : 0;
+  }
+  function calculateNearWhiteRatio(imageData, position) {
+    let nearWhite = 0;
+    let total = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const idx = ((position.y + row) * imageData.width + (position.x + col)) * 4;
+        const r = imageData.data[idx];
+        const g = imageData.data[idx + 1];
+        const b = imageData.data[idx + 2];
+        if (r >= NEAR_WHITE_THRESHOLD && g >= NEAR_WHITE_THRESHOLD && b >= NEAR_WHITE_THRESHOLD) {
+          nearWhite++;
+        }
+        total++;
+      }
+    }
+    return total > 0 ? nearWhite / total : 0;
+  }
+  function calculateRegionTextureStats(imageData, region) {
+    let sum = 0;
+    let sq = 0;
+    let total = 0;
+    for (let row = 0; row < region.height; row++) {
+      for (let col = 0; col < region.width; col++) {
+        const idx = ((region.y + row) * imageData.width + (region.x + col)) * 4;
+        const lum = 0.2126 * imageData.data[idx] + 0.7152 * imageData.data[idx + 1] + 0.0722 * imageData.data[idx + 2];
+        sum += lum;
+        sq += lum * lum;
+        total++;
+      }
+    }
+    const meanLum = total > 0 ? sum / total : 0;
+    const variance = total > 0 ? Math.max(0, sq / total - meanLum * meanLum) : 0;
+    return {
+      meanLum,
+      stdLum: Math.sqrt(variance)
+    };
+  }
+  function getRegionTextureStats(imageData, region) {
+    return calculateRegionTextureStats(imageData, region);
+  }
+  function assessAlphaBandHalo({
+    imageData,
+    position,
+    alphaMap,
+    minAlpha = DEFAULT_HALO_MIN_ALPHA,
+    maxAlpha = DEFAULT_HALO_MAX_ALPHA,
+    outsideAlphaMax = DEFAULT_HALO_OUTSIDE_ALPHA_MAX,
+    outerMargin = DEFAULT_HALO_OUTER_MARGIN
+  }) {
+    let bandSum = 0;
+    let bandSq = 0;
+    let bandCount = 0;
+    let outerSum = 0;
+    let outerSq = 0;
+    let outerCount = 0;
+    for (let row = -outerMargin; row < position.height + outerMargin; row++) {
+      for (let col = -outerMargin; col < position.width + outerMargin; col++) {
+        const pixelX = position.x + col;
+        const pixelY = position.y + row;
+        if (pixelX < 0 || pixelY < 0 || pixelX >= imageData.width || pixelY >= imageData.height) {
+          continue;
+        }
+        const pixelIndex = (pixelY * imageData.width + pixelX) * 4;
+        const luminance = 0.2126 * imageData.data[pixelIndex] + 0.7152 * imageData.data[pixelIndex + 1] + 0.0722 * imageData.data[pixelIndex + 2];
+        const insideRegion = row >= 0 && col >= 0 && row < position.height && col < position.width;
+        const alpha = insideRegion ? Math.abs(alphaMap[row * position.width + col]) : 0;
+        if (insideRegion && alpha >= minAlpha && alpha <= maxAlpha) {
+          bandSum += luminance;
+          bandSq += luminance * luminance;
+          bandCount++;
+          continue;
+        }
+        if (!insideRegion || alpha <= outsideAlphaMax) {
+          outerSum += luminance;
+          outerSq += luminance * luminance;
+          outerCount++;
+        }
+      }
+    }
+    const bandMeanLum = bandCount > 0 ? bandSum / bandCount : 0;
+    const outerMeanLum = outerCount > 0 ? outerSum / outerCount : 0;
+    const bandStdLum = bandCount > 0 ? Math.sqrt(Math.max(0, bandSq / bandCount - bandMeanLum * bandMeanLum)) : 0;
+    const outerStdLum = outerCount > 0 ? Math.sqrt(Math.max(0, outerSq / outerCount - outerMeanLum * outerMeanLum)) : 0;
+    const deltaLum = bandMeanLum - outerMeanLum;
+    const visibility = deltaLum / Math.max(1, outerStdLum);
+    return {
+      bandCount,
+      outerCount,
+      bandMeanLum,
+      outerMeanLum,
+      bandStdLum,
+      outerStdLum,
+      deltaLum,
+      positiveDeltaLum: Math.max(0, deltaLum),
+      visibility
+    };
+  }
+  function assessRemovalDiffArtifacts({
+    originalImageData,
+    candidateImageData,
+    alphaMap,
+    position,
+    alphaGain = 1
+  }) {
+    if (!originalImageData || !candidateImageData || !alphaMap || !position) {
+      return null;
+    }
+    const total = position.width * position.height;
+    if (total <= 0) return null;
+    const positiveDiff = new Float32Array(total);
+    const signedDiff = new Float32Array(total);
+    const candidateLum = new Float32Array(total);
+    const gainedAlpha = new Float32Array(total);
+    const signedGainedAlpha = new Float32Array(total);
+    let negativeDiffCount = 0;
+    let oppositeDirectionDiffCount = 0;
+    let newlyClippedCount = 0;
+    let newlyBlackClippedCount = 0;
+    let newlyWhiteClippedCount = 0;
+    let signedAlphaSum = 0;
+    let firstNonZeroAlphaPolarity = 1;
+    let hasNonZeroAlpha = false;
+    let recomposeError = 0;
+    let weightedRecomposeError = 0;
+    let recomposeCount = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const pixelIndex = ((position.y + row) * originalImageData.width + position.x + col) * 4;
+        const beforeR = originalImageData.data[pixelIndex];
+        const beforeG = originalImageData.data[pixelIndex + 1];
+        const beforeB = originalImageData.data[pixelIndex + 2];
+        const afterR = candidateImageData.data[pixelIndex];
+        const afterG = candidateImageData.data[pixelIndex + 1];
+        const afterB = candidateImageData.data[pixelIndex + 2];
+        const beforeLum = 0.2126 * beforeR + 0.7152 * beforeG + 0.0722 * beforeB;
+        const afterLum = 0.2126 * afterR + 0.7152 * afterG + 0.0722 * afterB;
+        const diff = (beforeLum - afterLum) / 255;
+        const rawAlpha = alphaMap[localIndex] * alphaGain;
+        const polarity = rawAlpha < 0 ? -1 : 1;
+        const alpha = Math.min(RECOMPOSE_MAX_ALPHA, Math.abs(rawAlpha));
+        const logoValue = rawAlpha < 0 ? 0 : 255;
+        signedAlphaSum += rawAlpha;
+        if (!hasNonZeroAlpha && rawAlpha !== 0) {
+          firstNonZeroAlphaPolarity = polarity;
+          hasNonZeroAlpha = true;
+        }
+        positiveDiff[localIndex] = Math.max(0, diff * polarity);
+        signedDiff[localIndex] = diff;
+        candidateLum[localIndex] = afterLum / 255;
+        gainedAlpha[localIndex] = alpha;
+        signedGainedAlpha[localIndex] = alpha * polarity;
+        if (diff < -DIFF_NEGATIVE_THRESHOLD) {
+          negativeDiffCount++;
+        }
+        if (diff * polarity < -DIFF_NEGATIVE_THRESHOLD) {
+          oppositeDirectionDiffCount++;
+        }
+        const channels = [[beforeR, afterR], [beforeG, afterG], [beforeB, afterB]];
+        const newlyBlackClipped = polarity > 0 && channels.some(([before, after]) => after <= DIFF_CLIP_CANDIDATE_THRESHOLD && before > DIFF_CLIP_ORIGINAL_THRESHOLD);
+        const newlyWhiteClipped = polarity < 0 && channels.some(([before, after]) => after >= DIFF_WHITE_CLIP_CANDIDATE_THRESHOLD && before < DIFF_WHITE_CLIP_ORIGINAL_THRESHOLD);
+        if (newlyBlackClipped || newlyWhiteClipped) {
+          newlyClippedCount++;
+        }
+        if (newlyBlackClipped) newlyBlackClippedCount++;
+        if (newlyWhiteClipped) newlyWhiteClippedCount++;
+        for (const [before, after] of channels) {
+          const recomposed = after * (1 - alpha) + logoValue * alpha;
+          const error = Math.abs(recomposed - before) / 255;
+          recomposeError += error;
+          weightedRecomposeError += error * Math.max(0.02, alpha);
+          recomposeCount++;
+        }
+      }
+    }
+    const alphaGradient = sobelMagnitude2(gainedAlpha, position.width, position.height);
+    const diffGradient = sobelMagnitude2(positiveDiff, position.width, position.height);
+    const candidateGradient = sobelMagnitude2(candidateLum, position.width, position.height);
+    const scores = scoreRegion(candidateImageData, alphaMap, position);
+    const halo = assessAlphaBandHalo({
+      imageData: candidateImageData,
+      position,
+      alphaMap
+    });
+    const alphaPolarity = signedAlphaSum > 1e-8 ? 1 : signedAlphaSum < -1e-8 ? -1 : firstNonZeroAlphaPolarity;
+    const newlyClippedRatio = newlyClippedCount / total;
+    const newlyBlackClippedRatio = newlyBlackClippedCount / total;
+    const newlyWhiteClippedRatio = newlyWhiteClippedCount / total;
+    const oppositeDirectionHaloLum = Math.max(0, -halo.deltaLum * alphaPolarity);
+    const visualArtifactCost = Math.abs(scores.spatialScore) * 0.25 + Math.max(0, scores.gradientScore) + oppositeDirectionHaloLum * DIFF_DARK_HALO_VISUAL_WEIGHT + newlyClippedRatio * DIFF_NEW_CLIP_VISUAL_WEIGHT;
+    return {
+      spatialScore: scores.spatialScore,
+      gradientScore: scores.gradientScore,
+      recomposeError: recomposeError / Math.max(1, recomposeCount),
+      weightedRecomposeError: weightedRecomposeError / Math.max(1, recomposeCount),
+      diffTemplateCorrelation: normalizedCorrelation(positiveDiff, gainedAlpha),
+      signedDiffTemplateCorrelation: normalizedCorrelation(signedDiff, signedGainedAlpha),
+      diffGradientCorrelation: normalizedCorrelation(diffGradient, alphaGradient),
+      candidateGradientCorrelation: normalizedCorrelation(candidateGradient, alphaGradient),
+      // Kept as the raw luminance-direction metric for compatibility.
+      negativeDiffRatio: negativeDiffCount / total,
+      oppositeDirectionDiffRatio: oppositeDirectionDiffCount / total,
+      newlyClippedRatio,
+      newlyBlackClippedRatio,
+      newlyWhiteClippedRatio,
+      alphaPolarity,
+      oppositeDirectionHaloLum,
+      halo,
+      visualArtifactCost
+    };
+  }
+  function assessWatermarkResidualVisibility({
+    imageData,
+    position,
+    alphaMap
+  }) {
+    if (!imageData || !position || !alphaMap) return null;
+    const scores = scoreRegion(imageData, alphaMap, position);
+    const halo = assessAlphaBandHalo({
+      imageData,
+      position,
+      alphaMap,
+      minAlpha: RESIDUAL_VISIBILITY_CORE_MIN_ALPHA,
+      maxAlpha: RESIDUAL_VISIBILITY_CORE_MAX_ALPHA,
+      outsideAlphaMax: RESIDUAL_VISIBILITY_OUTSIDE_ALPHA_MAX,
+      outerMargin: RESIDUAL_VISIBILITY_OUTER_MARGIN
+    });
+    const positiveHaloLum = Math.max(0, halo.deltaLum);
+    let hasPositiveAlpha = false;
+    let hasNegativeAlpha = false;
+    for (const alpha of alphaMap) {
+      if (alpha > 1e-8) hasPositiveAlpha = true;
+      if (alpha < -1e-8) hasNegativeAlpha = true;
+    }
+    const isDarkPolarity = hasNegativeAlpha && !hasPositiveAlpha;
+    const darkPolarityHaloLum = isDarkPolarity ? Math.abs(halo.deltaLum) : 0;
+    const darkPolarityHaloThreshold = halo.outerStdLum <= RESIDUAL_VISIBILITY_DARK_POLARITY_LOW_TEXTURE_MAX_STD_LUM ? RESIDUAL_VISIBILITY_DARK_POLARITY_LOW_TEXTURE_HALO_LUM_THRESHOLD : RESIDUAL_VISIBILITY_DARK_POLARITY_STRONG_HALO_LUM_THRESHOLD;
+    const gradientResidual = Math.max(0, scores.gradientScore);
+    const spatialResidual = Math.abs(scores.spatialScore);
+    const visiblePositiveHalo = positiveHaloLum >= RESIDUAL_VISIBILITY_POSITIVE_HALO_LUM_THRESHOLD;
+    const visibleDarkPolarityHalo = isDarkPolarity && darkPolarityHaloLum >= darkPolarityHaloThreshold;
+    const visibleGradientResidual = gradientResidual >= RESIDUAL_VISIBILITY_GRADIENT_THRESHOLD;
+    const visibleSpatialResidual = spatialResidual >= RESIDUAL_VISIBILITY_SPATIAL_THRESHOLD;
+    return {
+      visible: visiblePositiveHalo || visibleDarkPolarityHalo || visibleGradientResidual || visibleSpatialResidual,
+      positiveHaloLum,
+      darkPolarityHaloLum,
+      darkPolarityHaloThreshold,
+      haloVisibility: halo.visibility,
+      spatialResidual,
+      gradientResidual,
+      visiblePositiveHalo,
+      visibleDarkPolarityHalo,
+      visibleGradientResidual,
+      visibleSpatialResidual,
+      halo
+    };
+  }
+  function assessCalibratedWatermarkResidualVisibility({
+    imageData,
+    originalImageData = null,
+    position,
+    alphaMap,
+    alphaGain = 1
+  }) {
+    const visibility = assessWatermarkResidualVisibility({
+      imageData,
+      position,
+      alphaMap
+    });
+    if (!visibility) return null;
+    const scores = scoreRegion(imageData, alphaMap, position);
+    const nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    const artifacts = originalImageData ? assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: imageData,
+      alphaMap,
+      position,
+      alphaGain
+    }) : null;
+    const newlyClippedRatio = artifacts?.newlyClippedRatio ?? 0;
+    const shouldMeasureSpatialProminence = visibility.visibleSpatialResidual === true && visibility.visiblePositiveHalo !== true && visibility.visibleGradientResidual !== true && scores.spatialScore <= -NONLOCALIZED_SPATIAL_METRIC_RISK_MIN_NEGATIVE_SPATIAL && scores.gradientScore < NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_GRADIENT && visibility.positiveHaloLum <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_POSITIVE_HALO_LUM && nearBlackRatio < NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEAR_BLACK_RATIO && newlyClippedRatio <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEWLY_CLIPPED_RATIO && artifacts?.visualArtifactCost <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_ARTIFACT_COST;
+    const spatialLocalization = shouldMeasureSpatialProminence ? assessSpatialResidualLocalization({
+      imageData,
+      position,
+      alphaMap,
+      targetSpatialScore: scores.spatialScore
+    }) : null;
+    const metricRisk = classifyCalibratedResidualMetricRisk({
+      visibility,
+      spatialScore: scores.spatialScore,
+      gradientScore: scores.gradientScore,
+      spatialProminence: spatialLocalization?.prominence ?? null,
+      nearBlackRatio,
+      newlyClippedRatio,
+      visualArtifactCost: artifacts?.visualArtifactCost ?? null,
+      hasOriginalImageData: Boolean(originalImageData)
+    });
+    return {
+      ...visibility,
+      rawVisible: visibility.visible,
+      visible: visibility.visible && !metricRisk,
+      calibratedVisible: visibility.visible && !metricRisk,
+      metricRisk,
+      nearBlackRatio,
+      newlyClippedRatio,
+      spatialProminence: spatialLocalization?.prominence ?? null,
+      spatialLocalization,
+      rawSpatialScore: scores.spatialScore,
+      rawGradientScore: scores.gradientScore
+    };
+  }
+  function classifyCalibratedResidualMetricRisk({
+    visibility,
+    spatialScore,
+    gradientScore,
+    spatialProminence = null,
+    nearBlackRatio = 0,
+    newlyClippedRatio = 0,
+    visualArtifactCost = null,
+    hasOriginalImageData = false
+  }) {
+    if (visibility?.visible !== true) return null;
+    if (visibility.visibleDarkPolarityHalo === true) return null;
+    if (visibility.visibleSpatialResidual === true && visibility.visiblePositiveHalo !== true && visibility.visibleGradientResidual !== true && spatialScore <= -FLAT_CLIPPED_METRIC_RISK_MIN_NEGATIVE_SPATIAL && visibility.positiveHaloLum <= FLAT_CLIPPED_METRIC_RISK_MAX_POSITIVE_HALO_LUM && nearBlackRatio >= FLAT_CLIPPED_METRIC_RISK_NEAR_BLACK_RATIO && (!hasOriginalImageData || newlyClippedRatio >= FLAT_CLIPPED_METRIC_RISK_NEWLY_CLIPPED_RATIO)) {
+      return "flat-clipped-low-texture-spatial-correlation";
+    }
+    if (visibility.visibleSpatialResidual === true && visibility.visiblePositiveHalo !== true && visibility.visibleGradientResidual !== true && spatialScore <= -FLAT_LOW_VARIANCE_METRIC_RISK_MIN_NEGATIVE_SPATIAL && gradientScore < FLAT_LOW_VARIANCE_METRIC_RISK_MAX_GRADIENT && Number.isFinite(visibility.halo?.bandStdLum) && visibility.halo.bandStdLum <= FLAT_LOW_VARIANCE_METRIC_RISK_MAX_STD_LUM && Number.isFinite(visibility.halo?.outerStdLum) && visibility.halo.outerStdLum <= FLAT_LOW_VARIANCE_METRIC_RISK_MAX_STD_LUM && Number.isFinite(visibility.halo?.deltaLum) && Math.abs(visibility.halo.deltaLum) <= FLAT_LOW_VARIANCE_METRIC_RISK_MAX_ABS_DELTA_LUM) {
+      return "flat-low-variance-spatial-correlation";
+    }
+    if (visibility.visibleSpatialResidual === true && visibility.visiblePositiveHalo !== true && visibility.visibleGradientResidual !== true && spatialScore <= -NONLOCALIZED_SPATIAL_METRIC_RISK_MIN_NEGATIVE_SPATIAL && gradientScore < NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_GRADIENT && visibility.positiveHaloLum <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_POSITIVE_HALO_LUM && nearBlackRatio < NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEAR_BLACK_RATIO && newlyClippedRatio <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_NEWLY_CLIPPED_RATIO && visualArtifactCost !== null && visualArtifactCost <= NONLOCALIZED_SPATIAL_METRIC_RISK_MAX_ARTIFACT_COST && Number.isFinite(spatialProminence) && spatialProminence < NONLOCALIZED_SPATIAL_METRIC_RISK_MIN_LOCAL_PROMINENCE) {
+      return "nonlocalized-spatial-background-collision";
+    }
+    if (visibility.visibleGradientResidual !== true && spatialScore >= POSITIVE_SPATIAL_BACKGROUND_COLLISION_MIN_SPATIAL && gradientScore < POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_GRADIENT && visibility.positiveHaloLum <= POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_POSITIVE_HALO_LUM && visualArtifactCost !== null && visualArtifactCost <= POSITIVE_SPATIAL_BACKGROUND_COLLISION_MAX_ARTIFACT_COST) {
+      return visibility.visiblePositiveHalo === true ? "positive-halo-background-collision" : "positive-spatial-background-collision";
+    }
+    if (visibility.visiblePositiveHalo === true && visibility.visibleSpatialResidual !== true && visibility.visibleGradientResidual !== true && Math.abs(spatialScore) < WEAK_HALO_BACKGROUND_COLLISION_MAX_ABS_SPATIAL && gradientScore < WEAK_HALO_BACKGROUND_COLLISION_MAX_GRADIENT && visibility.positiveHaloLum <= WEAK_HALO_BACKGROUND_COLLISION_MAX_POSITIVE_HALO_LUM && nearBlackRatio < WEAK_HALO_BACKGROUND_COLLISION_MAX_NEAR_BLACK_RATIO && newlyClippedRatio <= WEAK_HALO_BACKGROUND_COLLISION_MAX_NEWLY_CLIPPED_RATIO && visualArtifactCost !== null && visualArtifactCost <= WEAK_HALO_BACKGROUND_COLLISION_MAX_ARTIFACT_COST) {
+      return "weak-halo-background-collision";
+    }
+    if (visibility.visiblePositiveHalo === true && visibility.visibleGradientResidual !== true && gradientScore >= STRUCTURED_EDGE_BACKGROUND_COLLISION_MIN_GRADIENT && nearBlackRatio < STRUCTURED_EDGE_BACKGROUND_COLLISION_MAX_NEAR_BLACK_RATIO && newlyClippedRatio <= STRUCTURED_EDGE_BACKGROUND_COLLISION_MAX_NEWLY_CLIPPED_RATIO && visualArtifactCost !== null && visualArtifactCost >= STRUCTURED_EDGE_BACKGROUND_COLLISION_MIN_ARTIFACT_COST) {
+      return "structured-edge-background-collision";
+    }
+    return null;
+  }
+  function assessSpatialResidualLocalization({
+    imageData,
+    position,
+    alphaMap,
+    targetSpatialScore
+  }) {
+    const size = Number(position?.width);
+    const x = Number(position?.x);
+    const y = Number(position?.y);
+    if (!imageData?.data || !Number.isInteger(size) || !Number.isInteger(x) || !Number.isInteger(y) || size <= 0 || Number(position?.height) !== size || !alphaMap || alphaMap.length !== size * size) {
+      return null;
+    }
+    const controlScores = [];
+    for (const [offsetX, offsetY] of RESIDUAL_LOCALIZATION_CONTROL_OFFSETS) {
+      const controlRegion = {
+        x: x + offsetX * size,
+        y: y + offsetY * size,
+        size
+      };
+      if (controlRegion.x < 0 || controlRegion.y < 0 || controlRegion.x + size > imageData.width || controlRegion.y + size > imageData.height) {
+        continue;
+      }
+      controlScores.push(computeRegionSpatialCorrelation({
+        imageData,
+        alphaMap,
+        region: controlRegion
+      }));
+    }
+    if (controlScores.length < 3) return null;
+    const sortedControlSpatialResiduals = controlScores.map((score) => Math.abs(score)).sort((left, right) => right - left);
+    const maximumControlSpatialResidual = sortedControlSpatialResiduals[0];
+    const robustControlSpatialResidual = sortedControlSpatialResiduals.length > 1 ? sortedControlSpatialResiduals[1] : maximumControlSpatialResidual;
+    return {
+      targetSpatialScore,
+      controlScores,
+      maximumControlSpatialResidual,
+      robustControlSpatialResidual,
+      prominence: Math.abs(targetSpatialScore) - robustControlSpatialResidual
+    };
+  }
+  function getReferenceRegion(position, imageData) {
+    const referenceY = position.y - position.height;
+    if (referenceY < 0) return null;
+    return {
+      x: position.x,
+      y: referenceY,
+      width: position.width,
+      height: position.height
+    };
+  }
+  function assessReferenceTextureAlignment({
+    originalImageData,
+    referenceImageData,
+    candidateImageData,
+    position
+  }) {
+    const candidateTextureStats = candidateImageData ? calculateRegionTextureStats(candidateImageData, position) : null;
+    return assessReferenceTextureAlignmentFromStats({
+      originalImageData,
+      referenceImageData,
+      candidateTextureStats,
+      position
+    });
+  }
+  function assessReferenceTextureAlignmentFromStats({
+    originalImageData,
+    referenceImageData,
+    candidateTextureStats,
+    position
+  }) {
+    const resolvedReferenceImageData = referenceImageData ?? originalImageData;
+    const referenceRegion = resolvedReferenceImageData ? getReferenceRegion(position, resolvedReferenceImageData) : null;
+    const referenceTextureStats = referenceRegion ? calculateRegionTextureStats(resolvedReferenceImageData, referenceRegion) : null;
+    const darknessPenalty = referenceTextureStats && candidateTextureStats ? Math.max(0, referenceTextureStats.meanLum - candidateTextureStats.meanLum - TEXTURE_REFERENCE_MARGIN) / Math.max(1, referenceTextureStats.meanLum) : 0;
+    const flatnessPenalty = referenceTextureStats && candidateTextureStats ? Math.max(0, referenceTextureStats.stdLum * TEXTURE_STD_FLOOR_RATIO - candidateTextureStats.stdLum) / Math.max(1, referenceTextureStats.stdLum) : 0;
+    const darknessVisibility = referenceTextureStats && candidateTextureStats ? Math.max(0, referenceTextureStats.meanLum - candidateTextureStats.meanLum - TEXTURE_REFERENCE_MARGIN) / Math.max(1, referenceTextureStats.stdLum) : 0;
+    const tooDark = darknessPenalty > 0;
+    const tooFlat = flatnessPenalty > 0;
+    const visibleDarkHole = tooDark && darknessVisibility >= TEXTURE_DARKNESS_VISIBILITY_HARD_REJECT_THRESHOLD;
+    const strongDarkFlatCollapse = tooDark && tooFlat && darknessPenalty >= TEXTURE_DARKNESS_HARD_REJECT_PENALTY_THRESHOLD && flatnessPenalty >= TEXTURE_FLATNESS_HARD_REJECT_PENALTY_THRESHOLD;
+    return {
+      referenceTextureStats,
+      candidateTextureStats,
+      darknessPenalty,
+      flatnessPenalty,
+      darknessVisibility,
+      texturePenalty: darknessPenalty * 2 + flatnessPenalty * 2,
+      tooDark,
+      tooFlat,
+      visibleDarkHole,
+      hardReject: strongDarkFlatCollapse || visibleDarkHole
+    };
+  }
+  function scoreRegion(imageData, alphaMap, position) {
+    return {
+      spatialScore: computeRegionSpatialCorrelation({
+        imageData,
+        alphaMap,
+        region: {
+          x: position.x,
+          y: position.y,
+          size: position.width
+        }
+      }),
+      gradientScore: computeRegionGradientCorrelation({
+        imageData,
+        alphaMap,
+        region: {
+          x: position.x,
+          y: position.y,
+          size: position.width
+        }
+      })
+    };
+  }
+
+  // src/core/alphaGradientMask.js
+  var EPSILON2 = 1e-8;
+  function clamp3(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function gaussianKernel1D(sigma) {
+    if (!Number.isFinite(sigma) || sigma <= 0) return null;
+    const radius = Math.max(1, Math.ceil(sigma * 3));
+    const kernel = new Float32Array(radius * 2 + 1);
+    let sum = 0;
+    for (let i = -radius; i <= radius; i++) {
+      const value = Math.exp(-(i * i) / (2 * sigma * sigma));
+      kernel[i + radius] = value;
+      sum += value;
+    }
+    if (sum <= EPSILON2) return null;
+    for (let i = 0; i < kernel.length; i++) {
+      kernel[i] /= sum;
+    }
+    return { kernel, radius };
+  }
+  function blurHorizontal(values, width, height, kernelInfo) {
+    const out = new Float32Array(values.length);
+    const { kernel, radius } = kernelInfo;
+    for (let y = 0; y < height; y++) {
+      const rowBase = y * width;
+      for (let x = 0; x < width; x++) {
+        let sum = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const sx = clamp3(x + k, 0, width - 1);
+          sum += values[rowBase + sx] * kernel[k + radius];
+        }
+        out[rowBase + x] = sum;
+      }
+    }
+    return out;
+  }
+  function blurVertical(values, width, height, kernelInfo) {
+    const out = new Float32Array(values.length);
+    const { kernel, radius } = kernelInfo;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let sum = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const sy = clamp3(y + k, 0, height - 1);
+          sum += values[sy * width + x] * kernel[k + radius];
+        }
+        out[y * width + x] = sum;
+      }
+    }
+    return out;
+  }
+  function gaussianBlur(values, width, height, sigma) {
+    const kernelInfo = gaussianKernel1D(sigma);
+    if (!kernelInfo) return new Float32Array(values);
+    return blurVertical(
+      blurHorizontal(values, width, height, kernelInfo),
+      width,
+      height,
+      kernelInfo
+    );
+  }
+  function dilate(values, width, height, radius) {
+    if (!Number.isFinite(radius) || radius <= 0) return new Float32Array(values);
+    const roundedRadius = Math.max(1, Math.round(radius));
+    const radiusSquared = roundedRadius * roundedRadius;
+    const out = new Float32Array(values.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let maxValue = 0;
+        for (let dy = -roundedRadius; dy <= roundedRadius; dy++) {
+          for (let dx = -roundedRadius; dx <= roundedRadius; dx++) {
+            if (dx * dx + dy * dy > radiusSquared) continue;
+            const sx = x + dx;
+            const sy = y + dy;
+            if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+            maxValue = Math.max(maxValue, values[sy * width + sx]);
+          }
+        }
+        out[y * width + x] = maxValue;
+      }
+    }
+    return out;
+  }
+  function createAlphaGradientMask({
+    alphaMap,
+    width,
+    height = width,
+    strength = 1,
+    gamma = 0.5,
+    dilateRadius = 2,
+    blurSigma = 2
+  }) {
+    if (!alphaMap || width <= 0 || height <= 0 || alphaMap.length < width * height) {
+      return new Float32Array(0);
+    }
+    const gradient = new Float32Array(width * height);
+    let minGradient = Number.POSITIVE_INFINITY;
+    let maxGradient = 0;
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = y * width + x;
+        const gx = -alphaMap[i - width - 1] - 2 * alphaMap[i - 1] - alphaMap[i + width - 1] + alphaMap[i - width + 1] + 2 * alphaMap[i + 1] + alphaMap[i + width + 1];
+        const gy = -alphaMap[i - width - 1] - 2 * alphaMap[i - width] - alphaMap[i - width + 1] + alphaMap[i + width - 1] + 2 * alphaMap[i + width] + alphaMap[i + width + 1];
+        const value = Math.sqrt(gx * gx + gy * gy);
+        gradient[i] = value;
+        minGradient = Math.min(minGradient, value);
+        maxGradient = Math.max(maxGradient, value);
+      }
+    }
+    if (!Number.isFinite(minGradient) || maxGradient <= minGradient + EPSILON2) {
+      return new Float32Array(width * height);
+    }
+    const normalized = new Float32Array(width * height);
+    const exponent = Number.isFinite(gamma) && gamma > 0 ? gamma : 1;
+    for (let i = 0; i < normalized.length; i++) {
+      const value = (gradient[i] - minGradient) / (maxGradient - minGradient);
+      normalized[i] = Math.pow(clamp3(value, 0, 1), exponent);
+    }
+    const expanded = dilate(normalized, width, height, dilateRadius);
+    const blurred = gaussianBlur(expanded, width, height, blurSigma);
+    const safeStrength = Number.isFinite(strength) ? Math.max(0, strength) : 1;
+    for (let i = 0; i < blurred.length; i++) {
+      blurred[i] = clamp3(blurred[i] * safeStrength, 0, 1);
+    }
+    return blurred;
+  }
+  function getAlphaGradientWeight(mask, index, floor = 0.35) {
+    if (!mask || index < 0 || index >= mask.length) {
+      return clamp3(floor, 0, 1);
+    }
+    return Math.max(clamp3(floor, 0, 1), clamp3(mask[index], 0, 1));
+  }
+
+  // src/core/watermarkPresence.js
+  function hasReliableStandardWatermarkSignal(scores) {
+    if (!scores) return false;
+    const { spatialScore, gradientScore } = scores;
+    return classifyStandardWatermarkSignal({ spatialScore, gradientScore }).tier === "direct-match";
+  }
+  function hasReliableAdaptiveWatermarkSignal(adaptiveResult) {
+    return classifyAdaptiveWatermarkSignal(adaptiveResult).tier === "direct-match";
+  }
+
+  // src/core/watermarkScoring.js
+  var DEFAULT_CLEARED_SPATIAL_RESIDUAL = 0.04;
+  var DEFAULT_CLEARED_GRADIENT_RESIDUAL = 0.12;
+  var DEFAULT_EARLY_ACCEPT_MAX_SOURCE_PRIORITY = 3;
+  var DEFAULT_EARLY_ACCEPT_MIN_SUPPRESSION_GAIN = 0.25;
+  var DEFAULT_BALANCED_GRADIENT_WEIGHT = 0.6;
+  var DEFAULT_BALANCED_NEAR_BLACK_WEIGHT = 3;
+  var DEFAULT_BALANCED_TEXTURE_WEIGHT = 0.7;
+  var DEFAULT_BALANCED_CLIPPING_WEIGHT = 2;
+  var DEFAULT_BALANCED_DARK_HALO_WEIGHT = 0.012;
+  var DEFAULT_BALANCED_ARTIFACT_WEIGHT = 0.35;
+  var DEFAULT_BALANCED_GRADIENT_REGRESSION_WEIGHT = 0.25;
+  function toFiniteNumber2(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function scoreOriginalEvidence({ spatial, gradient } = {}) {
+    const resolvedSpatial = toFiniteNumber2(spatial) ?? 0;
+    const resolvedGradient = toFiniteNumber2(gradient) ?? 0;
+    let tier = "none";
+    if (resolvedSpatial >= 0.3 && resolvedGradient >= 0.12 || resolvedGradient >= 0.45) {
+      tier = "strong";
+    } else if (resolvedSpatial >= 0.15 || resolvedGradient >= 0.08) {
+      tier = "medium";
+    } else if (resolvedSpatial >= 0.05 || resolvedGradient >= 0.03) {
+      tier = "weak";
+    }
+    return {
+      tier,
+      spatial: spatial ?? null,
+      gradient: gradient ?? null,
+      score: resolvedSpatial + Math.max(0, resolvedGradient) * 0.8
+    };
+  }
+  function originalEvidenceRank(tier) {
+    if (tier === "strong") return 3;
+    if (tier === "medium") return 2;
+    if (tier === "weak") return 1;
+    return 0;
+  }
+  function scoreResidual({
+    processedSpatial,
+    processedGradient,
+    suppressionGain = null,
+    artifactCost = 0,
+    clearedSpatialResidual = DEFAULT_CLEARED_SPATIAL_RESIDUAL,
+    clearedGradientResidual = DEFAULT_CLEARED_GRADIENT_RESIDUAL
+  } = {}) {
+    const spatial = toFiniteNumber2(processedSpatial);
+    const gradient = toFiniteNumber2(processedGradient);
+    const spatialResidual = Math.abs(spatial ?? 0);
+    const gradientResidual = Math.max(0, gradient ?? 0);
+    const cost = toFiniteNumber2(artifactCost) ?? 0;
+    return {
+      cleared: spatialResidual <= clearedSpatialResidual && gradientResidual <= clearedGradientResidual,
+      spatial,
+      gradient,
+      spatialResidual,
+      gradientResidual,
+      suppressionGain: toFiniteNumber2(suppressionGain),
+      artifactCost: cost,
+      score: spatialResidual + gradientResidual * 0.6 + cost * 0.25
+    };
+  }
+  function scoreDamage({
+    hardReject = false,
+    nearBlackIncrease = 0,
+    texturePenalty = 0,
+    newlyClippedRatio = 0,
+    halo = null
+  } = {}) {
+    const resolvedNearBlackIncrease = toFiniteNumber2(nearBlackIncrease) ?? 0;
+    const resolvedTexturePenalty = toFiniteNumber2(texturePenalty) ?? 0;
+    const resolvedNewlyClippedRatio = toFiniteNumber2(newlyClippedRatio) ?? 0;
+    const reasons = [];
+    if (hardReject === true) reasons.push("hard-reject");
+    if (resolvedNearBlackIncrease > 0.05) reasons.push("near-black");
+    if (resolvedTexturePenalty > 0.25) reasons.push("texture");
+    if (resolvedNewlyClippedRatio > 0.03) reasons.push("clipping");
+    return {
+      safe: reasons.length === 0,
+      penalty: Math.max(0, resolvedNearBlackIncrease) * 3 + resolvedTexturePenalty + resolvedNewlyClippedRatio * 8,
+      reason: reasons.length > 0 ? reasons.join(",") : null,
+      nearBlackIncrease: nearBlackIncrease ?? null,
+      texturePenalty: texturePenalty ?? null,
+      newlyClippedRatio: newlyClippedRatio ?? null,
+      halo
+    };
+  }
+  function scoreBalancedVisualCandidate({
+    processedSpatial,
+    processedGradient,
+    nearBlackIncrease = 0,
+    texturePenalty = 0,
+    newlyClippedRatio = 0,
+    darkHaloLum = 0,
+    visualArtifactCost = null,
+    gradientIncrease = 0,
+    gradientWeight = DEFAULT_BALANCED_GRADIENT_WEIGHT,
+    nearBlackWeight = DEFAULT_BALANCED_NEAR_BLACK_WEIGHT,
+    textureWeight = DEFAULT_BALANCED_TEXTURE_WEIGHT,
+    clippingWeight = DEFAULT_BALANCED_CLIPPING_WEIGHT,
+    darkHaloWeight = DEFAULT_BALANCED_DARK_HALO_WEIGHT,
+    artifactWeight = DEFAULT_BALANCED_ARTIFACT_WEIGHT,
+    gradientRegressionWeight = DEFAULT_BALANCED_GRADIENT_REGRESSION_WEIGHT
+  } = {}) {
+    const spatial = toFiniteNumber2(processedSpatial) ?? 0;
+    const gradient = toFiniteNumber2(processedGradient) ?? 0;
+    const resolvedNearBlackIncrease = Math.max(0, toFiniteNumber2(nearBlackIncrease) ?? 0);
+    const resolvedTexturePenalty = Math.max(0, toFiniteNumber2(texturePenalty) ?? 0);
+    const resolvedNewlyClippedRatio = Math.max(0, toFiniteNumber2(newlyClippedRatio) ?? 0);
+    const resolvedDarkHaloLum = Math.max(0, toFiniteNumber2(darkHaloLum) ?? 0);
+    const resolvedVisualArtifactCost = Math.max(0, toFiniteNumber2(visualArtifactCost) ?? 0);
+    const resolvedGradientIncrease = Math.max(0, toFiniteNumber2(gradientIncrease) ?? 0);
+    const residualCost = Math.abs(spatial) + Math.max(0, gradient) * gradientWeight;
+    const damageCost = resolvedNearBlackIncrease * nearBlackWeight + resolvedTexturePenalty * textureWeight + resolvedNewlyClippedRatio * clippingWeight + resolvedDarkHaloLum * darkHaloWeight + resolvedVisualArtifactCost * artifactWeight + resolvedGradientIncrease * gradientRegressionWeight;
+    return {
+      score: residualCost + damageCost,
+      residualCost,
+      damageCost,
+      spatial,
+      gradient,
+      nearBlackIncrease: resolvedNearBlackIncrease,
+      texturePenalty: resolvedTexturePenalty,
+      newlyClippedRatio: resolvedNewlyClippedRatio,
+      darkHaloLum: resolvedDarkHaloLum,
+      visualArtifactCost: resolvedVisualArtifactCost,
+      gradientIncrease: resolvedGradientIncrease
+    };
+  }
+  function buildRankingKey({
+    sourcePriority = 9,
+    originalEvidenceTier = "none",
+    damageSafe = false,
+    residualScore = 0,
+    alphaPriorityIndex = 99,
+    damagePenalty = 0
+  } = {}) {
+    return [
+      sourcePriority,
+      -originalEvidenceRank(originalEvidenceTier),
+      damageSafe ? 0 : 1,
+      Number((toFiniteNumber2(residualScore) ?? 0).toFixed(6)),
+      alphaPriorityIndex,
+      Number((toFiniteNumber2(damagePenalty) ?? 0).toFixed(6))
+    ];
+  }
+  function compareRankingKey(left, right) {
+    const length = Math.max(left?.length ?? 0, right?.length ?? 0);
+    for (let index = 0; index < length; index++) {
+      const leftValue = left?.[index] ?? 0;
+      const rightValue = right?.[index] ?? 0;
+      if (leftValue !== rightValue) return leftValue - rightValue;
+    }
+    return 0;
+  }
+  function shouldEarlyAccept({
+    sourcePriority = 9,
+    originalEvidence = null,
+    residual = null,
+    damage = null,
+    maxSourcePriority = DEFAULT_EARLY_ACCEPT_MAX_SOURCE_PRIORITY,
+    minSuppressionGain = DEFAULT_EARLY_ACCEPT_MIN_SUPPRESSION_GAIN
+  } = {}) {
+    const resolvedSourcePriority = toFiniteNumber2(sourcePriority) ?? 9;
+    const suppressionGain = toFiniteNumber2(residual?.suppressionGain) ?? 0;
+    return resolvedSourcePriority <= maxSourcePriority && originalEvidence?.tier === "strong" && residual?.cleared === true && suppressionGain >= minSuppressionGain && damage?.safe === true;
+  }
+
+  // src/core/pipelineDetectionCandidate.js
+  var PRODUCTION_EVIDENCE_MIN_SPATIAL = 0.45;
+  var PRODUCTION_EVIDENCE_MIN_GRADIENT = 0.16;
+  function numberOr(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+  function finiteOrNull(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function normalizeConfig(config) {
+    if (!config || typeof config !== "object") return null;
+    const { logoSize, marginRight, marginBottom } = config;
+    if (![logoSize, marginRight, marginBottom].every(Number.isFinite)) return null;
+    return {
+      logoSize,
+      marginRight,
+      marginBottom,
+      ...typeof config.alphaVariant === "string" && config.alphaVariant.length > 0 ? { alphaVariant: config.alphaVariant } : {}
+    };
+  }
+  function normalizePosition(position) {
+    if (!position || typeof position !== "object") return null;
+    const { x, y, width, height } = position;
+    if (![x, y, width, height].every(Number.isFinite)) return null;
+    return { x, y, width, height };
+  }
+  function makeCandidateId(prefix, config, position, source) {
+    const normalizedConfig = normalizeConfig(config);
+    const normalizedPosition = normalizePosition(position);
+    const configKey = normalizedConfig ? `${normalizedConfig.logoSize}/${normalizedConfig.marginRight}/${normalizedConfig.marginBottom}${normalizedConfig.alphaVariant ? `/${normalizedConfig.alphaVariant}` : ""}` : "none";
+    const positionKey = normalizedPosition ? `${normalizedPosition.x},${normalizedPosition.y},${normalizedPosition.width},${normalizedPosition.height}` : "none";
+    return `${prefix}:${configKey}:${positionKey}:${source || "unknown"}`;
+  }
+  function hasProductionEvidenceScores({ spatialScore, gradientScore }) {
+    return numberOr(spatialScore, -Infinity) >= PRODUCTION_EVIDENCE_MIN_SPATIAL && numberOr(gradientScore, -Infinity) >= PRODUCTION_EVIDENCE_MIN_GRADIENT;
+  }
+  function createDetectionCandidateFromSelectedTrial({
+    selectedTrial = null,
+    source = null,
+    config = null,
+    position = null,
+    adaptiveConfidence = null,
+    decisionTier = null
+  } = {}) {
+    const resolvedConfig = normalizeConfig(config ?? selectedTrial?.config);
+    const resolvedPosition = normalizePosition(position ?? selectedTrial?.position);
+    const originalSpatial = finiteOrNull(selectedTrial?.originalSpatialScore);
+    const originalGradient = finiteOrNull(selectedTrial?.originalGradientScore);
+    return {
+      id: makeCandidateId("det", resolvedConfig, resolvedPosition, source ?? selectedTrial?.source),
+      source: source ?? selectedTrial?.source ?? null,
+      decisionTier,
+      config: resolvedConfig,
+      position: resolvedPosition,
+      alphaMapHint: resolvedConfig?.alphaVariant ? `${resolvedConfig.logoSize}-${resolvedConfig.alphaVariant}` : resolvedConfig?.logoSize ?? null,
+      polarityHint: selectedTrial?.provenance?.darkPolarity === true ? "dark" : "white",
+      evidence: {
+        spatialScore: originalSpatial,
+        gradientScore: originalGradient,
+        confidence: finiteOrNull(adaptiveConfidence ?? selectedTrial?.adaptiveConfidence),
+        productionEvidence: hasProductionEvidenceScores({
+          spatialScore: originalSpatial,
+          gradientScore: originalGradient
+        }),
+        originalEvidenceTier: selectedTrial?.originalEvidence?.tier ?? null
+      },
+      provenance: selectedTrial?.provenance ?? null
+    };
+  }
+  function createRejectedDetectionCandidate({
+    reason = "no-watermark-detected",
+    source = "skipped",
+    decisionTier = "insufficient",
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    adaptiveConfidence = null
+  } = {}) {
+    return {
+      id: `det:rejected:${reason}`,
+      source,
+      decisionTier,
+      config: null,
+      position: null,
+      alphaMapHint: null,
+      polarityHint: null,
+      evidence: {
+        spatialScore: finiteOrNull(originalSpatialScore),
+        gradientScore: finiteOrNull(originalGradientScore),
+        confidence: finiteOrNull(adaptiveConfidence),
+        productionEvidence: hasProductionEvidenceScores({
+          spatialScore: originalSpatialScore,
+          gradientScore: originalGradientScore
+        }),
+        originalEvidenceTier: null
+      },
+      provenance: null
+    };
+  }
+
+  // src/core/pipelineAlphaTrial.js
+  function finiteOrNull2(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function normalizeConfig2(config) {
+    if (!config || typeof config !== "object") return null;
+    const { logoSize, marginRight, marginBottom } = config;
+    if (![logoSize, marginRight, marginBottom].every(Number.isFinite)) return null;
+    return {
+      logoSize,
+      marginRight,
+      marginBottom,
+      ...typeof config.alphaVariant === "string" && config.alphaVariant.length > 0 ? { alphaVariant: config.alphaVariant } : {}
+    };
+  }
+  function normalizePosition2(position) {
+    if (!position || typeof position !== "object") return null;
+    const { x, y, width, height } = position;
+    if (![x, y, width, height].every(Number.isFinite)) return null;
+    return { x, y, width, height };
+  }
+  function compactObject(object) {
+    return Object.fromEntries(
+      Object.entries(object).filter(([, value]) => value !== void 0 && value !== null)
+    );
+  }
+  function makeCandidateId2(prefix, config, position, source) {
+    const normalizedConfig = normalizeConfig2(config);
+    const normalizedPosition = normalizePosition2(position);
+    const configKey = normalizedConfig ? `${normalizedConfig.logoSize}/${normalizedConfig.marginRight}/${normalizedConfig.marginBottom}${normalizedConfig.alphaVariant ? `/${normalizedConfig.alphaVariant}` : ""}` : "none";
+    const positionKey = normalizedPosition ? `${normalizedPosition.x},${normalizedPosition.y},${normalizedPosition.width},${normalizedPosition.height}` : "none";
+    return `${prefix}:${configKey}:${positionKey}:${source || "unknown"}`;
+  }
+  function normalizeStageList(alphaAdjustmentStages) {
+    return Array.isArray(alphaAdjustmentStages) ? alphaAdjustmentStages.map((stage) => typeof stage === "string" ? { stage } : stage).filter((stage) => stage && typeof stage.stage === "string") : [];
+  }
+  function normalizeAlphaTrialEvents(alphaTrialEvents) {
+    return Array.isArray(alphaTrialEvents) ? alphaTrialEvents.filter((event) => event && typeof event === "object").map((event) => compactObject({
+      stage: typeof event.stage === "string" ? event.stage : null,
+      strategy: typeof event.strategy === "string" ? event.strategy : null,
+      decision: typeof event.decision === "string" ? event.decision : null,
+      blockedGate: typeof event.blockedGate === "string" ? event.blockedGate : null,
+      fromAlphaGain: finiteOrNull2(event.fromAlphaGain),
+      toAlphaGain: finiteOrNull2(event.toAlphaGain),
+      alphaGain: finiteOrNull2(event.alphaGain),
+      repeatCount: finiteOrNull2(event.repeatCount),
+      edgeCleanup: typeof event.edgeCleanup === "boolean" ? event.edgeCleanup : null,
+      currentSpatialScore: finiteOrNull2(event.currentSpatialScore),
+      candidateSpatialScore: finiteOrNull2(event.candidateSpatialScore),
+      spatialDrift: finiteOrNull2(event.spatialDrift),
+      currentGradientScore: finiteOrNull2(event.currentGradientScore),
+      candidateGradientScore: finiteOrNull2(event.candidateGradientScore),
+      beforeSpatialScore: finiteOrNull2(event.beforeSpatialScore),
+      beforeGradientScore: finiteOrNull2(event.beforeGradientScore),
+      afterSpatialScore: finiteOrNull2(event.afterSpatialScore),
+      afterGradientScore: finiteOrNull2(event.afterGradientScore),
+      suppressionGain: finiteOrNull2(event.suppressionGain),
+      currentCost: finiteOrNull2(event.currentCost),
+      candidateCost: finiteOrNull2(event.candidateCost),
+      cost: finiteOrNull2(event.cost)
+    })) : [];
+  }
+  function classifyAlphaStages(alphaAdjustmentStages) {
+    return normalizeStageList(alphaAdjustmentStages).filter(
+      (stage) => /alpha|recalibration|over-subtraction|subpixel|new-margin-96-variant|power-profile|residual-rebalance|anti-template/i.test(stage.stage)
+    );
+  }
+  function normalizeAlphaProfileStage(stage) {
+    const {
+      stage: stageName,
+      alphaStrategy,
+      repairStrategy,
+      fromAlphaGain,
+      toAlphaGain,
+      beforeSpatialScore,
+      beforeGradientScore,
+      afterSpatialScore,
+      afterGradientScore,
+      suppressionGain,
+      cost,
+      profileExponent,
+      allowSameAlphaGain,
+      ...stageExtras
+    } = stage;
+    return compactObject({
+      ...stageExtras,
+      stage: stageName,
+      alphaStrategy: typeof alphaStrategy === "string" ? alphaStrategy : null,
+      repairStrategy: typeof repairStrategy === "string" ? repairStrategy : null,
+      fromAlphaGain: finiteOrNull2(fromAlphaGain),
+      toAlphaGain: finiteOrNull2(toAlphaGain),
+      beforeSpatialScore: finiteOrNull2(beforeSpatialScore),
+      beforeGradientScore: finiteOrNull2(beforeGradientScore),
+      afterSpatialScore: finiteOrNull2(afterSpatialScore),
+      afterGradientScore: finiteOrNull2(afterGradientScore),
+      suppressionGain: finiteOrNull2(suppressionGain),
+      cost: finiteOrNull2(cost),
+      profileExponent: finiteOrNull2(profileExponent)
+    });
+  }
+  function inferAlphaTrialStrategy({ source = null, config = null, alphaAdjustmentStages = null } = {}) {
+    const sourceText = String(source ?? "");
+    const stages = normalizeStageList(alphaAdjustmentStages).map((stage) => stage.stage);
+    if (sourceText.includes("new-margin-variant") || stages.includes("new-margin-96-variant-rescue")) {
+      return "new-margin-96-variant";
+    }
+    if (sourceText.includes("residual-rebalance") || stages.includes("known-48-positive-residual-rebalance")) {
+      return "known-48-positive-residual-rebalance";
+    }
+    if (sourceText.includes("power-profile-rescue") || stages.includes("known-48-power-profile-rescue")) {
+      return "known-48-power-profile";
+    }
+    if (sourceText.includes("profile-alpha-rescue") || stages.includes("large-margin-48-profile-alpha-rescue")) {
+      return "large-margin-48-profile-alpha";
+    }
+    if (sourceText.includes("local-alpha") || stages.includes("evidence-gated-local-alpha-search")) {
+      return "evidence-gated-local-alpha";
+    }
+    if (sourceText.includes("located-aggressive") || stages.includes("located-aggressive-removal")) {
+      return "located-aggressive-alpha";
+    }
+    if (stages.includes("dark-catalog-fine-alpha")) {
+      return "dark-catalog-fine-alpha";
+    }
+    if (stages.includes("over-subtraction-recalibration") || stages.includes("weak-positive-residual-fine-alpha")) {
+      return "over-subtraction-fine-alpha";
+    }
+    if (sourceText.includes("fine-alpha") || stages.some((stage) => stage.includes("fine-alpha"))) {
+      return "fine-alpha";
+    }
+    if (normalizeConfig2(config)?.alphaVariant) {
+      return "alpha-variant";
+    }
+    return "selected-alpha";
+  }
+  function isPhase2AlphaTrialStrategy(strategy) {
+    return strategy === "new-margin-96-variant" || strategy === "known-48-positive-residual-rebalance" || strategy === "known-48-power-profile" || strategy === "large-margin-48-profile-alpha" || strategy === "evidence-gated-local-alpha" || strategy === "over-subtraction-fine-alpha" || strategy === "dark-catalog-fine-alpha";
+  }
+  function reconcileAlphaTrialWithFinalQualitySignals(alphaTrial = null, finalQualitySignals = null) {
+    const finalScores = finalQualitySignals?.final;
+    const artifacts = finalQualitySignals?.artifacts;
+    if (!alphaTrial || !finalScores || !artifacts || !Number.isFinite(finalScores.spatialScore) || !Number.isFinite(finalScores.gradientScore)) {
+      return alphaTrial;
+    }
+    const damage = scoreDamage({
+      hardReject: finalQualitySignals.texture?.hardReject === true,
+      nearBlackIncrease: finalQualitySignals.nearBlackIncrease,
+      texturePenalty: finalQualitySignals.texture?.texturePenalty,
+      newlyClippedRatio: artifacts.newlyClippedRatio,
+      halo: finalQualitySignals.visibility?.halo ?? artifacts.halo ?? null
+    });
+    const residual = scoreResidual({
+      processedSpatial: finalScores.spatialScore,
+      processedGradient: finalScores.gradientScore,
+      suppressionGain: alphaTrial.scores?.suppressionGain,
+      artifactCost: artifacts.visualArtifactCost
+    });
+    return {
+      ...alphaTrial,
+      damage,
+      artifacts,
+      residual
+    };
+  }
+  function createAlphaTrialFromSelectedTrial({
+    selectedTrial = null,
+    detectionCandidate = null,
+    source = null,
+    config = null,
+    position = null,
+    alphaGain = null,
+    alphaMapSource = null,
+    templateWarp = null,
+    alphaAdjustmentStages = null,
+    alphaTrialEvents = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    finalQualitySignals = null
+  } = {}) {
+    const resolvedConfig = normalizeConfig2(config ?? selectedTrial?.config ?? detectionCandidate?.config);
+    const resolvedPosition = normalizePosition2(position ?? selectedTrial?.position ?? detectionCandidate?.position);
+    const resolvedSource = source ?? selectedTrial?.source ?? null;
+    const resolvedAlphaGain = finiteOrNull2(alphaGain ?? selectedTrial?.alphaGain) ?? 1;
+    const alphaStages = classifyAlphaStages(alphaAdjustmentStages);
+    const trialEvents = normalizeAlphaTrialEvents(alphaTrialEvents);
+    const strategy = inferAlphaTrialStrategy({
+      source: resolvedSource,
+      config: resolvedConfig,
+      alphaAdjustmentStages
+    });
+    const originalSpatial = finiteOrNull2(selectedTrial?.originalSpatialScore);
+    const originalGradient = finiteOrNull2(selectedTrial?.originalGradientScore);
+    const processedSpatial = finiteOrNull2(processedSpatialScore ?? selectedTrial?.processedSpatialScore);
+    const processedGradient = finiteOrNull2(processedGradientScore ?? selectedTrial?.processedGradientScore);
+    const alphaTrial = {
+      id: makeCandidateId2("alpha", resolvedConfig, resolvedPosition, `${resolvedSource}:${resolvedAlphaGain}`),
+      detectionId: detectionCandidate?.id ?? null,
+      source: resolvedSource,
+      config: resolvedConfig,
+      position: resolvedPosition,
+      alphaMapSource: alphaMapSource ?? selectedTrial?.provenance?.alphaMapSource ?? null,
+      alphaGain: resolvedAlphaGain,
+      strategy,
+      migrationStage: isPhase2AlphaTrialStrategy(strategy) ? "phase2-alpha-trial" : "phase1-adapter",
+      alphaShape: compactObject({
+        variant: resolvedConfig?.alphaVariant ?? null,
+        templateWarp: templateWarp ?? null,
+        profileStages: alphaStages.map(normalizeAlphaProfileStage),
+        stages: alphaStages.map((stage) => stage.stage)
+      }),
+      acceptedStrategies: trialEvents.filter((event) => event.decision === "accept"),
+      rejectedStrategies: trialEvents.filter((event) => event.decision === "reject"),
+      scores: {
+        originalSpatial,
+        originalGradient,
+        processedSpatial,
+        processedGradient,
+        suppressionGain: finiteOrNull2(suppressionGain ?? selectedTrial?.improvement)
+      },
+      gates: selectedTrial?.evaluation?.gates ?? null,
+      damage: selectedTrial?.damage ?? null,
+      residual: selectedTrial?.residual ?? null,
+      provenance: selectedTrial?.provenance ?? null
+    };
+    return reconcileAlphaTrialWithFinalQualitySignals(alphaTrial, finalQualitySignals);
+  }
+
+  // src/core/pipelineRepairTrial.js
+  var ALPHA_STAGE_PATTERNS = Object.freeze([
+    /alpha/i,
+    /recalibration/i,
+    /over-subtraction/i,
+    /subpixel/i,
+    /new-margin-96-variant/i,
+    /power-profile/i,
+    /residual-rebalance/i,
+    /anti-template/i
+  ]);
+  var REPAIR_STAGE_PATTERNS = Object.freeze([
+    /cleanup/i,
+    /edge/i,
+    /repair/i,
+    /flat.*fill/i,
+    /prior/i,
+    /halo/i,
+    /boundary/i,
+    /quantized/i,
+    /mid-core/i,
+    /background/i
+  ]);
+  function finiteOrNull3(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function compactObject2(object) {
+    return Object.fromEntries(
+      Object.entries(object).filter(([, value]) => value !== void 0 && value !== null)
+    );
+  }
+  function stageMatches(stage, patterns) {
+    return patterns.some((pattern) => pattern.test(stage));
+  }
+  function normalizeStageList2(alphaAdjustmentStages) {
+    return Array.isArray(alphaAdjustmentStages) ? alphaAdjustmentStages.map((stage) => typeof stage === "string" ? { stage } : stage).filter((stage) => stage && typeof stage.stage === "string") : [];
+  }
+  function classifyRepairStages(alphaAdjustmentStages) {
+    return normalizeStageList2(alphaAdjustmentStages).filter((stage) => {
+      const name = stage.stage;
+      return stageMatches(name, REPAIR_STAGE_PATTERNS) && !(stageMatches(name, ALPHA_STAGE_PATTERNS) && !/repair|cleanup|flat.*fill|prior|halo|boundary|quantized|mid-core|background/i.test(name));
+    });
+  }
+  function inferRepairStrategy(stageName) {
+    const name = String(stageName ?? "");
+    if (/luma-edge/i.test(name)) return "luma-edge";
+    if (/edge-cleanup/i.test(name)) return "edge-cleanup";
+    if (/known-48-flat/i.test(name)) return "known-48-flat-fill";
+    if (/new-margin-96-flat/i.test(name)) return "new-margin-96-flat-fill";
+    if (/flat.*fill/i.test(name)) return "flat-fill";
+    if (/smooth-located-estimated-prior/i.test(name)) return "smooth-located-prior";
+    if (/small-margin-prior/i.test(name)) return "small-margin-prior";
+    if (/small-located-prior/i.test(name)) return "small-located-prior";
+    if (/prior/i.test(name)) return "estimated-prior";
+    if (/dark-halo/i.test(name)) return "dark-halo-repair";
+    if (/canonical-96-positive-halo/i.test(name)) return "canonical-96-positive-halo-repair";
+    if (/halo/i.test(name)) return "halo-repair";
+    if (/boundary/i.test(name)) return "boundary-repair";
+    if (/quantized/i.test(name)) return "quantized-body-correction";
+    if (/mid-core/i.test(name)) return "mid-core-bias-correction";
+    if (/background/i.test(name)) return "background-cleanup";
+    return "repair";
+  }
+  function createRepairTrialFromStages({
+    alphaTrial = null,
+    source = null,
+    alphaAdjustmentStages = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null
+  } = {}) {
+    const repairStages = classifyRepairStages(alphaAdjustmentStages);
+    if (repairStages.length === 0) {
+      return {
+        id: `${alphaTrial?.id ?? "alpha:none"}:repair:none`,
+        alphaTrialId: alphaTrial?.id ?? null,
+        source: null,
+        repairType: "none",
+        applied: false,
+        params: null,
+        scores: null,
+        artifacts: null,
+        gates: null,
+        provenance: null
+      };
+    }
+    return {
+      id: `${alphaTrial?.id ?? "alpha:none"}:repair:${repairStages.map((stage) => stage.stage).join("+")}`,
+      alphaTrialId: alphaTrial?.id ?? null,
+      source,
+      repairType: inferRepairStrategy(repairStages.at(-1)?.stage),
+      applied: true,
+      params: repairStages.map((stage) => compactObject2({
+        stage: stage.stage,
+        repairStrategy: typeof stage.repairStrategy === "string" ? stage.repairStrategy : inferRepairStrategy(stage.stage),
+        fromAlphaGain: finiteOrNull3(stage.fromAlphaGain),
+        toAlphaGain: finiteOrNull3(stage.toAlphaGain),
+        beforeSpatialScore: finiteOrNull3(stage.beforeSpatialScore),
+        beforeGradientScore: finiteOrNull3(stage.beforeGradientScore),
+        afterSpatialScore: finiteOrNull3(stage.afterSpatialScore),
+        afterGradientScore: finiteOrNull3(stage.afterGradientScore),
+        suppressionGain: finiteOrNull3(stage.suppressionGain),
+        cost: finiteOrNull3(stage.cost)
+      })),
+      scores: {
+        processedSpatial: finiteOrNull3(processedSpatialScore),
+        processedGradient: finiteOrNull3(processedGradientScore),
+        suppressionGain: finiteOrNull3(suppressionGain)
+      },
+      artifacts: residualVisibility ?? null,
+      gates: {
+        stageCount: repairStages.length,
+        stages: repairStages.map((stage) => stage.stage)
+      },
+      provenance: {
+        stageCount: repairStages.length,
+        strategies: [...new Set(repairStages.map((stage) => typeof stage.repairStrategy === "string" ? stage.repairStrategy : inferRepairStrategy(stage.stage)))]
+      }
+    };
+  }
+
+  // src/core/pipelineDecisionPath.js
+  function finiteOrNull4(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function createAcceptedDecisionPath({
+    selectedTrial = null,
+    selectionSource = null,
+    source = null,
+    decisionTier = null,
+    config = null,
+    position = null,
+    adaptiveConfidence = null,
+    alphaGain = 1,
+    alphaMapSource = null,
+    templateWarp = null,
+    alphaAdjustmentStages = null,
+    alphaTrialEvents = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null
+  } = {}) {
+    const detectionCandidate = createDetectionCandidateFromSelectedTrial({
+      selectedTrial,
+      source: selectionSource ?? source,
+      config,
+      position,
+      adaptiveConfidence,
+      decisionTier
+    });
+    const alphaTrial = createAlphaTrialFromSelectedTrial({
+      selectedTrial,
+      detectionCandidate,
+      source,
+      config,
+      position,
+      alphaGain,
+      alphaMapSource,
+      templateWarp,
+      alphaAdjustmentStages,
+      alphaTrialEvents,
+      processedSpatialScore,
+      processedGradientScore,
+      suppressionGain
+    });
+    const repairTrial = createRepairTrialFromStages({
+      alphaTrial,
+      source,
+      alphaAdjustmentStages,
+      processedSpatialScore,
+      processedGradientScore,
+      suppressionGain,
+      residualVisibility
+    });
+    const evaluation = {
+      ...selectedTrial?.evaluation ?? {},
+      pathId: `${detectionCandidate.id}->${alphaTrial.id}->${repairTrial.id}`,
+      detectionId: detectionCandidate.id,
+      alphaTrialId: alphaTrial.id,
+      repairTrialId: repairTrial.id,
+      eligible: selectedTrial?.evaluation?.eligible !== false,
+      decision: "accept",
+      blockedGate: null,
+      riskFlags: selectedTrial?.evaluation?.riskFlags ?? [],
+      finalScores: {
+        originalSpatial: finiteOrNull4(originalSpatialScore ?? selectedTrial?.originalSpatialScore),
+        originalGradient: finiteOrNull4(originalGradientScore ?? selectedTrial?.originalGradientScore),
+        processedSpatial: finiteOrNull4(processedSpatialScore),
+        processedGradient: finiteOrNull4(processedGradientScore),
+        suppressionGain: finiteOrNull4(suppressionGain)
+      },
+      explanation: "selected trial accepted by current production path"
+    };
+    return {
+      version: 1,
+      decision: "accept",
+      detectionSource: detectionCandidate.source,
+      alphaSource: alphaTrial.source,
+      repairSource: repairTrial.applied ? repairTrial.source : null,
+      evaluationDecision: "accepted",
+      blockedGate: null,
+      riskFlags: evaluation.riskFlags,
+      detectionCandidate,
+      alphaTrial,
+      repairTrial,
+      evaluation
+    };
+  }
+  function createRejectedDecisionPath({
+    reason = "no-watermark-detected",
+    source = "skipped",
+    decisionTier = "insufficient",
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    adaptiveConfidence = null
+  } = {}) {
+    const detectionCandidate = createRejectedDetectionCandidate({
+      reason,
+      source,
+      decisionTier,
+      originalSpatialScore,
+      originalGradientScore,
+      adaptiveConfidence
+    });
+    const evaluation = {
+      pathId: `${detectionCandidate.id}->reject`,
+      detectionId: detectionCandidate.id,
+      alphaTrialId: null,
+      repairTrialId: null,
+      eligible: false,
+      decision: "reject",
+      blockedGate: reason,
+      riskFlags: [],
+      evidenceClass: detectionCandidate.evidence.productionEvidence ? "evidence-without-selected-path" : "insufficient-production-evidence",
+      explanation: reason
+    };
+    return {
+      version: 1,
+      decision: "reject",
+      detectionSource: source,
+      alphaSource: null,
+      repairSource: null,
+      evaluationDecision: "rejected",
+      blockedGate: reason,
+      riskFlags: [],
+      detectionCandidate,
+      alphaTrial: null,
+      repairTrial: null,
+      evaluation
+    };
+  }
+
+  // src/core/candidateEvaluation.js
+  var NEW_MARGIN_96_SIZE = 96;
+  var NEW_MARGIN_96_MARGIN = 192;
+  var HIGH_RISK_NEW_MARGIN_MIN_SPATIAL = 0.4;
+  var HIGH_RISK_NEW_MARGIN_MIN_GRADIENT = 0.08;
+  var SAFE_EXACT_NEW_MARGIN_MIN_SPATIAL = 0.18;
+  var SAFE_EXACT_NEW_MARGIN_MIN_GRADIENT = 0.05;
+  var SAFE_EXACT_NEW_MARGIN_MIN_IMPROVEMENT = 0.1;
+  var SAFE_EXACT_NEW_MARGIN_MAX_PROCESSED_SPATIAL = 0.32;
+  var SAFE_EXACT_NEW_MARGIN_MAX_PROCESSED_GRADIENT = 0.05;
+  var DEFAULT_ALPHA_NEW_MARGIN_MAX_SPATIAL_RESIDUAL = 0.18;
+  var DEFAULT_ALPHA_NEW_MARGIN_MAX_GRADIENT_RESIDUAL = 0.08;
+  var DEFAULT_ALPHA_NEW_MARGIN_MIN_IMPROVEMENT = 0.12;
+  var DEFAULT_ALPHA_NEW_MARGIN_DAMAGE_ADVANTAGE = 0.03;
+  var FULL_STRENGTH_NEW_MARGIN_MIN_ORIGINAL_GRADIENT = 0.08;
+  var FULL_STRENGTH_NEW_MARGIN_MAX_PROCESSED_GRADIENT = 0.1;
+  var FULL_STRENGTH_NEW_MARGIN_MIN_GRADIENT_ADVANTAGE = 0.03;
+  var FULL_STRENGTH_NEW_MARGIN_MAX_CLIPPED_RATIO = 0.02;
+  var UNSAFE_SHIFTED_MIN_STRONG_SPATIAL_EVIDENCE = 0.4;
+  var UNSAFE_SHIFTED_MIN_STRONG_GRADIENT_EVIDENCE = 0.08;
+  function numberOr2(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+  function getConfig(candidate) {
+    return candidate?.config ?? candidate ?? {};
+  }
+  function getProvenance(candidate) {
+    return candidate?.provenance ?? {};
+  }
+  function isNewMargin96Candidate(candidate) {
+    const config = getConfig(candidate);
+    return config.logoSize === NEW_MARGIN_96_SIZE && config.marginRight === NEW_MARGIN_96_MARGIN && config.marginBottom === NEW_MARGIN_96_MARGIN;
+  }
+  function isNewMarginAlphaVariantTrial(candidate) {
+    const config = getConfig(candidate);
+    return isNewMargin96Candidate(candidate) && config.alphaVariant === "20260520";
+  }
+  function isDefaultAlphaNewMarginTrial(candidate) {
+    const config = getConfig(candidate);
+    return isNewMargin96Candidate(candidate) && !config.alphaVariant;
+  }
+  function isNewMarginVariantFamilyCandidate(candidate) {
+    const config = getConfig(candidate);
+    const provenance = getProvenance(candidate);
+    return config.marginRight === NEW_MARGIN_96_MARGIN && config.marginBottom === NEW_MARGIN_96_MARGIN && (config.alphaVariant === "20260520" || provenance.alphaVariant === "20260520");
+  }
+  function hasSafeExactNewMarginVariantRecovery(candidate) {
+    if (!isNewMarginAlphaVariantTrial(candidate)) return false;
+    if (candidate?.damage?.safe !== true) return false;
+    return numberOr2(candidate?.originalSpatialScore) >= SAFE_EXACT_NEW_MARGIN_MIN_SPATIAL && numberOr2(candidate?.originalGradientScore) >= SAFE_EXACT_NEW_MARGIN_MIN_GRADIENT && numberOr2(candidate?.improvement, -Infinity) >= SAFE_EXACT_NEW_MARGIN_MIN_IMPROVEMENT && Math.abs(numberOr2(candidate?.processedSpatialScore, Infinity)) <= SAFE_EXACT_NEW_MARGIN_MAX_PROCESSED_SPATIAL && Math.max(0, numberOr2(candidate?.processedGradientScore, Infinity)) <= SAFE_EXACT_NEW_MARGIN_MAX_PROCESSED_GRADIENT;
+  }
+  function hasClearedResidual(candidate) {
+    return candidate?.residual?.cleared === true || candidate?.evaluation?.postResidual?.cleared === true;
+  }
+  function hasSafeDefaultAlphaNewMarginResidual(candidate) {
+    if (candidate?.evaluation?.postResidual?.safeDefaultAlphaNewMargin === true) {
+      return true;
+    }
+    return Math.abs(numberOr2(candidate?.processedSpatialScore, Infinity)) <= DEFAULT_ALPHA_NEW_MARGIN_MAX_SPATIAL_RESIDUAL && Math.max(0, numberOr2(candidate?.processedGradientScore, Infinity)) <= DEFAULT_ALPHA_NEW_MARGIN_MAX_GRADIENT_RESIDUAL && numberOr2(candidate?.improvement, -Infinity) >= DEFAULT_ALPHA_NEW_MARGIN_MIN_IMPROVEMENT;
+  }
+  function hasHighRiskNewMarginPositiveEvidence(candidate) {
+    if (getProvenance(candidate).darkPolarity === true) return true;
+    if (!isNewMarginVariantFamilyCandidate(candidate) && !isDefaultAlphaNewMarginTrial(candidate)) return true;
+    const hasStrongEvidence = numberOr2(candidate?.originalGradientScore) >= HIGH_RISK_NEW_MARGIN_MIN_GRADIENT || numberOr2(candidate?.originalSpatialScore) >= HIGH_RISK_NEW_MARGIN_MIN_SPATIAL;
+    return hasStrongEvidence || hasSafeExactNewMarginVariantRecovery(candidate);
+  }
+  function shouldFailClosedForVisibleResidualUnsafeDamage({
+    selectedTrial = null,
+    residualVisibility = null
+  } = {}) {
+    return isNewMarginAlphaVariantTrial(selectedTrial) && residualVisibility?.visible === true && selectedTrial?.damage?.safe === false;
+  }
+  function shouldFailClosedForUnsafeWeakShiftedCandidate({
+    selectedTrial = null
+  } = {}) {
+    const provenance = getProvenance(selectedTrial);
+    const isShiftedFallback = provenance.localShift === true || provenance.sizeJitter === true;
+    const damageSafe = selectedTrial?.damage?.safe ?? selectedTrial?.evaluation?.damage?.safe;
+    if (!isShiftedFallback || damageSafe !== false) return false;
+    return numberOr2(selectedTrial?.originalSpatialScore) < UNSAFE_SHIFTED_MIN_STRONG_SPATIAL_EVIDENCE && numberOr2(selectedTrial?.originalGradientScore) < UNSAFE_SHIFTED_MIN_STRONG_GRADIENT_EVIDENCE;
+  }
+  function firstFalseGate(gates) {
+    for (const [name, allowed] of Object.entries(gates)) {
+      if (!allowed) return name;
+    }
+    return null;
+  }
+  function classifyCandidatePath(candidate) {
+    if (isDefaultAlphaNewMarginTrial(candidate)) return "standard-new-margin-default-alpha";
+    if (isNewMarginAlphaVariantTrial(candidate)) return "standard-new-margin-alpha-variant";
+    if (candidate?.provenance?.previewAnchor === true) return "preview-anchor";
+    if (candidate?.provenance?.adaptive === true) return "adaptive";
+    if (typeof candidate?.source === "string" && candidate.source.startsWith("standard")) return "standard";
+    return "unknown";
+  }
+  function createCandidateEvaluation({
+    source = null,
+    config = null,
+    provenance = null,
+    originalScores = null,
+    processedScores = null,
+    improvement = 0,
+    residual = null,
+    damage = null,
+    gates = {}
+  }) {
+    const candidateLike = {
+      source,
+      config,
+      provenance,
+      originalSpatialScore: originalScores?.spatialScore,
+      originalGradientScore: originalScores?.gradientScore,
+      processedSpatialScore: processedScores?.spatialScore,
+      processedGradientScore: processedScores?.gradientScore,
+      improvement,
+      damage
+    };
+    const originalSpatial = numberOr2(originalScores?.spatialScore);
+    const originalGradient = numberOr2(originalScores?.gradientScore);
+    const processedSpatial = numberOr2(processedScores?.spatialScore);
+    const processedGradient = numberOr2(processedScores?.gradientScore);
+    const normalizedGates = {
+      ...gates,
+      highRiskNewMarginEvidenceAllowed: hasHighRiskNewMarginPositiveEvidence(candidateLike)
+    };
+    const blockedGate = firstFalseGate(normalizedGates);
+    return {
+      pathType: classifyCandidatePath(candidateLike),
+      eligible: blockedGate === null,
+      blockedGate,
+      gates: normalizedGates,
+      riskFlags: normalizedGates.highRiskNewMarginEvidenceAllowed ? [] : ["weak-new-margin-positive-alpha-evidence"],
+      baseline: {
+        spatialResidual: Math.abs(originalSpatial),
+        gradientResidual: Math.max(0, originalGradient)
+      },
+      candidate: {
+        spatialResidual: Math.abs(processedSpatial),
+        gradientResidual: Math.max(0, processedGradient),
+        improvement: numberOr2(improvement)
+      },
+      postResidual: {
+        cleared: residual?.cleared === true,
+        safeDefaultAlphaNewMargin: Math.abs(processedSpatial) <= DEFAULT_ALPHA_NEW_MARGIN_MAX_SPATIAL_RESIDUAL && Math.max(0, processedGradient) <= DEFAULT_ALPHA_NEW_MARGIN_MAX_GRADIENT_RESIDUAL && numberOr2(improvement, -Infinity) >= DEFAULT_ALPHA_NEW_MARGIN_MIN_IMPROVEMENT
+      },
+      damage: {
+        safe: damage?.safe === true,
+        penalty: numberOr2(damage?.penalty, Infinity)
+      }
+    };
+  }
+  function shouldPreferDefaultAlphaNewMarginCandidate(currentBest, candidate) {
+    if (!isDefaultAlphaNewMarginTrial(candidate)) return false;
+    if (isNewMarginAlphaVariantTrial(currentBest)) {
+      return hasSafeDefaultAlphaNewMarginResidual(candidate) && !hasClearedResidual(currentBest);
+    }
+    if (!isDefaultAlphaNewMarginTrial(currentBest)) return false;
+    if (!hasSafeDefaultAlphaNewMarginResidual(candidate)) return false;
+    if (!hasSafeDefaultAlphaNewMarginResidual(currentBest)) return false;
+    const currentDamage = numberOr2(currentBest?.damage?.penalty, Infinity);
+    const candidateDamage = numberOr2(candidate?.damage?.penalty, Infinity);
+    if (!Number.isFinite(currentDamage) || !Number.isFinite(candidateDamage)) return false;
+    return candidateDamage + DEFAULT_ALPHA_NEW_MARGIN_DAMAGE_ADVANTAGE < currentDamage;
+  }
+  function hasSameExactNewMarginAnchor(fullStrength, conservative) {
+    if (!isNewMarginAlphaVariantTrial(fullStrength) || !isNewMargin96Candidate(conservative)) {
+      return false;
+    }
+    const fullPosition = fullStrength?.position ?? {};
+    const conservativePosition = conservative?.position ?? {};
+    return fullPosition.x === conservativePosition.x && fullPosition.y === conservativePosition.y && fullPosition.width === NEW_MARGIN_96_SIZE && fullPosition.height === NEW_MARGIN_96_SIZE && conservativePosition.width === NEW_MARGIN_96_SIZE && conservativePosition.height === NEW_MARGIN_96_SIZE;
+  }
+  function shouldPreferFullStrengthNewMarginVariant(fullStrength, conservative) {
+    if (!hasSameExactNewMarginAnchor(fullStrength, conservative)) return false;
+    if (numberOr2(fullStrength?.alphaGain) !== 1) return false;
+    if (numberOr2(conservative?.alphaGain) >= 1) return false;
+    if (getProvenance(fullStrength).darkPolarity === true) return false;
+    const originalSpatial = numberOr2(fullStrength?.originalSpatialScore, -Infinity);
+    const originalGradient = numberOr2(fullStrength?.originalGradientScore, -Infinity);
+    const fullGradient = Math.max(0, numberOr2(
+      fullStrength?.processedGradientScore,
+      Infinity
+    ));
+    const conservativeGradient = Math.max(0, numberOr2(
+      conservative?.processedGradientScore,
+      Infinity
+    ));
+    const clippedRatio = numberOr2(
+      fullStrength?.damage?.newlyClippedRatio,
+      Infinity
+    );
+    const provenance = getProvenance(fullStrength);
+    const positiveLocalizedSourceWitness = provenance.sourceWitnessRescue === true && numberOr2(
+      provenance.sourceWitnessGate?.spatialSignedTarget,
+      -Infinity
+    ) > 0;
+    return originalSpatial > 0 && originalGradient >= FULL_STRENGTH_NEW_MARGIN_MIN_ORIGINAL_GRADIENT && fullGradient <= FULL_STRENGTH_NEW_MARGIN_MAX_PROCESSED_GRADIENT && (positiveLocalizedSourceWitness || conservativeGradient - fullGradient >= FULL_STRENGTH_NEW_MARGIN_MIN_GRADIENT_ADVANTAGE) && clippedRatio <= FULL_STRENGTH_NEW_MARGIN_MAX_CLIPPED_RATIO;
+  }
+  function arbitrateCandidateByEvaluation(currentBest, candidate) {
+    if (shouldPreferFullStrengthNewMarginVariant(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreferFullStrengthNewMarginVariant(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreferDefaultAlphaNewMarginCandidate(currentBest, candidate)) {
+      return candidate;
+    }
+    if (shouldPreferDefaultAlphaNewMarginCandidate(candidate, currentBest)) {
+      return currentBest;
+    }
+    return null;
+  }
+
+  // src/core/darkOutlineContourRepair.js
+  var OUTLINE_SIZE = 96;
+  var SUPPORT_ALPHA_THRESHOLD = 0.025;
+  var SUPPORT_DILATE_RADIUS = 2;
+  var PRIOR_DILATE_RADIUS = 1;
+  var CONTOUR_SEARCH_RADIUS = 3;
+  var GRADIENT_THRESHOLD_RATIO = 0.12;
+  var GRADIENT_RIDGE_RATIO = 0.68;
+  var RESIDUAL_THRESHOLD_SCALE = 0.2;
+  var MIN_RESIDUAL_THRESHOLD = 1.25;
+  var REPAIR_STRENGTH = 0.75;
+  var MIN_MASK_PIXELS = 32;
+  var MAX_MASK_RATIO = 0.1;
+  var MIN_SCORE_IMPROVEMENT = 0.12;
+  var cachedPlan = null;
+  function morph(values, radius, mode, size) {
+    const output = new Float32Array(values.length);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let resolved = mode === "max" ? 0 : 1;
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const sx = x + dx;
+            const sy = y + dy;
+            const value = sx >= 0 && sy >= 0 && sx < size && sy < size ? values[sy * size + sx] : 0;
+            resolved = mode === "max" ? Math.max(resolved, value) : Math.min(resolved, value);
+          }
+        }
+        output[y * size + x] = resolved;
+      }
+    }
+    return output;
+  }
+  function median(values) {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) * 0.5;
+  }
+  function createContourPlan() {
+    if (cachedPlan) return cachedPlan;
+    const alphaMap = getEmbeddedAlphaMap("96-20260520");
+    if (!alphaMap) return null;
+    const size = OUTLINE_SIZE;
+    const supportBase = Float32Array.from(
+      alphaMap,
+      (value) => value >= SUPPORT_ALPHA_THRESHOLD ? 1 : 0
+    );
+    const support = morph(supportBase, SUPPORT_DILATE_RADIUS, "max", size);
+    const gradientX = new Float32Array(size * size);
+    const gradientY = new Float32Array(size * size);
+    const gradient = new Float32Array(size * size);
+    for (let y = 1; y < size - 1; y++) {
+      for (let x = 1; x < size - 1; x++) {
+        const index = y * size + x;
+        gradientX[index] = alphaMap[index + 1] - alphaMap[index - 1];
+        gradientY[index] = alphaMap[index + size] - alphaMap[index - size];
+        gradient[index] = Math.hypot(gradientX[index], gradientY[index]);
+      }
+    }
+    let maxGradient = 0;
+    for (const value of gradient) maxGradient = Math.max(maxGradient, value);
+    if (maxGradient <= 1e-6) return null;
+    const priorBase = new Float32Array(size * size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const index = y * size + x;
+        const value = gradient[index];
+        if (value < maxGradient * GRADIENT_THRESHOLD_RATIO) continue;
+        let localMaximum = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const sx = x + dx;
+            const sy = y + dy;
+            if (sx < 0 || sy < 0 || sx >= size || sy >= size) continue;
+            localMaximum = Math.max(localMaximum, gradient[sy * size + sx]);
+          }
+        }
+        if (value >= localMaximum * GRADIENT_RIDGE_RATIO) priorBase[index] = 1;
+      }
+    }
+    const prior = morph(priorBase, PRIOR_DILATE_RADIUS, "max", size);
+    const allowed = morph(prior, CONTOUR_SEARCH_RADIUS, "max", size);
+    const normals = new Array(size * size).fill(null);
+    for (let index = 0; index < normals.length; index++) {
+      const length = Math.hypot(gradientX[index], gradientY[index]);
+      if (length > 1e-5) {
+        normals[index] = [gradientX[index] / length, gradientY[index] / length];
+      }
+    }
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const index = y * size + x;
+        if (!allowed[index] || normals[index]) continue;
+        let nearest = null;
+        let nearestDistance = Infinity;
+        for (let radius = 1; radius <= 5 && !nearest; radius++) {
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              const sx = x + dx;
+              const sy = y + dy;
+              if (sx < 0 || sy < 0 || sx >= size || sy >= size) continue;
+              const candidate = normals[sy * size + sx];
+              const distance = dx * dx + dy * dy;
+              if (candidate && distance < nearestDistance) {
+                nearest = candidate;
+                nearestDistance = distance;
+              }
+            }
+          }
+        }
+        normals[index] = nearest;
+      }
+    }
+    cachedPlan = { size, prior, allowed, support, normals };
+    return cachedPlan;
+  }
+  function extractRegion(imageData, position) {
+    const data = new Uint8ClampedArray(position.width * position.height * 4);
+    for (let row = 0; row < position.height; row++) {
+      const sourceStart = ((position.y + row) * imageData.width + position.x) * 4;
+      const sourceEnd = sourceStart + position.width * 4;
+      data.set(imageData.data.subarray(sourceStart, sourceEnd), row * position.width * 4);
+    }
+    return { width: position.width, height: position.height, data };
+  }
+  function writeRegion(imageData, position, region) {
+    for (let row = 0; row < position.height; row++) {
+      const sourceStart = row * position.width * 4;
+      const targetStart = ((position.y + row) * imageData.width + position.x) * 4;
+      imageData.data.set(
+        region.data.subarray(sourceStart, sourceStart + position.width * 4),
+        targetStart
+      );
+    }
+  }
+  function sample(region, x, y, channel) {
+    const sx = Math.max(0, Math.min(region.width - 1, x));
+    const sy = Math.max(0, Math.min(region.height - 1, y));
+    const x0 = Math.floor(sx);
+    const y0 = Math.floor(sy);
+    const x1 = Math.min(region.width - 1, x0 + 1);
+    const y1 = Math.min(region.height - 1, y0 + 1);
+    const wx = sx - x0;
+    const wy = sy - y0;
+    const read = (px, py) => region.data[(py * region.width + px) * 4 + channel];
+    const top = read(x0, y0) * (1 - wx) + read(x1, y0) * wx;
+    const bottom = read(x0, y1) * (1 - wx) + read(x1, y1) * wx;
+    return top * (1 - wy) + bottom * wy;
+  }
+  function predictExterior(region, plan, x, y, normal, channel) {
+    let total = 0;
+    let count = 0;
+    for (const sign of [-1, 1]) {
+      for (const distance of [3, 4, 5, 6]) {
+        const sx = x + normal[0] * sign * distance;
+        const sy = y + normal[1] * sign * distance;
+        const px = Math.max(0, Math.min(plan.size - 1, Math.round(sx)));
+        const py = Math.max(0, Math.min(plan.size - 1, Math.round(sy)));
+        if (plan.support[py * plan.size + px]) continue;
+        total += sample(region, sx, sy, channel);
+        count++;
+      }
+    }
+    return count > 0 ? total / count : sample(region, x, y, channel);
+  }
+  function pixelLuminance(region, x, y) {
+    return sample(region, x, y, 0) * 0.2126 + sample(region, x, y, 1) * 0.7152 + sample(region, x, y, 2) * 0.0722;
+  }
+  function predictedLuminance(region, plan, x, y, normal) {
+    return predictExterior(region, plan, x, y, normal, 0) * 0.2126 + predictExterior(region, plan, x, y, normal, 1) * 0.7152 + predictExterior(region, plan, x, y, normal, 2) * 0.0722;
+  }
+  function repairDarkOutlineContour(imageData, position) {
+    if (!imageData?.data || position?.width !== OUTLINE_SIZE || position?.height !== OUTLINE_SIZE || position.x < 0 || position.y < 0 || position.x + position.width > imageData.width || position.y + position.height > imageData.height) {
+      return { accepted: false, reason: "invalid-region", maskPixels: 0 };
+    }
+    const plan = createContourPlan();
+    if (!plan) return { accepted: false, reason: "missing-plan", maskPixels: 0 };
+    const baseline = extractRegion(imageData, position);
+    const residualByPixel = new Float32Array(plan.size * plan.size);
+    const noiseResiduals = [];
+    for (let y = 0; y < plan.size; y++) {
+      for (let x = 0; x < plan.size; x++) {
+        const index = y * plan.size + x;
+        const normal = plan.normals[index];
+        if (!plan.allowed[index] || !normal) continue;
+        const residual = Math.abs(
+          pixelLuminance(baseline, x, y) - predictedLuminance(baseline, plan, x, y, normal)
+        );
+        residualByPixel[index] = residual;
+        if (!plan.support[index]) noiseResiduals.push(residual);
+      }
+    }
+    if (noiseResiduals.length < MIN_MASK_PIXELS) {
+      return { accepted: false, reason: "insufficient-noise-reference", maskPixels: 0 };
+    }
+    const center = median(noiseResiduals);
+    const robustSigma = 1.4826 * median(
+      noiseResiduals.map((value) => Math.abs(value - center))
+    );
+    const residualThreshold = Math.max(
+      MIN_RESIDUAL_THRESHOLD,
+      (center + 2.75 * robustSigma) * RESIDUAL_THRESHOLD_SCALE
+    );
+    const mask = new Float32Array(plan.size * plan.size);
+    let maskPixels = 0;
+    let baselineResidualTotal = 0;
+    for (let index = 0; index < mask.length; index++) {
+      if (plan.prior[index] && plan.normals[index] && residualByPixel[index] >= residualThreshold) {
+        mask[index] = 1;
+        maskPixels++;
+        baselineResidualTotal += residualByPixel[index];
+      }
+    }
+    if (maskPixels < MIN_MASK_PIXELS) {
+      return { accepted: false, reason: "weak-residual", maskPixels, residualThreshold };
+    }
+    if (maskPixels > plan.size * plan.size * MAX_MASK_RATIO) {
+      return { accepted: false, reason: "mask-too-large", maskPixels, residualThreshold };
+    }
+    const candidate = {
+      width: baseline.width,
+      height: baseline.height,
+      data: new Uint8ClampedArray(baseline.data)
+    };
+    let candidateResidualTotal = 0;
+    for (let y = 0; y < plan.size; y++) {
+      for (let x = 0; x < plan.size; x++) {
+        const index = y * plan.size + x;
+        if (!mask[index]) continue;
+        const targetIndex = index * 4;
+        const normal = plan.normals[index];
+        for (let channel = 0; channel < 3; channel++) {
+          const predicted = predictExterior(baseline, plan, x, y, normal, channel);
+          candidate.data[targetIndex + channel] = Math.round(
+            baseline.data[targetIndex + channel] * (1 - REPAIR_STRENGTH) + predicted * REPAIR_STRENGTH
+          );
+        }
+        candidateResidualTotal += Math.abs(
+          pixelLuminance(candidate, x, y) - predictedLuminance(baseline, plan, x, y, normal)
+        );
+      }
+    }
+    const baselineScore = baselineResidualTotal / maskPixels;
+    const candidateScore = candidateResidualTotal / maskPixels;
+    if (candidateScore > baselineScore * (1 - MIN_SCORE_IMPROVEMENT)) {
+      return {
+        accepted: false,
+        reason: "insufficient-improvement",
+        maskPixels,
+        residualThreshold,
+        baselineScore,
+        candidateScore
+      };
+    }
+    writeRegion(imageData, position, candidate);
+    return {
+      accepted: true,
+      reason: null,
+      maskPixels,
+      residualThreshold,
+      baselineScore,
+      candidateScore,
+      strength: REPAIR_STRENGTH
+    };
+  }
+
+  // src/core/candidateSelector.js
+  var MAX_NEAR_BLACK_RATIO_INCREASE = 0.05;
+  var VALIDATION_MIN_IMPROVEMENT = 0.08;
+  var VALIDATION_TARGET_RESIDUAL = 0.22;
+  var VALIDATION_MAX_GRADIENT_INCREASE = 0.04;
+  var VALIDATION_MIN_CONFIDENCE_FOR_ADAPTIVE_TRIAL = 0.25;
+  var STANDARD_FAST_PATH_RESIDUAL_THRESHOLD = 0.22;
+  var STANDARD_FAST_PATH_GRADIENT_THRESHOLD = 0.08;
+  var FIXED_CORE_MAX_ACCEPTED_SPATIAL_RESIDUAL = 0.45;
+  var FIXED_CORE_STRONG_96_MAX_NEGATIVE_SPATIAL_RESIDUAL = 0.52;
+  var FIXED_CORE_STRONG_96_MIN_ORIGINAL_SPATIAL_SCORE = 0.95;
+  var FIXED_CORE_STRONG_96_MIN_ORIGINAL_GRADIENT_SCORE = 0.9;
+  var FIXED_CORE_STRONG_96_MAX_PROCESSED_GRADIENT_SCORE = 0.16;
+  var FIXED_CORE_STRONG_96_MIN_IMPROVEMENT = 0.45;
+  var FIXED_CORE_STRONG_96_MAX_TEXTURE = 0.05;
+  var FIXED_CORE_STRONG_96_MAX_NEAR_BLACK_INCREASE = 0.02;
+  var FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_ORIGINAL_SPATIAL_SCORE = 0.55;
+  var FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_ORIGINAL_GRADIENT_SCORE = 0.5;
+  var FIXED_CORE_STRONG_96_LOW_RESIDUAL_MAX_SPATIAL_SCORE = 0.08;
+  var FIXED_CORE_STRONG_96_LOW_RESIDUAL_MAX_GRADIENT_SCORE = 0.24;
+  var FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_IMPROVEMENT = 0.6;
+  var STANDARD_EXPAND_CATALOG_MIN_ORIGINAL_GRADIENT = 0.12;
+  var WEAK_ALPHA_PRIORITY_CLEAN_GRADIENT_THRESHOLD = 0.12;
+  var STRONG_ORIGINAL_SIGNAL_SPATIAL_ADVANTAGE = 0.2;
+  var STRONG_ORIGINAL_SIGNAL_GRADIENT_ADVANTAGE = 0.25;
+  var STANDARD_NEARBY_SEARCH_RESIDUAL_THRESHOLD = 0.18;
+  var STANDARD_NEARBY_SEARCH_GRADIENT_THRESHOLD = 0.05;
+  var STANDARD_LOCAL_SHIFT_STRONG_BASE_GRADIENT_SCORE = 0.35;
+  var STANDARD_LOCAL_SHIFT_STRONG_BASE_SPATIAL_SCORE = 0.8;
+  var STANDARD_LOCAL_SHIFT_CANONICAL_MIN_GRADIENT_SCORE = 0.2;
+  var STANDARD_LOCAL_SHIFT_CANONICAL_MIN_SPATIAL_SCORE = 0.22;
+  var STANDARD_LOCAL_SHIFT_WEAK_CANDIDATE_GRADIENT_SCORE = 0.12;
+  var STANDARD_LOCAL_SHIFT_WEAK_CANDIDATE_SPATIAL_SCORE = 0.65;
+  var STANDARD_LOCAL_SHIFT_MIN_VALIDATION_ADVANTAGE = 0.3;
+  var STANDARD_LOCAL_SHIFT_SKIP_PROCESSED_GRADIENT_THRESHOLD = 0.02;
+  var STANDARD_LOCAL_SHIFT_PRESERVE_CLEAN_BASE_GRADIENT_THRESHOLD = 0.02;
+  var STANDARD_LOCAL_SHIFT_MAX_CANDIDATE_GRADIENT_FOR_CLEAN_BASE = 0.03;
+  var STANDARD_PRESERVE_GRADIENT_DELTA = 0.25;
+  var STANDARD_PRESERVE_MAX_RESIDUAL = 0.4;
+  var STANDARD_PRESERVE_MIN_IMPROVEMENT = 0.3;
+  var STANDARD_TEXT_OVERLAP_MIN_SPATIAL_SCORE = 0.22;
+  var STANDARD_TEXT_OVERLAP_MIN_GRADIENT_SCORE = 0.18;
+  var STANDARD_TEXT_OVERLAP_MIN_IMPROVEMENT = 0.25;
+  var STANDARD_TEXT_OVERLAP_MAX_RESIDUAL = 0.1;
+  var STANDARD_TEXT_OVERLAP_MIN_GRADIENT_DROP = 0.1;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_ORIGINAL_SPATIAL_SCORE = 0.12;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_ORIGINAL_GRADIENT_SCORE = 0.06;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_IMPROVEMENT = 0.08;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_SPATIAL_RESIDUAL = 0.08;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_GRADIENT_RESIDUAL = 0.08;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_NEAR_BLACK_INCREASE = 5e-3;
+  var STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_TEXTURE = 0.05;
+  var STANDARD_VALIDATION_MIN_ORIGINAL_SPATIAL_SCORE = 0.05;
+  var STANDARD_VALIDATION_MIN_ORIGINAL_GRADIENT_SCORE = 0.12;
+  var STANDARD_CONSERVATIVE_CATALOG_PREFERRED_ALPHA_GAIN = 0.55;
+  var STANDARD_CONSERVATIVE_CATALOG_MAX_ALPHA_GAIN = 0.6;
+  var STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE = 0.12;
+  var STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE = 0.08;
+  var STANDARD_CONSERVATIVE_CATALOG_MAX_RESIDUAL = 0.12;
+  var STANDARD_CONSERVATIVE_CATALOG_MAX_GRADIENT = 0.12;
+  var STANDARD_CONSERVATIVE_CATALOG_MIN_IMPROVEMENT = 0.12;
+  var STANDARD_CONSERVATIVE_CATALOG_MAX_NEAR_BLACK_INCREASE = 5e-3;
+  var STANDARD_VISIBLE_CATALOG_MAX_ALPHA_GAIN = 0.6;
+  var STANDARD_VISIBLE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE = 0.45;
+  var STANDARD_VISIBLE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE = 0.55;
+  var STANDARD_VISIBLE_CATALOG_MAX_SPATIAL_RESIDUAL = 0.35;
+  var STANDARD_VISIBLE_CATALOG_MAX_GRADIENT_RESIDUAL = 0.18;
+  var STANDARD_VISIBLE_CATALOG_MIN_IMPROVEMENT = 0.7;
+  var STANDARD_VISIBLE_CATALOG_MAX_NEAR_BLACK_INCREASE = 0.05;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_SPATIAL_SCORE = 0.9;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_GRADIENT_SCORE = 0.7;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_RESIDUAL = 0.16;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_GRADIENT = 0.16;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_IMPROVEMENT = 0.9;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_GRADIENT_DROP = 0.6;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_NEAR_BLACK_INCREASE = 0.01;
+  var STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_TEXTURE = 0.1;
+  var STANDARD_HARD_REJECT_OVERRIDE_MIN_SPATIAL_SCORE = 0.9;
+  var STANDARD_HARD_REJECT_OVERRIDE_MIN_GRADIENT_SCORE = 0.7;
+  var STANDARD_HARD_REJECT_OVERRIDE_MAX_RESIDUAL = 0.08;
+  var STANDARD_HARD_REJECT_OVERRIDE_MAX_GRADIENT = 0.1;
+  var STANDARD_HARD_REJECT_OVERRIDE_MIN_IMPROVEMENT = 0.7;
+  var STANDARD_HARD_REJECT_OVERRIDE_MAX_NEAR_BLACK_INCREASE = 0.01;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_SPATIAL_SCORE = 0.9;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_GRADIENT_SCORE = 0.7;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_RESIDUAL = 0.7;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_GRADIENT = 0.32;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_IMPROVEMENT = 0.7;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_GRADIENT_DROP = 0.6;
+  var STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_NEAR_BLACK_INCREASE = 0.4;
+  var BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MIN_SPATIAL = 0.35;
+  var BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MIN_GRADIENT = 0.16;
+  var BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_SPATIAL_ADVANTAGE = 0.18;
+  var BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_GRADIENT_ADVANTAGE = 0.12;
+  var BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MAX_RESIDUAL_DELTA = 0.08;
+  var DARK_POLARITY_CATALOG_MIN_ORIGINAL_SPATIAL = 0.12;
+  var DARK_POLARITY_CATALOG_MIN_ORIGINAL_GRADIENT = 0.08;
+  var DARK_POLARITY_48_MIN_ORIGINAL_SPATIAL = 0.6;
+  var DARK_POLARITY_48_MIN_ORIGINAL_GRADIENT = 0.3;
+  var DARK_POLARITY_CATALOG_MAX_TEXTURE_FOR_WEAK_EVIDENCE = 0.25;
+  var DARK_POLARITY_MAX_NEAR_WHITE_RATIO_INCREASE_FOR_WEAK_EVIDENCE = 0.05;
+  var DARK_POLARITY_NEAR_WHITE_OVERRIDE_MIN_ORIGINAL_SPATIAL = 0.4;
+  var DARK_POLARITY_NEAR_WHITE_OVERRIDE_MIN_ORIGINAL_GRADIENT = 0.3;
+  var OUTLINE_LIGHT_MIN_ORIGINAL_GRADIENT = 0.45;
+  var OUTLINE_LIGHT_MIN_IMPROVEMENT = 0.35;
+  var OUTLINE_LIGHT_MAX_PROCESSED_SPATIAL = 0.2;
+  var OUTLINE_LIGHT_MAX_PROCESSED_GRADIENT = 0.25;
+  var OUTLINE_DARK_MIN_ORIGINAL_GRADIENT = 0.38;
+  var OUTLINE_DARK_MIN_IMPROVEMENT = 0.2;
+  var OUTLINE_DARK_MAX_PROCESSED_SPATIAL = 0.15;
+  var OUTLINE_DARK_MAX_PROCESSED_GRADIENT = 0.18;
+  var OUTLINE_DARK_MIN_REPAIR_PIXELS = 32;
+  var OUTLINE_DARK_MAX_REPAIR_PIXELS = 96 * 96 * 0.1;
+  var OUTLINE_DARK_BODY_GAINS = Object.freeze([1, 0.85, 0.75, 0.65, 0.5]);
+  var OUTLINE_DARK_MIN_BODY_GAIN = 0.5;
+  var OUTLINE_DARK_BODY_GAIN_GRADIENT_WEIGHT = 0.6;
+  var OUTLINE_DARK_BODY_GAIN_MIN_COST_IMPROVEMENT = 0.015;
+  var OUTLINE_DARK_BODY_GAIN_SEARCH_MAX_FULL_BODY_SPATIAL = -0.05;
+  var TEMPLATE_ALIGN_SHIFTS = [-0.5, -0.25, 0, 0.25, 0.5];
+  var TEMPLATE_ALIGN_SCALES = [0.99, 1, 1.01];
+  var STANDARD_NEARBY_SHIFTS = [-12, -8, -4, 0, 4, 8, 12];
+  var STANDARD_FINE_LOCAL_SHIFTS = [-2, -1, 0, 1, 2];
+  var STANDARD_SIZE_JITTERS = [-12, -10, -8, -6, -4, -2, 2, 4, 6, 8, 10, 12];
+  var FIXED_CORE_LOCAL_SIZE_DELTAS = [-3, -2, -1, 0, 1, 2, 3, 4];
+  var FIXED_CORE_LOCAL_MARGIN_DELTAS = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
+  var FIXED_CORE_LOCAL_MIN_ORIGINAL_SPATIAL_SCORE = 0.7;
+  var FIXED_CORE_LOCAL_MIN_ORIGINAL_GRADIENT_SCORE = 0.3;
+  var FIXED_CORE_LOCAL_VISIBLE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE = 0.45;
+  var FIXED_CORE_LOCAL_VISIBLE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE = 0.55;
+  var PREVIEW_ANCHOR_MIN_SIZE = 24;
+  var PREVIEW_ANCHOR_MAX_SIZE_RATIO = 1.05;
+  var PREVIEW_ANCHOR_MIN_SIZE_RATIO = 0.55;
+  var PREVIEW_ANCHOR_MARGIN_WINDOW = 16;
+  var PREVIEW_ANCHOR_MARGIN_EXTENSION = 8;
+  var PREVIEW_ANCHOR_SIZE_STEP = 2;
+  var PREVIEW_ANCHOR_MARGIN_STEP = 2;
+  var PREVIEW_ANCHOR_TOP_K = 8;
+  var PREVIEW_ANCHOR_MIN_SCORE = 0.2;
+  var PREVIEW_ANCHOR_LOCAL_DELTAS = [-1, 0, 1];
+  var PREVIEW_TEMPLATE_ALIGN_SHIFTS = [-1, -0.5, 0, 0.5, 1];
+  var PREVIEW_TEMPLATE_ALIGN_SCALES = [0.985, 1, 1.015];
+  var PREVIEW_ANCHOR_GAIN_SKIP_RESIDUAL_THRESHOLD = 0.24;
+  var PREVIEW_ANCHOR_GAIN_SKIP_GRADIENT_THRESHOLD = 0.24;
+  var CORE_ALPHA_PRIORITY_GAINS = Object.freeze([0.6, 1, 1.1, 1.15, 1.3, 0.45, 0.7, 0.85, 0.55]);
+  var CURRENT_LARGE_MARGIN_ULTRA_WEAK_ALPHA_GAINS = Object.freeze([0.25, 0.3, 0.35, 0.4]);
+  var DARK_POLARITY_48_ULTRA_WEAK_ALPHA_GAINS = Object.freeze([0.08, 0.1, 0.12, 0.15, 0.2]);
+  var STANDARD_ANCHOR_WEAK_ALPHA_RESCUE_GAINS = Object.freeze([0.55, 0.7, 0.85]);
+  var STANDARD_ANCHOR_WEAK_RESCUE_MAX_SPATIAL = 0.35;
+  var STANDARD_ANCHOR_WEAK_RESCUE_MAX_GRADIENT = 0.24;
+  var STANDARD_ANCHOR_WEAK_RESCUE_MIN_IMPROVEMENT = 0.08;
+  var STANDARD_ANCHOR_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE = 0.02;
+  var STANDARD_ANCHOR_WEAK_RESCUE_MIN_BALANCED_ADVANTAGE = 0.03;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_SPATIAL = 0.22;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_GRADIENT = 0.36;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_ORIGINAL_SPATIAL = 0.17;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_ORIGINAL_GRADIENT = 0.12;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_IMPROVEMENT = 0.08;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE = 0.01;
+  var CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_TEXTURE = 0.55;
+  var CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MIN_ORIGINAL_SPATIAL = 0.4;
+  var CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MIN_ORIGINAL_GRADIENT = 0.25;
+  var CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_SPATIAL = 0.36;
+  var CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_GRADIENT = 0.24;
+  var CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_TEXTURE = 0.1;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_ORIGINAL_SPATIAL = 0.8;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_ORIGINAL_GRADIENT = 0.8;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_SPATIAL = 0.35;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_GRADIENT = 0.18;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_IMPROVEMENT = 0.7;
+  var CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_NEAR_BLACK_INCREASE = 0.05;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MIN_ORIGINAL_GRADIENT = 0.5;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_ORIGINAL_SPATIAL = 0.35;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_ALPHA_GAIN = 0.6;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_TEXTURE = 0.08;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_SPATIAL = 0.32;
+  var CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MIN_GRADIENT_DROP = 0.12;
+  var ORIGIN_REGION = Object.freeze({ x: 0, y: 0 });
+  function mergeCandidateProvenance(...provenanceParts) {
+    const merged = {};
+    for (const provenance of provenanceParts) {
+      if (!provenance || typeof provenance !== "object") continue;
+      Object.assign(merged, provenance);
+    }
+    return Object.keys(merged).length > 0 ? merged : null;
+  }
+  function inferCandidateSourcePriority({ source = "", provenance = null } = {}) {
+    const catalogPriority = Number(provenance?.catalogSourcePriority);
+    if (Number.isFinite(catalogPriority)) return catalogPriority;
+    if (provenance?.localShift === true) return 6;
+    if (provenance?.sizeJitter === true) return 7;
+    if (provenance?.previewAnchor === true || String(source).includes("preview-anchor")) return 8;
+    if (provenance?.adaptive === true || source === "adaptive") return 9;
+    if (String(source).startsWith("standard+catalog")) return 3;
+    if (String(source).startsWith("standard")) return 0;
+    return 9;
+  }
+  function inferAlphaPriorityIndex(alphaGain) {
+    const index = CORE_ALPHA_PRIORITY_GAINS.findIndex((candidateGain) => Math.abs(candidateGain - alphaGain) < 1e-4);
+    return index >= 0 ? index : 99;
+  }
+  function isProjectedPreviewCatalogConfig(originalImageData, candidateConfig, baseConfig) {
+    if (!originalImageData || !candidateConfig) return false;
+    if (candidateConfig.fixedVariant === true) return false;
+    if (matchOfficialGeminiImageSize(originalImageData.width, originalImageData.height)) return false;
+    return candidateConfig.logoSize < 48 || candidateConfig.logoSize <= 48 && candidateConfig.marginRight < 32 && candidateConfig.marginBottom < 32;
+  }
+  function createCatalogConfigKey(config) {
+    return [
+      config?.logoSize,
+      config?.marginRight,
+      config?.marginBottom,
+      config?.alphaVariant ?? "default"
+    ].join(":");
+  }
+  function isPreservablePositiveLargeMarginCatalogEntry(entry) {
+    return entry?.config?.logoSize === 96 && entry.config.marginRight === 192 && entry.config.marginBottom === 192 && entry.config.alphaVariant === "20260520" && entry.metadata?.family === "known-new-margin-variant" && entry.metadata?.evidenceGate === "required";
+  }
+  function resolveStandardCandidateCatalogEntries({
+    originalImageData,
+    config,
+    catalogPriorConfig
+  }) {
+    const catalogEntries = resolveGeminiWatermarkSearchCatalogEntries(
+      originalImageData.width,
+      originalImageData.height,
+      config
+    );
+    if (!catalogPriorConfig) return catalogEntries;
+    const existingKeys = new Set(catalogEntries.map((entry) => createCatalogConfigKey(entry?.config)));
+    const preservedEntries = resolveGeminiWatermarkSearchCatalogEntries(
+      originalImageData.width,
+      originalImageData.height,
+      catalogPriorConfig
+    ).filter((entry) => isPreservablePositiveLargeMarginCatalogEntry(entry) && !existingKeys.has(createCatalogConfigKey(entry.config))).map((entry) => ({
+      ...entry,
+      metadata: {
+        ...entry.metadata,
+        preservedInitialCatalogPrior: true,
+        preservedCatalogDerivationPolicy: "positive-only"
+      }
+    }));
+    return preservedEntries.length === 0 ? catalogEntries : [...catalogEntries, ...preservedEntries];
+  }
+  function buildStandardCandidateSeeds({
+    originalImageData,
+    config,
+    catalogPriorConfig = null,
+    position,
+    alpha48,
+    alpha96,
+    alpha96Variants = null,
+    getAlphaMap,
+    resolveAlphaMap = null,
+    includeCatalogVariants = true
+  }) {
+    const catalogEntries = includeCatalogVariants ? resolveStandardCandidateCatalogEntries({
+      originalImageData,
+      config,
+      catalogPriorConfig
+    }) : [{ config, metadata: null }];
+    const seeds = [];
+    for (const catalogEntry of catalogEntries) {
+      const candidateConfig = catalogEntry.config;
+      const candidatePosition = candidateConfig === config ? position : {
+        x: originalImageData.width - candidateConfig.marginRight - candidateConfig.logoSize,
+        y: originalImageData.height - candidateConfig.marginBottom - candidateConfig.logoSize,
+        width: candidateConfig.logoSize,
+        height: candidateConfig.logoSize
+      };
+      if (candidatePosition.x < 0 || candidatePosition.y < 0 || candidatePosition.x + candidatePosition.width > originalImageData.width || candidatePosition.y + candidatePosition.height > originalImageData.height) {
+        continue;
+      }
+      const alphaMap = resolveAlphaMapForConfig(candidateConfig, {
+        alpha48,
+        alpha96,
+        alpha96Variants,
+        getAlphaMap,
+        resolveAlphaMap
+      });
+      if (!alphaMap) continue;
+      const projectedPreviewCatalog = isProjectedPreviewCatalogConfig(
+        originalImageData,
+        candidateConfig,
+        config
+      );
+      const positiveOnlyPrior = catalogEntry.metadata?.preservedInitialCatalogPrior === true && catalogEntry.metadata?.preservedCatalogDerivationPolicy === "positive-only";
+      const baseSeed = {
+        config: candidateConfig,
+        position: candidatePosition,
+        alphaMap,
+        source: projectedPreviewCatalog ? "standard+preview-anchor" : candidateConfig === config ? "standard" : "standard+catalog",
+        provenance: mergeCandidateProvenance(
+          candidateConfig === config ? null : { catalogVariant: true },
+          candidateConfig.fixedVariant === true ? { fixedVariant: true } : null,
+          projectedPreviewCatalog ? { previewAnchor: true } : null,
+          candidateConfig.alphaVariant ? { alphaVariant: candidateConfig.alphaVariant } : null,
+          catalogEntry.metadata ? {
+            catalogFamily: catalogEntry.metadata.family,
+            catalogSourcePriority: catalogEntry.metadata.sourcePriority,
+            catalogEvidenceGate: catalogEntry.metadata.evidenceGate,
+            ...positiveOnlyPrior ? {
+              preservedInitialCatalogPrior: true,
+              preservedCatalogDerivationPolicy: "positive-only"
+            } : {}
+          } : null
+        )
+      };
+      seeds.push(baseSeed);
+      const outlineLightAlphaMap = !positiveOnlyPrior && candidateConfig.logoSize === 96 && candidateConfig.marginRight === 192 && candidateConfig.marginBottom === 192 ? alpha96Variants?.["outline-light"] ?? null : null;
+      if (outlineLightAlphaMap) {
+        seeds.push({
+          ...baseSeed,
+          config: {
+            ...candidateConfig,
+            alphaVariant: "outline-light"
+          },
+          alphaMap: outlineLightAlphaMap,
+          source: `${baseSeed.source}+outline-light`,
+          provenance: mergeCandidateProvenance(
+            baseSeed.provenance,
+            {
+              catalogVariant: true,
+              alphaVariant: "outline-light",
+              outlineLight: true
+            }
+          )
+        });
+      }
+      const outlineDarkAlphaMap = !positiveOnlyPrior && candidateConfig.logoSize === 96 && candidateConfig.marginRight === 192 && candidateConfig.marginBottom === 192 ? alpha96Variants?.["outline-dark"] ?? null : null;
+      if (outlineDarkAlphaMap) {
+        seeds.push({
+          ...baseSeed,
+          config: {
+            ...candidateConfig,
+            alphaVariant: "outline-dark"
+          },
+          alphaMap: outlineDarkAlphaMap,
+          source: `${baseSeed.source}+outline-dark`,
+          provenance: mergeCandidateProvenance(
+            baseSeed.provenance,
+            {
+              catalogVariant: true,
+              alphaVariant: "outline-dark",
+              outlineDark: true,
+              outlineDarkBodyGain: 1
+            }
+          )
+        });
+      }
+      if (!positiveOnlyPrior && shouldAddDarkPolaritySeed(candidateConfig)) {
+        const weakDarkPolarity48 = candidateConfig.logoSize === 48;
+        seeds.push({
+          ...baseSeed,
+          alphaMap: createNegativeAlphaMap(alphaMap),
+          source: `${baseSeed.source}+dark-polarity`,
+          provenance: mergeCandidateProvenance(
+            baseSeed.provenance,
+            {
+              darkPolarity: true,
+              ...weakDarkPolarity48 ? { weakDarkPolarity48: true } : {}
+            }
+          )
+        });
+      }
+    }
+    return seeds;
+  }
+  function shouldAddDarkPolaritySeed(config) {
+    if (config?.logoSize === 96 && config.marginRight === 192 && config.marginBottom === 192) {
+      return true;
+    }
+    return config?.logoSize === 48 && config.marginRight >= 90 && config.marginRight <= 100 && config.marginBottom >= 90 && config.marginBottom <= 100;
+  }
+  var negativeAlphaMapCache = /* @__PURE__ */ new WeakMap();
+  var outlineDarkBodyGainAlphaMapCache = /* @__PURE__ */ new WeakMap();
+  function createOutlineDarkBodyGainAlphaMap(alphaMap, bodyGain) {
+    if (bodyGain === 1) return alphaMap;
+    let gainCache = outlineDarkBodyGainAlphaMapCache.get(alphaMap);
+    if (!gainCache) {
+      gainCache = /* @__PURE__ */ new Map();
+      outlineDarkBodyGainAlphaMapCache.set(alphaMap, gainCache);
+    }
+    const cached = gainCache.get(bodyGain);
+    if (cached) return cached;
+    const scaled = new Float32Array(alphaMap.length);
+    for (let index = 0; index < alphaMap.length; index++) {
+      const value = alphaMap[index];
+      scaled[index] = value > 0 ? value * bodyGain : value;
+    }
+    gainCache.set(bodyGain, scaled);
+    return scaled;
+  }
+  function createNegativeAlphaMap(alphaMap) {
+    const cached = negativeAlphaMapCache.get(alphaMap);
+    if (cached) return cached;
+    const negative = new Float32Array(alphaMap.length);
+    for (let index = 0; index < alphaMap.length; index++) {
+      negative[index] = -alphaMap[index];
+    }
+    negativeAlphaMapCache.set(alphaMap, negative);
+    return negative;
+  }
+  function inferDecisionTier(candidate, { directMatch = false } = {}) {
+    if (!candidate) return "insufficient";
+    if (directMatch) return "direct-match";
+    if (candidate.source?.includes("validated")) return "validated-match";
+    if (candidate.accepted) return "validated-match";
+    return "safe-removal";
+  }
+  function shouldEscalateSearch(candidate) {
+    if (!candidate) return true;
+    return Math.abs(candidate.processedSpatialScore) > STANDARD_FAST_PATH_RESIDUAL_THRESHOLD || Math.max(0, candidate.processedGradientScore) > STANDARD_FAST_PATH_GRADIENT_THRESHOLD;
+  }
+  function shouldExpandCatalogForWeakOriginalStandardEvidence(candidate) {
+    if (!candidate) return true;
+    if (!isStandardCandidateSource(candidate)) return false;
+    if (candidate?.provenance?.catalogVariant === true) return false;
+    const originalGradient = Number(candidate.originalGradientScore);
+    if (!Number.isFinite(originalGradient)) return false;
+    return originalGradient < STANDARD_EXPAND_CATALOG_MIN_ORIGINAL_GRADIENT;
+  }
+  function shouldSearchNearbyStandardCandidate(candidate, originalImageData) {
+    if (!candidate) return true;
+    return Number(candidate.position?.width) >= 72 && Number(originalImageData?.height) > Number(originalImageData?.width) * 1.25 && (Math.abs(candidate.processedSpatialScore) > STANDARD_NEARBY_SEARCH_RESIDUAL_THRESHOLD || Math.max(0, candidate.processedGradientScore) > STANDARD_NEARBY_SEARCH_GRADIENT_THRESHOLD);
+  }
+  function resolveAlphaMapForSize(size, { alpha48, alpha96, getAlphaMap } = {}) {
+    if (size === 48) return alpha48;
+    if (size === 96) return alpha96;
+    const provided = typeof getAlphaMap === "function" ? getAlphaMap(size) : null;
+    if (provided) return provided;
+    return alpha96 ? interpolateAlphaMap(alpha96, 96, size) : null;
+  }
+  function resolveSizeJitterAlphaMap(seed, size, {
+    alpha48,
+    alpha96,
+    getAlphaMap,
+    resolveAlphaMap = null
+  } = {}) {
+    const seedSize = Number(seed?.position?.width);
+    if (seed?.alphaMap && Number.isFinite(seedSize) && seedSize > 0) {
+      if (size === seedSize) return seed.alphaMap;
+      return interpolateAlphaMap(seed.alphaMap, seedSize, size);
+    }
+    return typeof resolveAlphaMap === "function" ? resolveAlphaMap(size) : resolveAlphaMapForSize(size, { alpha48, alpha96, getAlphaMap });
+  }
+  function resolveAlphaMapForConfig(config, {
+    alpha48,
+    alpha96,
+    alpha96Variants = null,
+    getAlphaMap,
+    resolveAlphaMap = null
+  } = {}) {
+    if (!config) return null;
+    if (config.alphaVariant && config.logoSize === 96 && alpha96Variants) {
+      return alpha96Variants[config.alphaVariant] ?? null;
+    }
+    if (config.alphaVariant && typeof getAlphaMap === "function") {
+      const variantAlpha = getAlphaMap(`${config.logoSize}-${config.alphaVariant}`);
+      if (variantAlpha) return variantAlpha;
+    }
+    return typeof resolveAlphaMap === "function" ? resolveAlphaMap(config.logoSize) : resolveAlphaMapForSize(config.logoSize, {
+      alpha48,
+      alpha96,
+      getAlphaMap
+    });
+  }
+  function createAlphaMapResolver({ alpha48, alpha96, getAlphaMap }) {
+    const cache = /* @__PURE__ */ new Map();
+    return (size) => {
+      if (cache.has(size)) {
+        return cache.get(size);
+      }
+      const resolved = resolveAlphaMapForSize(size, {
+        alpha48,
+        alpha96,
+        getAlphaMap
+      });
+      cache.set(size, resolved);
+      return resolved;
+    };
+  }
+  function isPreviewAnchorGainSearchRequired(candidate) {
+    if (!candidate) return true;
+    return Math.abs(candidate.processedSpatialScore) > PREVIEW_ANCHOR_GAIN_SKIP_RESIDUAL_THRESHOLD || Math.max(0, candidate.processedGradientScore) > PREVIEW_ANCHOR_GAIN_SKIP_GRADIENT_THRESHOLD;
+  }
+  function isStrictFixedCoreCandidate(candidate) {
+    if (!candidate?.accepted) return false;
+    const processedSpatial = Number(candidate.processedSpatialScore);
+    if (!Number.isFinite(processedSpatial)) return false;
+    if (Math.abs(processedSpatial) <= FIXED_CORE_MAX_ACCEPTED_SPATIAL_RESIDUAL) {
+      return true;
+    }
+    const originalSpatial = Number(candidate.originalSpatialScore);
+    const originalGradient = Number(candidate.originalGradientScore);
+    const processedGradient = Number(candidate.processedGradientScore);
+    const improvement = Number(candidate.improvement);
+    const texturePenalty = Number(candidate.texturePenalty);
+    const nearBlackIncrease = Number(candidate.nearBlackIncrease);
+    if (!Number.isFinite(originalSpatial) || !Number.isFinite(originalGradient) || !Number.isFinite(processedGradient) || !Number.isFinite(improvement) || !Number.isFinite(texturePenalty) || !Number.isFinite(nearBlackIncrease)) {
+      return false;
+    }
+    const isStrongStandard96 = candidate.config?.logoSize === 96 && isStandardCandidateSource(candidate) && candidate.provenance?.localShift !== true && candidate.provenance?.sizeJitter !== true && candidate.provenance?.previewAnchor !== true;
+    if (!isStrongStandard96 || candidate.hardReject === true) return false;
+    const boundedNegativeOvershoot = processedSpatial < 0 && Math.abs(processedSpatial) <= FIXED_CORE_STRONG_96_MAX_NEGATIVE_SPATIAL_RESIDUAL && originalSpatial >= FIXED_CORE_STRONG_96_MIN_ORIGINAL_SPATIAL_SCORE && originalGradient >= FIXED_CORE_STRONG_96_MIN_ORIGINAL_GRADIENT_SCORE && processedGradient <= FIXED_CORE_STRONG_96_MAX_PROCESSED_GRADIENT_SCORE && improvement >= FIXED_CORE_STRONG_96_MIN_IMPROVEMENT && texturePenalty <= FIXED_CORE_STRONG_96_MAX_TEXTURE && nearBlackIncrease <= FIXED_CORE_STRONG_96_MAX_NEAR_BLACK_INCREASE;
+    const strongLowResidualFullAnchor = Math.abs(processedSpatial) <= FIXED_CORE_STRONG_96_LOW_RESIDUAL_MAX_SPATIAL_SCORE && processedGradient <= FIXED_CORE_STRONG_96_LOW_RESIDUAL_MAX_GRADIENT_SCORE && originalSpatial >= FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_ORIGINAL_SPATIAL_SCORE && originalGradient >= FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_ORIGINAL_GRADIENT_SCORE && improvement >= FIXED_CORE_STRONG_96_LOW_RESIDUAL_MIN_IMPROVEMENT && texturePenalty <= FIXED_CORE_STRONG_96_MAX_TEXTURE && nearBlackIncrease <= FIXED_CORE_STRONG_96_MAX_NEAR_BLACK_INCREASE;
+    return boundedNegativeOvershoot || strongLowResidualFullAnchor;
+  }
+  function isCleanWeakAlphaPriorityCandidate(candidate) {
+    if (!candidate?.accepted) return false;
+    return Math.abs(candidate.processedSpatialScore) <= STANDARD_FAST_PATH_RESIDUAL_THRESHOLD && Math.max(0, candidate.processedGradientScore) <= WEAK_ALPHA_PRIORITY_CLEAN_GRADIENT_THRESHOLD;
+  }
+  function normalizeAlphaPriorityGains(alphaPriorityGains) {
+    const gains = Array.isArray(alphaPriorityGains) && alphaPriorityGains.length > 0 ? alphaPriorityGains : [1];
+    const normalized = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const gain of gains) {
+      if (!Number.isFinite(gain) || gain <= 0) continue;
+      const key = gain.toFixed(4);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push(gain);
+    }
+    if (!seen.has("1.0000")) {
+      normalized.push(1);
+    }
+    return normalized;
+  }
+  function isWeakAlphaPrioritySeed(seed) {
+    return seed?.config?.logoSize === 48 && seed.config.marginRight === 96 && seed.config.marginBottom === 96;
+  }
+  function isWeakDarkPolarity48Seed(seed) {
+    return seed?.provenance?.weakDarkPolarity48 === true;
+  }
+  function resolveStandardSeedAlphaPriorityGains(seed, alphaPriorityGains) {
+    if (isWeakDarkPolarity48Seed(seed)) {
+      return DARK_POLARITY_48_ULTRA_WEAK_ALPHA_GAINS;
+    }
+    const extras = isWeakAlphaPrioritySeed(seed) ? [
+      ...CURRENT_LARGE_MARGIN_ULTRA_WEAK_ALPHA_GAINS,
+      STANDARD_CONSERVATIVE_CATALOG_PREFERRED_ALPHA_GAIN
+    ] : STANDARD_ANCHOR_WEAK_ALPHA_RESCUE_GAINS;
+    return normalizeAlphaPriorityGains([
+      ...alphaPriorityGains,
+      ...extras
+    ]);
+  }
+  function isWeakAlphaRescueCandidate(seed, trial) {
+    if (!trial?.accepted || trial.alphaGain >= 1) {
+      return false;
+    }
+    if (isWeakAlphaPrioritySeed(seed)) {
+      const isVisibleStrongRescue = trial.originalSpatialScore >= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_ORIGINAL_SPATIAL && trial.originalGradientScore >= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_ORIGINAL_GRADIENT && Math.abs(trial.processedSpatialScore) <= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_SPATIAL && Math.max(0, trial.processedGradientScore) <= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_GRADIENT && trial.improvement >= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MIN_IMPROVEMENT && trial.nearBlackIncrease <= CURRENT_LARGE_MARGIN_VISIBLE_RESCUE_MAX_NEAR_BLACK_INCREASE;
+      if (isVisibleStrongRescue) {
+        return true;
+      }
+      const isMediumSafeRescue = (trial.originalSpatialScore >= CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MIN_ORIGINAL_SPATIAL || trial.originalGradientScore >= CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MIN_ORIGINAL_GRADIENT) && Math.abs(trial.processedSpatialScore) <= CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_SPATIAL && Math.max(0, trial.processedGradientScore) <= CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_GRADIENT && trial.improvement >= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_IMPROVEMENT && trial.nearBlackIncrease <= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE && trial.texturePenalty <= CURRENT_LARGE_MARGIN_MEDIUM_RESCUE_MAX_TEXTURE && trial.hardReject !== true;
+      if (isMediumSafeRescue) {
+        return true;
+      }
+      const hasRescueEvidence = trial.originalSpatialScore >= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_ORIGINAL_SPATIAL || trial.originalGradientScore >= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_ORIGINAL_GRADIENT || trial.originalSpatialScore >= STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE && trial.originalGradientScore >= STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE;
+      return hasRescueEvidence && Math.abs(trial.processedSpatialScore) <= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_SPATIAL && Math.max(0, trial.processedGradientScore) <= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_GRADIENT && trial.improvement >= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MIN_IMPROVEMENT && trial.nearBlackIncrease <= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE && trial.texturePenalty <= CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_TEXTURE;
+    }
+    if (trial.hardReject === true) {
+      return false;
+    }
+    return trial.originalEvidence?.tier === "strong" && Math.abs(trial.processedSpatialScore) <= STANDARD_ANCHOR_WEAK_RESCUE_MAX_SPATIAL && Math.max(0, trial.processedGradientScore) <= STANDARD_ANCHOR_WEAK_RESCUE_MAX_GRADIENT && trial.improvement >= STANDARD_ANCHOR_WEAK_RESCUE_MIN_IMPROVEMENT && trial.nearBlackIncrease <= STANDARD_ANCHOR_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE && trial.texturePenalty <= 0.25;
+  }
+  function isStandardTextOverlapWeakAlphaCandidate(seed, trial) {
+    if (!trial?.accepted || trial.alphaGain >= 1 || trial.hardReject === true) {
+      return false;
+    }
+    if (seed?.config?.logoSize !== 96 || seed.config.marginRight !== 64 || seed.config.marginBottom !== 64) {
+      return false;
+    }
+    return trial.originalSpatialScore >= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_ORIGINAL_SPATIAL_SCORE && trial.originalGradientScore >= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_ORIGINAL_GRADIENT_SCORE && trial.improvement >= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MIN_IMPROVEMENT && Math.abs(trial.processedSpatialScore) <= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_SPATIAL_RESIDUAL && Math.max(0, trial.processedGradientScore) <= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_GRADIENT_RESIDUAL && trial.nearBlackIncrease <= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_NEAR_BLACK_INCREASE && trial.texturePenalty <= STANDARD_TEXT_OVERLAP_WEAK_ALPHA_MAX_TEXTURE;
+  }
+  function tagCandidateSource(candidate, tag) {
+    if (!candidate || String(candidate.source).includes(tag)) return candidate;
+    return {
+      ...candidate,
+      source: `${candidate.source}+${tag}`
+    };
+  }
+  function shouldPreferLargeMarginGradientClearance(currentBest, candidate) {
+    if (!isCurrentLargeMarginCatalogCandidate(currentBest) || !isCurrentLargeMarginCatalogCandidate(candidate)) {
+      return false;
+    }
+    if (currentBest.alphaGain >= 1 || candidate.alphaGain >= 1) {
+      return false;
+    }
+    if (candidate.alphaGain > CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_ALPHA_GAIN) {
+      return false;
+    }
+    if (candidate.originalGradientScore < CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MIN_ORIGINAL_GRADIENT || candidate.originalSpatialScore > CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_ORIGINAL_SPATIAL) {
+      return false;
+    }
+    if (candidate.texturePenalty > CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_TEXTURE || currentBest.texturePenalty > CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_TEXTURE) {
+      return false;
+    }
+    if (Math.abs(candidate.processedSpatialScore) > CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MAX_SPATIAL) {
+      return false;
+    }
+    if (candidate.nearBlackIncrease > CURRENT_LARGE_MARGIN_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE) {
+      return false;
+    }
+    return Math.max(0, currentBest.processedGradientScore) - Math.max(0, candidate.processedGradientScore) >= CURRENT_LARGE_MARGIN_GRADIENT_CLEAR_MIN_GRADIENT_DROP;
+  }
+  function pickBetterWeakAlphaRescueCandidate(seed, currentBest, candidate) {
+    if (!candidate?.accepted) return currentBest;
+    if (!currentBest) return candidate;
+    if (isWeakAlphaPrioritySeed(seed) && shouldPreferLargeMarginGradientClearance(currentBest, candidate)) {
+      return candidate;
+    }
+    return pickBetterCandidate(currentBest, candidate, 2e-3);
+  }
+  function shouldPreferWeakAlphaRescueOverAccepted(acceptedTrial, rescueTrial) {
+    if (!acceptedTrial?.accepted || !rescueTrial?.accepted) return false;
+    if (rescueTrial.alphaGain >= 1) return false;
+    const acceptedCost = Number(acceptedTrial.validationCost);
+    const rescueCost = Number(rescueTrial.validationCost);
+    if (!Number.isFinite(acceptedCost) || !Number.isFinite(rescueCost)) return false;
+    return rescueCost <= acceptedCost - STANDARD_ANCHOR_WEAK_RESCUE_MIN_BALANCED_ADVANTAGE && Math.abs(rescueTrial.processedSpatialScore) <= Math.abs(acceptedTrial.processedSpatialScore) && Math.max(0, rescueTrial.processedGradientScore) <= STANDARD_ANCHOR_WEAK_RESCUE_MAX_GRADIENT && rescueTrial.nearBlackIncrease <= STANDARD_ANCHOR_WEAK_RESCUE_MAX_NEAR_BLACK_INCREASE;
+  }
+  function evaluateStandardTrialForSeed({
+    originalImageData,
+    seed,
+    alphaPriorityGains
+  }) {
+    const priorityGains = resolveStandardSeedAlphaPriorityGains(seed, alphaPriorityGains);
+    let fallbackTrial = null;
+    let bestAcceptedTrial = null;
+    let bestWeakAlphaPriorityTrial = null;
+    let bestWeakAlphaRescueTrial = null;
+    for (const alphaGain of priorityGains) {
+      const trial = evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: seed.alphaMap,
+        position: seed.position,
+        source: alphaGain === 1 ? seed.source : `${seed.source}+gain`,
+        config: seed.config,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, seed.position),
+        alphaGain,
+        provenance: seed.provenance,
+        includeImageData: false
+      });
+      if (!trial) continue;
+      if (alphaGain === 1 || !fallbackTrial) {
+        fallbackTrial = trial;
+      }
+      if (alphaGain < 1) {
+        if (isStandardTextOverlapWeakAlphaCandidate(seed, trial)) {
+          bestWeakAlphaPriorityTrial = pickBetterCandidate(
+            bestWeakAlphaPriorityTrial,
+            tagCandidateSource(trial, "text-overlap"),
+            2e-3
+          );
+        }
+        if (isWeakAlphaPrioritySeed(seed) && isCleanWeakAlphaPriorityCandidate(trial) && isWeakAlphaRescueCandidate(seed, trial)) {
+          bestWeakAlphaPriorityTrial = pickBetterCandidate(bestWeakAlphaPriorityTrial, trial, 2e-3);
+        }
+        if (isWeakAlphaRescueCandidate(seed, trial)) {
+          bestWeakAlphaRescueTrial = pickBetterWeakAlphaRescueCandidate(seed, bestWeakAlphaRescueTrial, trial);
+        }
+        continue;
+      }
+      if (trial.accepted) {
+        bestAcceptedTrial = pickBetterCandidate(bestAcceptedTrial, trial, 2e-3);
+      }
+    }
+    const selected = isWeakAlphaPrioritySeed(seed) ? bestWeakAlphaPriorityTrial ?? bestWeakAlphaRescueTrial ?? bestAcceptedTrial ?? fallbackTrial : bestWeakAlphaPriorityTrial ?? (shouldPreferWeakAlphaRescueOverAccepted(bestAcceptedTrial, bestWeakAlphaRescueTrial) ? bestWeakAlphaRescueTrial : bestAcceptedTrial) ?? bestWeakAlphaRescueTrial ?? fallbackTrial;
+    return isWeakDarkPolarity48Seed(seed) && selected?.accepted !== true ? null : selected;
+  }
+  function evaluateRestorationCandidate({
+    originalImageData,
+    alphaMap,
+    position,
+    source,
+    config,
+    baselineNearBlackRatio,
+    adaptiveConfidence = null,
+    alphaGain = 1,
+    provenance = null,
+    includeImageData = true,
+    sourcePriority = null,
+    alphaPriorityIndex = null
+  }) {
+    if (!alphaMap || !position) return null;
+    const originalScores = scoreRegion(originalImageData, alphaMap, position);
+    const regionCandidate = createCandidateRegionImageData({
+      originalImageData,
+      alphaMap,
+      position,
+      alphaGain,
+      provenance
+    });
+    const regionImageData = regionCandidate.imageData;
+    const outlineDarkRepair = regionCandidate.outlineDarkRepair;
+    const regionPosition = {
+      x: ORIGIN_REGION.x,
+      y: ORIGIN_REGION.y,
+      width: position.width,
+      height: position.height
+    };
+    const processedScores = scoreRegion(regionImageData, alphaMap, regionPosition);
+    const nearBlackRatio = calculateNearBlackRatio(regionImageData, regionPosition);
+    const nearBlackIncrease = nearBlackRatio - baselineNearBlackRatio;
+    const baselineNearWhiteRatio = calculateNearWhiteRatio(originalImageData, position);
+    const nearWhiteRatio = calculateNearWhiteRatio(regionImageData, regionPosition);
+    const nearWhiteIncrease = nearWhiteRatio - baselineNearWhiteRatio;
+    const improvement = originalScores.spatialScore - processedScores.spatialScore;
+    const gradientIncrease = processedScores.gradientScore - originalScores.gradientScore;
+    const textureAssessment = assessReferenceTextureAlignmentFromStats({
+      originalImageData,
+      referenceImageData: originalImageData,
+      candidateTextureStats: getRegionTextureStats(regionImageData, regionPosition),
+      position
+    });
+    const texturePenalty = textureAssessment.texturePenalty;
+    const gradientDrop = originalScores.gradientScore - processedScores.gradientScore;
+    const strongStandardSignalNearBlackOverride = isStandardCandidateSource({ source }) && alphaGain === 1 && originalScores.spatialScore >= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_GRADIENT_SCORE && Math.abs(processedScores.spatialScore) <= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_RESIDUAL && processedScores.gradientScore <= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_GRADIENT && improvement >= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_IMPROVEMENT && gradientDrop >= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MIN_GRADIENT_DROP && nearBlackIncrease <= STANDARD_STRONG_SIGNAL_NEAR_BLACK_OVERRIDE_MAX_NEAR_BLACK_INCREASE;
+    const nearBlackIncreaseAllowed = nearBlackIncrease <= MAX_NEAR_BLACK_RATIO_INCREASE || strongStandardSignalNearBlackOverride || source === "standard" && originalScores.spatialScore >= STANDARD_TEXT_OVERLAP_MIN_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_TEXT_OVERLAP_MIN_GRADIENT_SCORE && improvement >= STANDARD_TEXT_OVERLAP_MIN_IMPROVEMENT && Math.abs(processedScores.spatialScore) <= STANDARD_TEXT_OVERLAP_MAX_RESIDUAL && gradientDrop >= STANDARD_TEXT_OVERLAP_MIN_GRADIENT_DROP;
+    const hardRejectAllowed = textureAssessment.hardReject !== true || isStandardCandidateSource({ source }) && originalScores.spatialScore >= STANDARD_HARD_REJECT_OVERRIDE_MIN_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_HARD_REJECT_OVERRIDE_MIN_GRADIENT_SCORE && Math.abs(processedScores.spatialScore) <= STANDARD_HARD_REJECT_OVERRIDE_MAX_RESIDUAL && processedScores.gradientScore <= STANDARD_HARD_REJECT_OVERRIDE_MAX_GRADIENT && improvement >= STANDARD_HARD_REJECT_OVERRIDE_MIN_IMPROVEMENT && nearBlackIncrease <= STANDARD_HARD_REJECT_OVERRIDE_MAX_NEAR_BLACK_INCREASE;
+    const conservativeCatalogHardRejectAllowed = textureAssessment.hardReject === true && isCurrentLargeMarginCatalogCandidate({ config, provenance }) && alphaGain <= STANDARD_CONSERVATIVE_CATALOG_MAX_ALPHA_GAIN && originalScores.spatialScore >= STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_CONSERVATIVE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE && Math.abs(processedScores.spatialScore) <= STANDARD_CONSERVATIVE_CATALOG_MAX_RESIDUAL && processedScores.gradientScore <= STANDARD_CONSERVATIVE_CATALOG_MAX_GRADIENT && improvement >= STANDARD_CONSERVATIVE_CATALOG_MIN_IMPROVEMENT && nearBlackIncrease <= STANDARD_CONSERVATIVE_CATALOG_MAX_NEAR_BLACK_INCREASE;
+    const visibleCatalogHardRejectAllowed = textureAssessment.hardReject === true && isCurrentLargeMarginCatalogCandidate({ config, provenance }) && alphaGain <= STANDARD_VISIBLE_CATALOG_MAX_ALPHA_GAIN && originalScores.spatialScore >= STANDARD_VISIBLE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_VISIBLE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE && Math.abs(processedScores.spatialScore) <= STANDARD_VISIBLE_CATALOG_MAX_SPATIAL_RESIDUAL && processedScores.gradientScore <= STANDARD_VISIBLE_CATALOG_MAX_GRADIENT_RESIDUAL && improvement >= STANDARD_VISIBLE_CATALOG_MIN_IMPROVEMENT && nearBlackIncrease <= STANDARD_VISIBLE_CATALOG_MAX_NEAR_BLACK_INCREASE;
+    const newMarginAlphaHardRejectAllowed = textureAssessment.hardReject === true && isNewMarginAlphaVariantTrial({ config, provenance }) && alphaGain === 1 && originalScores.spatialScore >= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_SPATIAL_SCORE && originalScores.gradientScore >= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_GRADIENT_SCORE && Math.abs(processedScores.spatialScore) <= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_RESIDUAL && processedScores.gradientScore <= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_GRADIENT && improvement >= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_IMPROVEMENT && gradientDrop >= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MIN_GRADIENT_DROP && nearBlackIncrease <= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_NEAR_BLACK_INCREASE && texturePenalty <= STANDARD_NEW_MARGIN_ALPHA_OVERRIDE_MAX_TEXTURE;
+    const originalEvidenceAllowed = !isStandardCandidateSource({ source }) || originalScores.spatialScore >= STANDARD_VALIDATION_MIN_ORIGINAL_SPATIAL_SCORE || originalScores.gradientScore >= STANDARD_VALIDATION_MIN_ORIGINAL_GRADIENT_SCORE;
+    const catalogEvidenceGate = provenance?.catalogEvidenceGate ?? null;
+    const catalogEvidenceAllowed = catalogEvidenceGate === "strong" ? provenance?.darkPolarity !== true && originalScores.spatialScore >= 0.95 && originalScores.gradientScore >= 0.8 : catalogEvidenceGate !== "medium" || originalScores.spatialScore >= 0.15 || originalScores.gradientScore >= 0.08;
+    const strongDarkPolarityOriginalEvidence = originalScores.spatialScore >= DARK_POLARITY_CATALOG_MIN_ORIGINAL_SPATIAL || originalScores.gradientScore >= DARK_POLARITY_CATALOG_MIN_ORIGINAL_GRADIENT;
+    const isLargeMargin48DarkPolarity = provenance?.darkPolarity === true && config?.logoSize === 48 && config.marginRight >= 90 && config.marginRight <= 100 && config.marginBottom >= 90 && config.marginBottom <= 100;
+    const largeMargin48DarkPolarityEvidenceAllowed = !isLargeMargin48DarkPolarity || originalScores.spatialScore >= DARK_POLARITY_48_MIN_ORIGINAL_SPATIAL && originalScores.gradientScore >= DARK_POLARITY_48_MIN_ORIGINAL_GRADIENT;
+    const weakDarkPolarity48ScopeAllowed = provenance?.weakDarkPolarity48 !== true || config?.logoSize === 48 && config.marginRight >= 90 && config.marginRight <= 100 && config.marginBottom >= 90 && config.marginBottom <= 100 && alphaGain <= 0.2;
+    const darkPolarityCatalogEvidenceAllowed = provenance?.darkPolarity !== true || provenance?.catalogVariant !== true || weakDarkPolarity48ScopeAllowed && largeMargin48DarkPolarityEvidenceAllowed && (strongDarkPolarityOriginalEvidence || texturePenalty <= DARK_POLARITY_CATALOG_MAX_TEXTURE_FOR_WEAK_EVIDENCE);
+    const strongDarkPolarityNearWhiteOverrideEvidence = originalScores.spatialScore >= DARK_POLARITY_NEAR_WHITE_OVERRIDE_MIN_ORIGINAL_SPATIAL || originalScores.gradientScore >= DARK_POLARITY_NEAR_WHITE_OVERRIDE_MIN_ORIGINAL_GRADIENT;
+    const darkPolarityNearWhiteIncreaseAllowed = provenance?.darkPolarity !== true || strongDarkPolarityNearWhiteOverrideEvidence || nearWhiteIncrease <= DARK_POLARITY_MAX_NEAR_WHITE_RATIO_INCREASE_FOR_WEAK_EVIDENCE;
+    const outlineLightEvidenceAllowed = provenance?.outlineLight !== true || alphaGain === 1 && originalScores.gradientScore >= OUTLINE_LIGHT_MIN_ORIGINAL_GRADIENT && improvement >= OUTLINE_LIGHT_MIN_IMPROVEMENT && Math.abs(processedScores.spatialScore) <= OUTLINE_LIGHT_MAX_PROCESSED_SPATIAL && processedScores.gradientScore <= OUTLINE_LIGHT_MAX_PROCESSED_GRADIENT;
+    const outlineDarkBodyGain = Number.isFinite(provenance?.outlineDarkBodyGain) ? provenance.outlineDarkBodyGain : 1;
+    const outlineDarkMinImprovement = OUTLINE_DARK_MIN_IMPROVEMENT * Math.max(
+      OUTLINE_DARK_MIN_BODY_GAIN,
+      Math.min(1, outlineDarkBodyGain)
+    );
+    const outlineDarkEvidenceAllowed = provenance?.outlineDark !== true || alphaGain === 1 && outlineDarkRepair?.accepted === true && outlineDarkRepair.maskPixels >= OUTLINE_DARK_MIN_REPAIR_PIXELS && outlineDarkRepair.maskPixels <= OUTLINE_DARK_MAX_REPAIR_PIXELS && originalScores.gradientScore >= OUTLINE_DARK_MIN_ORIGINAL_GRADIENT && improvement >= outlineDarkMinImprovement && Math.abs(processedScores.spatialScore) <= OUTLINE_DARK_MAX_PROCESSED_SPATIAL && processedScores.gradientScore <= OUTLINE_DARK_MAX_PROCESSED_GRADIENT;
+    const outlineDarkHardRejectAllowed = textureAssessment.hardReject === true && outlineDarkEvidenceAllowed && provenance?.outlineDark === true && nearBlackIncrease <= 0.01;
+    const baseValidationAccepted = (hardRejectAllowed || conservativeCatalogHardRejectAllowed || visibleCatalogHardRejectAllowed || newMarginAlphaHardRejectAllowed || outlineDarkHardRejectAllowed) && nearBlackIncreaseAllowed && improvement >= VALIDATION_MIN_IMPROVEMENT && (Math.abs(processedScores.spatialScore) <= VALIDATION_TARGET_RESIDUAL || gradientIncrease <= VALIDATION_MAX_GRADIENT_INCREASE);
+    const mergedProvenance = mergeCandidateProvenance(provenance);
+    const resolvedSourcePriority = Number.isFinite(sourcePriority) ? sourcePriority : inferCandidateSourcePriority({ source, provenance: mergedProvenance });
+    const resolvedAlphaPriorityIndex = Number.isFinite(alphaPriorityIndex) ? alphaPriorityIndex : inferAlphaPriorityIndex(alphaGain);
+    const originalEvidence = scoreOriginalEvidence({
+      spatial: originalScores.spatialScore,
+      gradient: originalScores.gradientScore
+    });
+    const residual = scoreResidual({
+      processedSpatial: processedScores.spatialScore,
+      processedGradient: processedScores.gradientScore,
+      suppressionGain: improvement
+    });
+    const balancedVisual = scoreBalancedVisualCandidate({
+      processedSpatial: processedScores.spatialScore,
+      processedGradient: processedScores.gradientScore,
+      nearBlackIncrease,
+      texturePenalty,
+      gradientIncrease
+    });
+    const hardRejectBypassed = conservativeCatalogHardRejectAllowed || visibleCatalogHardRejectAllowed || newMarginAlphaHardRejectAllowed || outlineDarkHardRejectAllowed;
+    const damage = scoreDamage({
+      hardReject: textureAssessment.hardReject === true && !hardRejectBypassed,
+      nearBlackIncrease,
+      texturePenalty
+    });
+    const evaluation = createCandidateEvaluation({
+      source,
+      config,
+      provenance: mergedProvenance,
+      originalScores,
+      processedScores,
+      improvement,
+      residual,
+      damage,
+      gates: {
+        originalEvidenceAllowed,
+        catalogEvidenceAllowed,
+        darkPolarityCatalogEvidenceAllowed,
+        darkPolarityNearWhiteIncreaseAllowed,
+        outlineLightEvidenceAllowed,
+        outlineDarkEvidenceAllowed,
+        baseValidationAccepted
+      }
+    });
+    const accepted = evaluation.eligible;
+    const rankingKey = buildRankingKey({
+      sourcePriority: resolvedSourcePriority,
+      originalEvidenceTier: originalEvidence.tier,
+      damageSafe: damage.safe,
+      residualScore: residual.score,
+      alphaPriorityIndex: resolvedAlphaPriorityIndex,
+      damagePenalty: damage.penalty
+    });
+    const earlyAccept = shouldEarlyAccept({
+      sourcePriority: resolvedSourcePriority,
+      originalEvidence,
+      residual,
+      damage
+    });
+    return {
+      accepted,
+      source,
+      config,
+      position,
+      alphaMap,
+      adaptiveConfidence,
+      alphaGain,
+      sourcePriority: resolvedSourcePriority,
+      alphaPriorityIndex: resolvedAlphaPriorityIndex,
+      rankingKey,
+      earlyAccept,
+      provenance: mergedProvenance,
+      imageData: includeImageData ? materializeCandidateImageData(originalImageData, alphaMap, position, alphaGain, provenance) : null,
+      outlineDarkRepair,
+      originalSpatialScore: originalScores.spatialScore,
+      originalGradientScore: originalScores.gradientScore,
+      processedSpatialScore: processedScores.spatialScore,
+      processedGradientScore: processedScores.gradientScore,
+      improvement,
+      nearBlackRatio,
+      nearBlackIncrease,
+      nearWhiteRatio,
+      nearWhiteIncrease,
+      gradientIncrease,
+      tooDark: textureAssessment.tooDark,
+      tooFlat: textureAssessment.tooFlat,
+      hardReject: textureAssessment.hardReject,
+      texturePenalty,
+      originalEvidence,
+      residual,
+      damage,
+      evaluation,
+      balancedVisual,
+      validationCost: balancedVisual.score
+    };
+  }
+  function pickBestValidatedCandidate(candidates) {
+    const accepted = candidates.filter((candidate) => candidate?.accepted);
+    if (accepted.length === 0) return null;
+    accepted.sort((a, b) => {
+      if (a.validationCost !== b.validationCost) {
+        return a.validationCost - b.validationCost;
+      }
+      return b.improvement - a.improvement;
+    });
+    const validationBest = accepted[0];
+    const preservedStrongCanonical96 = accepted.find((candidate) => shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(candidate, validationBest));
+    return preservedStrongCanonical96 ?? validationBest;
+  }
+  function pickAggressiveStrongLocatedCandidate(candidates) {
+    const located = candidates.filter((candidate) => candidate && isAggressiveLocatedCandidate(candidate)).sort((left, right) => {
+      const rightSignal = Number(right.originalSpatialScore) + Math.max(0, Number(right.originalGradientScore)) * 0.75;
+      const leftSignal = Number(left.originalSpatialScore) + Math.max(0, Number(left.originalGradientScore)) * 0.75;
+      if (rightSignal !== leftSignal) return rightSignal - leftSignal;
+      return Number(left.validationCost ?? Infinity) - Number(right.validationCost ?? Infinity);
+    });
+    return located[0] ?? null;
+  }
+  function isAggressiveLocatedCandidate(candidate) {
+    const spatialScore = Number(candidate.originalSpatialScore);
+    const gradientScore = Number(candidate.originalGradientScore);
+    if (!Number.isFinite(spatialScore) || !Number.isFinite(gradientScore)) return false;
+    const highConfidence = spatialScore >= 0.75 && gradientScore >= 0.5;
+    const clearShape = spatialScore >= 0.38 && gradientScore >= -0.06;
+    const lowContrastShape = spatialScore >= 0.24 && gradientScore >= 0.02;
+    const visibleGradient = spatialScore >= 0.12 && gradientScore >= 0.28;
+    return highConfidence || clearShape || lowContrastShape || visibleGradient;
+  }
+  function createCandidateRegionImageData({
+    originalImageData,
+    alphaMap,
+    position,
+    alphaGain,
+    provenance = null
+  }) {
+    const regionImageData = {
+      width: position.width,
+      height: position.height,
+      data: new Uint8ClampedArray(position.width * position.height * 4)
+    };
+    for (let row = 0; row < position.height; row++) {
+      const srcStart = ((position.y + row) * originalImageData.width + position.x) * 4;
+      const srcEnd = srcStart + position.width * 4;
+      const destStart = row * position.width * 4;
+      regionImageData.data.set(originalImageData.data.subarray(srcStart, srcEnd), destStart);
+    }
+    removeWatermark(regionImageData, alphaMap, {
+      x: 0,
+      y: 0,
+      width: position.width,
+      height: position.height
+    }, { alphaGain });
+    const outlineDarkRepair = provenance?.outlineDark === true && alphaGain === 1 ? repairDarkOutlineContour(regionImageData, {
+      x: 0,
+      y: 0,
+      width: position.width,
+      height: position.height
+    }) : null;
+    return { imageData: regionImageData, outlineDarkRepair };
+  }
+  function materializeCandidateImageData(originalImageData, alphaMap, position, alphaGain, provenance = null) {
+    const candidateImageData = cloneImageData(originalImageData);
+    removeWatermark(candidateImageData, alphaMap, position, { alphaGain });
+    if (provenance?.outlineDark === true && alphaGain === 1) {
+      repairDarkOutlineContour(candidateImageData, position);
+    }
+    return candidateImageData;
+  }
+  function ensureCandidateImageData(candidate, originalImageData) {
+    if (!candidate) return candidate;
+    if (candidate.imageData) return candidate;
+    return {
+      ...candidate,
+      imageData: materializeCandidateImageData(
+        originalImageData,
+        candidate.alphaMap,
+        candidate.position,
+        candidate.alphaGain ?? 1,
+        candidate.provenance
+      )
+    };
+  }
+  function materializeCandidateTrial(candidate, originalImageData) {
+    if (!candidate?.alphaMap || !candidate?.position) return null;
+    return {
+      ...candidate,
+      imageData: materializeCandidateImageData(
+        originalImageData,
+        candidate.alphaMap,
+        candidate.position,
+        candidate.alphaGain ?? 1,
+        candidate.provenance
+      )
+    };
+  }
+  function sameCandidateAnchor(left, right) {
+    if (!left || !right) return false;
+    const leftConfig = left.config;
+    const rightConfig = right.config;
+    const leftPosition = left.position;
+    const rightPosition = right.position;
+    if (!leftConfig || !rightConfig || !leftPosition || !rightPosition) return false;
+    return leftConfig.logoSize === rightConfig.logoSize && leftConfig.marginRight === rightConfig.marginRight && leftConfig.marginBottom === rightConfig.marginBottom && leftPosition.x === rightPosition.x && leftPosition.y === rightPosition.y && leftPosition.width === rightPosition.width && leftPosition.height === rightPosition.height;
+  }
+  function compareSameAnchorCandidateRanking(currentBest, candidate) {
+    if (!sameCandidateAnchor(currentBest, candidate)) return null;
+    if (currentBest?.provenance?.previewAnchor === true || candidate?.provenance?.previewAnchor === true) {
+      return null;
+    }
+    if (!Array.isArray(currentBest?.rankingKey) || !Array.isArray(candidate?.rankingKey)) {
+      return null;
+    }
+    return compareRankingKey(candidate.rankingKey, currentBest.rankingKey);
+  }
+  function shouldPreserveExactNewMarginVariant(exactCandidate, competingCandidate) {
+    const exactConfig = exactCandidate?.config ?? {};
+    const competingConfig = competingCandidate?.config ?? {};
+    const exactVariant = exactConfig.alphaVariant ?? exactCandidate?.provenance?.alphaVariant;
+    const competingVariant = competingConfig.alphaVariant ?? competingCandidate?.provenance?.alphaVariant;
+    if (exactCandidate?.accepted !== true || exactCandidate?.damage?.safe !== true) return false;
+    if (exactConfig.logoSize !== 96 || exactConfig.marginRight !== 192 || exactConfig.marginBottom !== 192) {
+      return false;
+    }
+    if (exactVariant !== "20260520") return false;
+    if (competingCandidate?.provenance?.sizeJitter !== true) return false;
+    if (competingConfig.marginRight !== 192 || competingConfig.marginBottom !== 192) return false;
+    if (competingVariant !== exactVariant) return false;
+    return !hasMuchStrongerOriginalSignal(competingCandidate, exactCandidate);
+  }
+  function pickBetterCandidate(currentBest, candidate, minCostDelta = 5e-3) {
+    if (!candidate?.accepted) return currentBest;
+    if (!currentBest) return candidate;
+    const evaluationDecision = arbitrateCandidateByEvaluation(currentBest, candidate);
+    if (evaluationDecision) return evaluationDecision;
+    if (shouldPreserveExactNewMarginVariant(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveExactNewMarginVariant(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveCatalogOriginalSignal(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveDominantBottomRight48AgainstWeakStandard(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveDominantBottomRight48AgainstWeakStandard(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveStrongCanonical96AgainstWeakNewMargin(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveStrongCanonical96AgainstWeakNewMargin(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveStandardAlphaCanonical96AgainstDarkGain(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveStandardAlphaCanonical96AgainstDarkGain(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveBalancedAlphaCanonical96(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreserveBalancedAlphaCanonical96(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreferCatalogOriginalSignal(candidate, currentBest)) {
+      return candidate;
+    }
+    if (shouldPreserveStrongStandardAnchor(currentBest, candidate)) {
+      return currentBest;
+    }
+    if (shouldPreferPreviewAnchorCandidate(currentBest, candidate)) {
+      return candidate;
+    }
+    if (shouldPreferPreviewAnchorCandidate(candidate, currentBest)) {
+      return currentBest;
+    }
+    const rankingComparison = compareSameAnchorCandidateRanking(currentBest, candidate);
+    if (rankingComparison !== null) {
+      if (rankingComparison < 0) return candidate;
+      if (rankingComparison > 0) return currentBest;
+    }
+    if (candidate.validationCost < currentBest.validationCost - minCostDelta) {
+      return candidate;
+    }
+    if (Math.abs(candidate.validationCost - currentBest.validationCost) <= minCostDelta && candidate.improvement > currentBest.improvement + 0.01) {
+      return candidate;
+    }
+    return currentBest;
+  }
+  function isStandardCandidateSource(candidate) {
+    return typeof candidate?.source === "string" && candidate.source.startsWith("standard");
+  }
+  function isDriftedStandardCandidate(candidate) {
+    return isStandardCandidateSource(candidate) && (candidate?.provenance?.localShift === true || candidate?.provenance?.sizeJitter === true || candidate?.provenance?.previewAnchor === true || String(candidate?.source || "").includes("+warp"));
+  }
+  function isCanonicalStandardCandidate(candidate) {
+    return isStandardCandidateSource(candidate) && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true;
+  }
+  function hasStrongCanonicalAnchorSignal(candidate) {
+    const baseSpatial = Number(candidate?.originalSpatialScore);
+    const baseGradient = Number(candidate?.originalGradientScore);
+    if (!Number.isFinite(baseSpatial) || !Number.isFinite(baseGradient)) {
+      return false;
+    }
+    return baseGradient >= STANDARD_LOCAL_SHIFT_CANONICAL_MIN_GRADIENT_SCORE && baseSpatial >= STANDARD_LOCAL_SHIFT_CANONICAL_MIN_SPATIAL_SCORE || baseGradient >= STANDARD_LOCAL_SHIFT_STRONG_BASE_GRADIENT_SCORE || baseSpatial >= STANDARD_LOCAL_SHIFT_STRONG_BASE_SPATIAL_SCORE;
+  }
+  function hasReliableCandidateOriginalSignal(candidate) {
+    return hasReliableStandardWatermarkSignal({
+      spatialScore: candidate?.originalSpatialScore,
+      gradientScore: candidate?.originalGradientScore
+    });
+  }
+  function hasMuchStrongerOriginalSignal(candidate, otherCandidate) {
+    const spatial = Number(candidate?.originalSpatialScore);
+    const gradient = Number(candidate?.originalGradientScore);
+    const otherSpatial = Number(otherCandidate?.originalSpatialScore);
+    const otherGradient = Number(otherCandidate?.originalGradientScore);
+    if (!Number.isFinite(spatial) || !Number.isFinite(gradient) || !Number.isFinite(otherSpatial) || !Number.isFinite(otherGradient)) {
+      return false;
+    }
+    return spatial >= otherSpatial + STRONG_ORIGINAL_SIGNAL_SPATIAL_ADVANTAGE && gradient >= otherGradient + STRONG_ORIGINAL_SIGNAL_GRADIENT_ADVANTAGE;
+  }
+  function isCatalogVariantCandidate(candidate) {
+    return candidate?.provenance?.catalogVariant === true;
+  }
+  function isCurrentLargeMarginCatalogCandidate(candidate) {
+    return isCatalogVariantCandidate(candidate) && isCurrentLargeMarginCandidate(candidate);
+  }
+  function isCurrentLargeMarginCandidate(candidate) {
+    return candidate?.config?.logoSize === 48 && candidate.config.marginRight === 96 && candidate.config.marginBottom === 96;
+  }
+  function isBottomRight48Candidate(candidate) {
+    return candidate?.config?.logoSize === 48 && candidate.config.marginRight === 32 && candidate.config.marginBottom === 32 && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true;
+  }
+  function isWeakCompetingStandardAnchor(candidate) {
+    return isStandardCandidateSource(candidate) && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true && !isBottomRight48Candidate(candidate);
+  }
+  function shouldPreserveDominantBottomRight48AgainstWeakStandard(bottomRightCandidate, competingCandidate) {
+    if (!isBottomRight48Candidate(bottomRightCandidate)) return false;
+    if (!isWeakCompetingStandardAnchor(competingCandidate)) return false;
+    const bottomSpatial = Number(bottomRightCandidate.originalSpatialScore);
+    const bottomGradient = Number(bottomRightCandidate.originalGradientScore);
+    const largeSpatial = Number(competingCandidate.originalSpatialScore);
+    const largeGradient = Number(competingCandidate.originalGradientScore);
+    const bottomResidual = Number(bottomRightCandidate.residual?.score);
+    const largeResidual = Number(competingCandidate.residual?.score);
+    if (!Number.isFinite(bottomSpatial) || !Number.isFinite(bottomGradient) || !Number.isFinite(largeSpatial) || !Number.isFinite(largeGradient) || !Number.isFinite(bottomResidual) || !Number.isFinite(largeResidual)) {
+      return false;
+    }
+    return bottomSpatial >= BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MIN_SPATIAL && bottomGradient >= BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MIN_GRADIENT && bottomSpatial >= largeSpatial + BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_SPATIAL_ADVANTAGE && bottomGradient >= largeGradient + BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_GRADIENT_ADVANTAGE && bottomResidual <= largeResidual + BOTTOM_RIGHT_48_EVIDENCE_DOMINANCE_MAX_RESIDUAL_DELTA;
+  }
+  function shouldPreferCatalogOriginalSignal(candidate, currentBest) {
+    if (!isCurrentLargeMarginCandidate(candidate)) return false;
+    if (currentBest?.provenance?.localShift === true || currentBest?.provenance?.sizeJitter === true) {
+      return false;
+    }
+    const candidateReliable = hasReliableCandidateOriginalSignal(candidate);
+    const currentReliable = hasReliableCandidateOriginalSignal(currentBest);
+    if (candidateReliable && !currentReliable) return true;
+    return candidateReliable && currentReliable && hasMuchStrongerOriginalSignal(candidate, currentBest);
+  }
+  function shouldPreserveCatalogOriginalSignal(currentBest, candidate) {
+    if (!isCurrentLargeMarginCandidate(currentBest)) return false;
+    const currentReliable = hasReliableCandidateOriginalSignal(currentBest);
+    const candidateReliable = hasReliableCandidateOriginalSignal(candidate);
+    if (currentReliable && !candidateReliable) return true;
+    return currentReliable && candidateReliable && hasMuchStrongerOriginalSignal(currentBest, candidate);
+  }
+  function isCanonicalDefault96Candidate(candidate) {
+    return isStandardCandidateSource(candidate) && candidate?.provenance?.catalogVariant !== true && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true && candidate?.config?.logoSize === 96 && candidate.config.marginRight === 64 && candidate.config.marginBottom === 64;
+  }
+  function isDefault96GeometryCandidate(candidate) {
+    return isStandardCandidateSource(candidate) && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true && candidate?.config?.logoSize === 96 && candidate.config.marginRight === 64 && candidate.config.marginBottom === 64;
+  }
+  function isNewMargin96Candidate2(candidate) {
+    return isStandardCandidateSource(candidate) && candidate?.provenance?.localShift !== true && candidate?.provenance?.sizeJitter !== true && candidate?.provenance?.previewAnchor !== true && candidate?.config?.logoSize === 96 && candidate.config.marginRight === 192 && candidate.config.marginBottom === 192;
+  }
+  function shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(currentBest, candidate) {
+    if (!isCanonicalDefault96Candidate(currentBest)) return false;
+    if (!isCurrentLargeMarginCatalogCandidate(candidate)) return false;
+    const currentSpatial = Number(currentBest.originalSpatialScore);
+    const currentGradient = Number(currentBest.originalGradientScore);
+    const currentProcessedSpatial = Number(currentBest.processedSpatialScore);
+    const currentProcessedGradient = Number(currentBest.processedGradientScore);
+    const candidateSpatial = Number(candidate.originalSpatialScore);
+    const candidateGradient = Number(candidate.originalGradientScore);
+    if (!Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient) || !Number.isFinite(currentProcessedSpatial) || !Number.isFinite(currentProcessedGradient) || !Number.isFinite(candidateSpatial) || !Number.isFinite(candidateGradient)) {
+      return false;
+    }
+    const currentAlreadyCleared = currentBest.residual?.cleared === true;
+    const currentStrongLowResidual = currentSpatial >= 0.55 && currentGradient >= 0.5 && Math.abs(currentProcessedSpatial) <= 0.08 && currentProcessedGradient <= 0.24;
+    const candidateHasWeakOriginalSignal = candidateGradient < STANDARD_VALIDATION_MIN_ORIGINAL_GRADIENT_SCORE || candidateSpatial <= currentSpatial - 0.2 && candidateGradient <= currentGradient - 0.3;
+    return currentSpatial >= 0.4 && currentGradient >= 0.2 && (currentAlreadyCleared || currentStrongLowResidual) && candidateHasWeakOriginalSignal;
+  }
+  function shouldPreserveStrongCanonical96AgainstWeakNewMargin(currentBest, candidate) {
+    if (!isCanonicalDefault96Candidate(currentBest)) return false;
+    if (!isNewMargin96Candidate2(candidate)) return false;
+    const currentSpatial = Number(currentBest.originalSpatialScore);
+    const currentGradient = Number(currentBest.originalGradientScore);
+    const candidateSpatial = Number(candidate.originalSpatialScore);
+    const candidateGradient = Number(candidate.originalGradientScore);
+    if (!Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient) || !Number.isFinite(candidateSpatial) || !Number.isFinite(candidateGradient)) {
+      return false;
+    }
+    const currentHasStrongCanonicalSignal = currentSpatial >= 0.55 && currentGradient >= 0.2;
+    const candidateHasStrongNewMarginSignal = candidateSpatial >= 0.55 && candidateGradient >= 0.3;
+    const candidateHasWeakOrMuchWeakerSignal = candidateSpatial < STANDARD_VALIDATION_MIN_ORIGINAL_SPATIAL_SCORE || candidateGradient < STANDARD_VALIDATION_MIN_ORIGINAL_GRADIENT_SCORE || candidateSpatial <= currentSpatial - STRONG_ORIGINAL_SIGNAL_SPATIAL_ADVANTAGE && candidateGradient <= currentGradient - STRONG_ORIGINAL_SIGNAL_GRADIENT_ADVANTAGE;
+    return currentHasStrongCanonicalSignal && !candidateHasStrongNewMarginSignal && candidateHasWeakOrMuchWeakerSignal;
+  }
+  function isBalancedCanonical96AlphaGain(candidate) {
+    const alphaGain = Number(candidate?.alphaGain);
+    return Number.isFinite(alphaGain) && alphaGain >= 1 && alphaGain <= 1.1;
+  }
+  function shouldPreserveStandardAlphaCanonical96AgainstDarkGain(currentBest, candidate) {
+    if (!sameCandidateAnchor(currentBest, candidate)) return false;
+    if (!isCanonicalDefault96Candidate(currentBest)) return false;
+    const currentAlphaGain = Number(currentBest?.alphaGain);
+    const candidateAlphaGain = Number(candidate?.alphaGain);
+    if (!Number.isFinite(currentAlphaGain) || !Number.isFinite(candidateAlphaGain) || currentAlphaGain !== 1 || candidateAlphaGain <= 1 || candidate?.tooDark !== true) {
+      return false;
+    }
+    const originalSpatial = Number(currentBest.originalSpatialScore);
+    const originalGradient = Number(currentBest.originalGradientScore);
+    const currentSpatial = Number(currentBest.processedSpatialScore);
+    const currentGradient = Number(currentBest.processedGradientScore);
+    if (!Number.isFinite(originalSpatial) || !Number.isFinite(originalGradient) || !Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient)) {
+      return false;
+    }
+    return originalSpatial >= 0.55 && originalGradient >= 0.2 && currentSpatial >= 0 && currentSpatial <= 0.35 && Math.max(0, currentGradient) <= 0.08;
+  }
+  function shouldPreserveBalancedAlphaCanonical96(currentBest, candidate) {
+    if (!sameCandidateAnchor(currentBest, candidate)) return false;
+    if (!isCanonicalDefault96Candidate(currentBest)) return false;
+    if (!isBalancedCanonical96AlphaGain(currentBest)) return false;
+    const candidateAlphaGain = Number(candidate?.alphaGain);
+    if (!Number.isFinite(candidateAlphaGain) || candidateAlphaGain <= 1.1) return false;
+    const originalSpatial = Number(currentBest.originalSpatialScore);
+    const originalGradient = Number(currentBest.originalGradientScore);
+    const currentSpatial = Number(currentBest.processedSpatialScore);
+    const currentGradient = Number(currentBest.processedGradientScore);
+    if (!Number.isFinite(originalSpatial) || !Number.isFinite(originalGradient) || !Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient)) {
+      return false;
+    }
+    return originalSpatial >= 0.55 && originalGradient >= 0.2 && currentSpatial >= 0 && currentSpatial <= 0.22 && Math.max(0, currentGradient) <= 0.1;
+  }
+  function hasWeakDriftEvidence(candidate) {
+    const candidateSpatial = Number(candidate?.originalSpatialScore);
+    const candidateGradient = Number(candidate?.originalGradientScore);
+    if (!Number.isFinite(candidateSpatial) || !Number.isFinite(candidateGradient)) {
+      return false;
+    }
+    return candidateGradient < STANDARD_LOCAL_SHIFT_WEAK_CANDIDATE_GRADIENT_SCORE || candidateSpatial < STANDARD_LOCAL_SHIFT_WEAK_CANDIDATE_SPATIAL_SCORE;
+  }
+  function leavesWorseResidualGradientThanCanonical(canonicalCandidate, driftCandidate) {
+    const canonicalProcessedGradientRaw = Number(canonicalCandidate?.processedGradientScore);
+    const driftProcessedGradientRaw = Number(driftCandidate?.processedGradientScore);
+    if (!Number.isFinite(canonicalProcessedGradientRaw) || !Number.isFinite(driftProcessedGradientRaw)) {
+      return false;
+    }
+    return Math.max(0, canonicalProcessedGradientRaw) <= STANDARD_LOCAL_SHIFT_PRESERVE_CLEAN_BASE_GRADIENT_THRESHOLD && Math.max(0, driftProcessedGradientRaw) >= STANDARD_LOCAL_SHIFT_MAX_CANDIDATE_GRADIENT_FOR_CLEAN_BASE;
+  }
+  function leavesMuchWorseResidualGradientThanCanonical(canonicalCandidate, driftCandidate) {
+    const canonicalProcessedSpatial = Number(canonicalCandidate?.processedSpatialScore);
+    const canonicalProcessedGradient = Number(canonicalCandidate?.processedGradientScore);
+    const canonicalImprovement = Number(canonicalCandidate?.improvement);
+    const driftProcessedGradient = Number(driftCandidate?.processedGradientScore);
+    if (!Number.isFinite(canonicalProcessedSpatial) || !Number.isFinite(canonicalProcessedGradient) || !Number.isFinite(canonicalImprovement) || !Number.isFinite(driftProcessedGradient)) {
+      return false;
+    }
+    return Math.abs(canonicalProcessedSpatial) <= STANDARD_PRESERVE_MAX_RESIDUAL && canonicalImprovement >= STANDARD_PRESERVE_MIN_IMPROVEMENT && driftProcessedGradient >= canonicalProcessedGradient + STANDARD_PRESERVE_GRADIENT_DELTA;
+  }
+  function shouldPreserveCanonicalAnchor(canonicalCandidate, driftCandidate) {
+    if (!isCanonicalStandardCandidate(canonicalCandidate)) return false;
+    if (!isDriftedStandardCandidate(driftCandidate)) return false;
+    const validationAdvantage = Number(canonicalCandidate.validationCost) - Number(driftCandidate.validationCost);
+    if (!Number.isFinite(validationAdvantage)) {
+      return false;
+    }
+    return hasStrongCanonicalAnchorSignal(canonicalCandidate) && hasWeakDriftEvidence(driftCandidate) && validationAdvantage < STANDARD_LOCAL_SHIFT_MIN_VALIDATION_ADVANTAGE || leavesWorseResidualGradientThanCanonical(canonicalCandidate, driftCandidate) || leavesMuchWorseResidualGradientThanCanonical(canonicalCandidate, driftCandidate);
+  }
+  function shouldPreserveStrongStandardAnchor(currentBest, candidate) {
+    if (currentBest?.provenance?.localShift === true) return false;
+    if (!isStandardCandidateSource(candidate)) return false;
+    return shouldPreserveCanonicalAnchor(currentBest, candidate);
+  }
+  function shouldRevertLocalShiftToStandardTrial(selectedCandidate, standardTrial) {
+    if (selectedCandidate?.provenance?.localShift !== true) return false;
+    if (!isStandardCandidateSource(selectedCandidate) || !isStandardCandidateSource(standardTrial)) return false;
+    if (!standardTrial?.accepted) return false;
+    return shouldPreserveCanonicalAnchor(standardTrial, selectedCandidate);
+  }
+  function shouldSkipStandardLocalSearch(seedCandidate) {
+    if (!seedCandidate) return false;
+    return Math.max(0, Number(seedCandidate.processedGradientScore)) <= STANDARD_LOCAL_SHIFT_SKIP_PROCESSED_GRADIENT_THRESHOLD;
+  }
+  function isPreviewAnchorSearchEligible(originalImageData, config) {
+    if (!config || config.logoSize !== 48) return false;
+    const width = Number(originalImageData?.width);
+    const height = Number(originalImageData?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+    if (width < 384 || width > 1536) return false;
+    if (height < 384 || height > 1536) return false;
+    if (Math.max(width, height) < 512) return false;
+    return matchOfficialGeminiImageSize(width, height) === null;
+  }
+  function shouldPreferPreviewAnchorCandidate(currentBest, candidate) {
+    if (candidate?.provenance?.previewAnchor !== true) return false;
+    if (!currentBest || currentBest?.provenance?.previewAnchor === true) return false;
+    const currentSpatial = Number(currentBest.originalSpatialScore);
+    const currentGradient = Number(currentBest.originalGradientScore);
+    const candidateSpatial = Number(candidate.originalSpatialScore);
+    const candidateGradient = Number(candidate.originalGradientScore);
+    if (!Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient) || !Number.isFinite(candidateSpatial) || !Number.isFinite(candidateGradient)) {
+      return false;
+    }
+    const currentReliable = hasReliableStandardWatermarkSignal({
+      spatialScore: currentSpatial,
+      gradientScore: currentGradient
+    });
+    const candidateReliable = hasReliableStandardWatermarkSignal({
+      spatialScore: candidateSpatial,
+      gradientScore: candidateGradient
+    });
+    if (candidateReliable && !currentReliable) {
+      return true;
+    }
+    return candidateGradient >= currentGradient + 0.2 && candidateSpatial >= currentSpatial + 0.05;
+  }
+  function findBestTemplateWarp({
+    originalImageData,
+    alphaMap,
+    position,
+    baselineSpatialScore,
+    baselineGradientScore,
+    shiftCandidates = TEMPLATE_ALIGN_SHIFTS,
+    scaleCandidates = TEMPLATE_ALIGN_SCALES
+  }) {
+    const size = position.width;
+    if (!size || size <= 8) return null;
+    let best = {
+      spatialScore: baselineSpatialScore,
+      gradientScore: baselineGradientScore,
+      shift: { dx: 0, dy: 0, scale: 1 },
+      alphaMap
+    };
+    for (const scale of scaleCandidates) {
+      for (const dy of shiftCandidates) {
+        for (const dx of shiftCandidates) {
+          if (dx === 0 && dy === 0 && scale === 1) continue;
+          const warped = warpAlphaMap(alphaMap, size, { dx, dy, scale });
+          const spatialScore = computeRegionSpatialCorrelation({
+            imageData: originalImageData,
+            alphaMap: warped,
+            region: { x: position.x, y: position.y, size }
+          });
+          const gradientScore = computeRegionGradientCorrelation({
+            imageData: originalImageData,
+            alphaMap: warped,
+            region: { x: position.x, y: position.y, size }
+          });
+          const confidence = Math.max(0, spatialScore) * 0.7 + Math.max(0, gradientScore) * 0.3;
+          const bestConfidence = Math.max(0, best.spatialScore) * 0.7 + Math.max(0, best.gradientScore) * 0.3;
+          if (confidence > bestConfidence + 0.01) {
+            best = {
+              spatialScore,
+              gradientScore,
+              shift: { dx, dy, scale },
+              alphaMap: warped
+            };
+          }
+        }
+      }
+    }
+    const improvedSpatial = best.spatialScore >= baselineSpatialScore + 0.01;
+    const improvedGradient = best.gradientScore >= baselineGradientScore + 0.01;
+    return improvedSpatial || improvedGradient ? best : null;
+  }
+  function searchNearbyStandardCandidate({
+    originalImageData,
+    candidateSeeds,
+    adaptiveConfidence = null
+  }) {
+    if (!Array.isArray(candidateSeeds) || candidateSeeds.length === 0) return null;
+    let bestCandidate = null;
+    for (const seed of candidateSeeds) {
+      if (shouldSkipStandardLocalSearch(seed)) continue;
+      for (const dy of STANDARD_NEARBY_SHIFTS) {
+        for (const dx of STANDARD_NEARBY_SHIFTS) {
+          if (dx === 0 && dy === 0) continue;
+          const candidatePosition = {
+            x: seed.position.x + dx,
+            y: seed.position.y + dy,
+            width: seed.position.width,
+            height: seed.position.height
+          };
+          if (candidatePosition.x < 0 || candidatePosition.y < 0) continue;
+          if (candidatePosition.x + candidatePosition.width > originalImageData.width) continue;
+          if (candidatePosition.y + candidatePosition.height > originalImageData.height) continue;
+          const candidate = evaluateRestorationCandidate({
+            originalImageData,
+            alphaMap: seed.alphaMap,
+            position: candidatePosition,
+            source: `${seed.source}+local`,
+            config: seed.config,
+            baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, candidatePosition),
+            adaptiveConfidence,
+            provenance: mergeCandidateProvenance(seed.provenance, { localShift: true }),
+            includeImageData: false
+          });
+          if (!candidate?.accepted) continue;
+          bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+        }
+      }
+    }
+    return bestCandidate;
+  }
+  function searchStandardSizeJitterCandidate({
+    originalImageData,
+    candidateSeeds,
+    alpha48,
+    alpha96,
+    getAlphaMap,
+    resolveAlphaMap = null,
+    adaptiveConfidence = null
+  }) {
+    if (!Array.isArray(candidateSeeds) || candidateSeeds.length === 0) return null;
+    let bestCandidate = null;
+    for (const seed of candidateSeeds) {
+      for (const delta of STANDARD_SIZE_JITTERS) {
+        const size = seed.position.width + delta;
+        if (size <= 24) continue;
+        if (size === seed.position.width) continue;
+        const candidatePosition = {
+          x: originalImageData.width - seed.config.marginRight - size,
+          y: originalImageData.height - seed.config.marginBottom - size,
+          width: size,
+          height: size
+        };
+        if (candidatePosition.x < 0 || candidatePosition.y < 0) continue;
+        if (candidatePosition.x + candidatePosition.width > originalImageData.width) continue;
+        if (candidatePosition.y + candidatePosition.height > originalImageData.height) continue;
+        const candidateAlphaMap = resolveSizeJitterAlphaMap(seed, size, {
+          alpha48,
+          alpha96,
+          getAlphaMap,
+          resolveAlphaMap
+        });
+        if (!candidateAlphaMap) continue;
+        const candidate = evaluateRestorationCandidate({
+          originalImageData,
+          alphaMap: candidateAlphaMap,
+          position: candidatePosition,
+          source: `${seed.source}+size`,
+          config: {
+            ...seed.config,
+            logoSize: size
+          },
+          baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, candidatePosition),
+          adaptiveConfidence,
+          provenance: mergeCandidateProvenance(seed.provenance, { sizeJitter: true }),
+          includeImageData: false
+        });
+        if (!candidate?.accepted) continue;
+        bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+      }
+    }
+    return bestCandidate;
+  }
+  function searchFineStandardLocalCandidate({
+    originalImageData,
+    seedCandidate,
+    adaptiveConfidence = null,
+    shiftCandidates = STANDARD_FINE_LOCAL_SHIFTS
+  }) {
+    if (!seedCandidate?.alphaMap || !seedCandidate?.position) return null;
+    if (shouldSkipStandardLocalSearch(seedCandidate)) return null;
+    let bestCandidate = null;
+    for (const dy of shiftCandidates) {
+      for (const dx of shiftCandidates) {
+        if (dx === 0 && dy === 0) continue;
+        const candidatePosition = {
+          x: seedCandidate.position.x + dx,
+          y: seedCandidate.position.y + dy,
+          width: seedCandidate.position.width,
+          height: seedCandidate.position.height
+        };
+        if (candidatePosition.x < 0 || candidatePosition.y < 0) continue;
+        if (candidatePosition.x + candidatePosition.width > originalImageData.width) continue;
+        if (candidatePosition.y + candidatePosition.height > originalImageData.height) continue;
+        const candidate = evaluateRestorationCandidate({
+          originalImageData,
+          alphaMap: seedCandidate.alphaMap,
+          position: candidatePosition,
+          source: `${seedCandidate.source}+local`,
+          config: seedCandidate.config,
+          baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, candidatePosition),
+          adaptiveConfidence,
+          provenance: mergeCandidateProvenance(seedCandidate.provenance, { localShift: true }),
+          includeImageData: false
+        });
+        if (!candidate?.accepted) continue;
+        bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+      }
+    }
+    return bestCandidate;
+  }
+  function searchCandidateAlphaGain({
+    originalImageData,
+    seedCandidate,
+    adaptiveConfidence = null,
+    alphaGainCandidates = []
+  }) {
+    if (!seedCandidate?.alphaMap || !seedCandidate?.position) return null;
+    let bestCandidate = null;
+    for (const candidateGain of alphaGainCandidates) {
+      if (!Number.isFinite(candidateGain) || candidateGain <= 0 || candidateGain === 1) continue;
+      const candidate = evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: seedCandidate.alphaMap,
+        position: seedCandidate.position,
+        source: `${seedCandidate.source}+gain`,
+        config: seedCandidate.config,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, seedCandidate.position),
+        adaptiveConfidence,
+        alphaGain: candidateGain,
+        provenance: seedCandidate.provenance,
+        includeImageData: false
+      });
+      if (!candidate?.accepted) continue;
+      if (candidateGain < 1 && (candidate.improvement < STANDARD_PRESERVE_MIN_IMPROVEMENT || Math.abs(candidate.processedSpatialScore) > VALIDATION_TARGET_RESIDUAL)) {
+        continue;
+      }
+      bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+    }
+    return bestCandidate;
+  }
+  function searchBestEffortCurrentLargeMarginWeakAlpha({
+    originalImageData,
+    standardTrials,
+    alphaGainCandidates
+  }) {
+    let bestCandidate = null;
+    for (const seedCandidate of standardTrials) {
+      if (!isCurrentLargeMarginCatalogCandidate(seedCandidate)) continue;
+      if (!hasReliableCandidateOriginalSignal(seedCandidate)) continue;
+      for (const candidateGain of alphaGainCandidates) {
+        if (!Number.isFinite(candidateGain) || candidateGain <= 0 || candidateGain >= 1) continue;
+        const candidate = evaluateRestorationCandidate({
+          originalImageData,
+          alphaMap: seedCandidate.alphaMap,
+          position: seedCandidate.position,
+          source: `${seedCandidate.source}+validated+gain`,
+          config: seedCandidate.config,
+          baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, seedCandidate.position),
+          alphaGain: candidateGain,
+          provenance: seedCandidate.provenance,
+          includeImageData: false
+        });
+        if (!candidate?.accepted) continue;
+        bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+      }
+    }
+    return bestCandidate;
+  }
+  function hasFixedCoreLocalOriginalEvidence({
+    seed,
+    sizeDelta,
+    marginRightDelta,
+    marginBottomDelta,
+    originalScores
+  }) {
+    if (originalScores.spatialScore >= FIXED_CORE_LOCAL_MIN_ORIGINAL_SPATIAL_SCORE && originalScores.gradientScore >= FIXED_CORE_LOCAL_MIN_ORIGINAL_GRADIENT_SCORE) {
+      return true;
+    }
+    return seed?.provenance?.sampleDerivedRescueSeed === true && sizeDelta === 0 && marginRightDelta === 0 && marginBottomDelta === 0 && originalScores.spatialScore >= FIXED_CORE_LOCAL_VISIBLE_CATALOG_MIN_ORIGINAL_SPATIAL_SCORE && originalScores.gradientScore >= FIXED_CORE_LOCAL_VISIBLE_CATALOG_MIN_ORIGINAL_GRADIENT_SCORE;
+  }
+  function searchFixedCoreLocalGeometryCandidate({
+    originalImageData,
+    candidateSeeds,
+    resolveAlphaMap,
+    alphaGainCandidates
+  }) {
+    let bestCandidate = null;
+    const localSeeds = [...Array.isArray(candidateSeeds) ? candidateSeeds : []];
+    if (!localSeeds.some((seed) => seed?.provenance?.sampleDerivedRescueSeed === true)) {
+      const position = {
+        x: originalImageData.width - 96 - 48,
+        y: originalImageData.height - 96 - 48,
+        width: 48,
+        height: 48
+      };
+      if (position.x >= 0 && position.y >= 0 && position.x + position.width <= originalImageData.width && position.y + position.height <= originalImageData.height) {
+        localSeeds.push({
+          config: { logoSize: 48, marginRight: 96, marginBottom: 96 },
+          position,
+          alphaMap: resolveAlphaMap(48),
+          source: "standard+catalog",
+          provenance: { catalogVariant: true, sampleDerivedRescueSeed: true }
+        });
+      }
+    }
+    for (const seed of localSeeds) {
+      if (seed?.config?.logoSize !== 48) continue;
+      const restrictToExactCatalogAnchor = seed?.provenance?.sampleDerivedRescueSeed !== true && isCurrentLargeMarginCatalogCandidate(seed);
+      for (const sizeDelta of FIXED_CORE_LOCAL_SIZE_DELTAS) {
+        if (restrictToExactCatalogAnchor && sizeDelta !== 0) continue;
+        const size = seed.config.logoSize + sizeDelta;
+        if (size < 40 || size > 56) continue;
+        const alphaMap = resolveAlphaMap(size);
+        if (!alphaMap) continue;
+        for (const marginRightDelta of FIXED_CORE_LOCAL_MARGIN_DELTAS) {
+          if (restrictToExactCatalogAnchor && marginRightDelta !== 0) continue;
+          const marginRight = seed.config.marginRight + marginRightDelta;
+          if (marginRight < 0) continue;
+          for (const marginBottomDelta of FIXED_CORE_LOCAL_MARGIN_DELTAS) {
+            if (restrictToExactCatalogAnchor && marginBottomDelta !== 0) continue;
+            const marginBottom = seed.config.marginBottom + marginBottomDelta;
+            if (marginBottom < 0) continue;
+            const position = {
+              x: originalImageData.width - marginRight - size,
+              y: originalImageData.height - marginBottom - size,
+              width: size,
+              height: size
+            };
+            if (position.x < 0 || position.y < 0) continue;
+            if (position.x + position.width > originalImageData.width) continue;
+            if (position.y + position.height > originalImageData.height) continue;
+            const originalScores = scoreRegion(originalImageData, alphaMap, position);
+            if (!hasFixedCoreLocalOriginalEvidence({
+              seed,
+              sizeDelta,
+              marginRightDelta,
+              marginBottomDelta,
+              originalScores
+            })) {
+              continue;
+            }
+            for (const alphaGain of alphaGainCandidates) {
+              if (!Number.isFinite(alphaGain) || alphaGain <= 0) continue;
+              const candidate = evaluateRestorationCandidate({
+                originalImageData,
+                alphaMap,
+                position,
+                source: alphaGain === 1 ? `${seed.source}+fixed-local` : `${seed.source}+fixed-local+gain`,
+                config: {
+                  logoSize: size,
+                  marginRight,
+                  marginBottom
+                },
+                baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+                alphaGain,
+                provenance: mergeCandidateProvenance(seed.provenance, {
+                  fixedCoreLocalGeometry: true,
+                  localShift: marginRightDelta !== 0 || marginBottomDelta !== 0,
+                  sizeJitter: sizeDelta !== 0
+                }),
+                includeImageData: false
+              });
+              if (!candidate?.accepted) continue;
+              if (!isStrictFixedCoreCandidate(candidate)) continue;
+              bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+            }
+          }
+        }
+      }
+    }
+    return bestCandidate;
+  }
+  function searchStrongStandardTrialAlphaGain({
+    originalImageData,
+    standardTrials,
+    standardTrial,
+    baseCandidate,
+    baseDecisionTier,
+    alphaGainCandidates
+  }) {
+    let nextBaseCandidate = baseCandidate;
+    let nextBaseDecisionTier = baseDecisionTier;
+    for (const candidate of standardTrials) {
+      if (!candidate || candidate.accepted) continue;
+      if (candidate === standardTrial && nextBaseCandidate) continue;
+      const reliableMatch = hasReliableStandardWatermarkSignal({
+        spatialScore: candidate.originalSpatialScore,
+        gradientScore: candidate.originalGradientScore
+      });
+      if (!reliableMatch) continue;
+      const gainedCandidate = searchCandidateAlphaGain({
+        originalImageData,
+        seedCandidate: {
+          ...candidate,
+          source: `${candidate.source}+validated`
+        },
+        adaptiveConfidence: null,
+        alphaGainCandidates
+      });
+      if (!gainedCandidate) continue;
+      ({
+        baseCandidate: nextBaseCandidate,
+        baseDecisionTier: nextBaseDecisionTier
+      } = promoteBaseCandidate(nextBaseCandidate, nextBaseDecisionTier, gainedCandidate, {
+        reliableMatch,
+        minCostDelta: 2e-3
+      }));
+    }
+    return {
+      baseCandidate: nextBaseCandidate,
+      baseDecisionTier: nextBaseDecisionTier
+    };
+  }
+  function searchFixedCoreStrongStandardAlphaGain({
+    originalImageData,
+    baseCandidate,
+    alphaGainCandidates
+  }) {
+    if (!isCanonicalDefault96Candidate(baseCandidate)) return null;
+    if (!hasReliableCandidateOriginalSignal(baseCandidate)) return null;
+    let bestCandidate = null;
+    const baselineNearBlackRatio = calculateNearBlackRatio(originalImageData, baseCandidate.position);
+    for (const candidateGain of alphaGainCandidates) {
+      if (!Number.isFinite(candidateGain) || candidateGain <= 0 || candidateGain === 1) continue;
+      const candidate = evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: baseCandidate.alphaMap,
+        position: baseCandidate.position,
+        source: `${baseCandidate.source}+gain`,
+        config: baseCandidate.config,
+        baselineNearBlackRatio,
+        alphaGain: candidateGain,
+        provenance: baseCandidate.provenance,
+        includeImageData: false
+      });
+      if (!candidate?.accepted || !isStrictFixedCoreCandidate(candidate)) continue;
+      bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+    }
+    return bestCandidate;
+  }
+  function createDefaultAlphaRescueProvenance(provenance) {
+    const {
+      alphaVariant,
+      ...baseProvenance
+    } = provenance ?? {};
+    return mergeCandidateProvenance(baseProvenance, {
+      defaultAlphaVariantRescue: true
+    });
+  }
+  function searchDefaultAlphaNewMarginRescue({
+    originalImageData,
+    standardTrials,
+    alpha96,
+    alphaGainCandidates
+  }) {
+    if (!alpha96) return null;
+    let bestCandidate = null;
+    const rescueGains = normalizeAlphaPriorityGains([
+      ...alphaGainCandidates,
+      ...STANDARD_ANCHOR_WEAK_ALPHA_RESCUE_GAINS
+    ]);
+    for (const seedCandidate of standardTrials) {
+      if (!isNewMarginAlphaVariantTrial(seedCandidate)) continue;
+      if (seedCandidate.provenance?.darkPolarity === true) continue;
+      const config = {
+        logoSize: 96,
+        marginRight: 192,
+        marginBottom: 192
+      };
+      const provenance = createDefaultAlphaRescueProvenance(seedCandidate.provenance);
+      const baselineNearBlackRatio = calculateNearBlackRatio(originalImageData, seedCandidate.position);
+      for (const alphaGain of rescueGains) {
+        if (!Number.isFinite(alphaGain) || alphaGain <= 0) continue;
+        const candidate = evaluateRestorationCandidate({
+          originalImageData,
+          alphaMap: alpha96,
+          position: seedCandidate.position,
+          source: alphaGain === 1 ? `${seedCandidate.source}+default-alpha` : `${seedCandidate.source}+default-alpha+gain`,
+          config,
+          baselineNearBlackRatio,
+          alphaGain,
+          provenance,
+          includeImageData: false
+        });
+        if (!candidate?.accepted) continue;
+        if (!hasSafeDefaultAlphaNewMarginResidual(candidate)) continue;
+        bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+      }
+    }
+    return bestCandidate;
+  }
+  function insertTopPreviewCandidate(topCandidates, candidate) {
+    topCandidates.push(candidate);
+    topCandidates.sort((a, b) => b.coarseScore - a.coarseScore);
+    if (topCandidates.length > PREVIEW_ANCHOR_TOP_K) {
+      topCandidates.length = PREVIEW_ANCHOR_TOP_K;
+    }
+  }
+  function searchBottomRightPreviewCandidate({
+    originalImageData,
+    config,
+    alpha48,
+    alpha96,
+    getAlphaMap,
+    resolveAlphaMap = null,
+    adaptiveConfidence = null
+  }) {
+    if (!isPreviewAnchorSearchEligible(originalImageData, config)) return null;
+    const minSize = Math.max(
+      PREVIEW_ANCHOR_MIN_SIZE,
+      Math.round(config.logoSize * PREVIEW_ANCHOR_MIN_SIZE_RATIO)
+    );
+    const maxSize = Math.max(
+      minSize,
+      Math.round(config.logoSize * PREVIEW_ANCHOR_MAX_SIZE_RATIO)
+    );
+    const minMarginRight = Math.max(8, config.marginRight - PREVIEW_ANCHOR_MARGIN_WINDOW);
+    const maxMarginRight = config.marginRight + PREVIEW_ANCHOR_MARGIN_EXTENSION;
+    const minMarginBottom = Math.max(8, config.marginBottom - PREVIEW_ANCHOR_MARGIN_WINDOW);
+    const maxMarginBottom = config.marginBottom + PREVIEW_ANCHOR_MARGIN_EXTENSION;
+    const topCandidates = [];
+    for (let size = minSize; size <= maxSize; size += PREVIEW_ANCHOR_SIZE_STEP) {
+      const alphaMap = typeof resolveAlphaMap === "function" ? resolveAlphaMap(size) : resolveAlphaMapForSize(size, {
+        alpha48,
+        alpha96,
+        getAlphaMap
+      });
+      if (!alphaMap) continue;
+      for (let marginRight = minMarginRight; marginRight <= maxMarginRight; marginRight += PREVIEW_ANCHOR_MARGIN_STEP) {
+        const x = originalImageData.width - marginRight - size;
+        if (x < 0 || x + size > originalImageData.width) continue;
+        for (let marginBottom = minMarginBottom; marginBottom <= maxMarginBottom; marginBottom += PREVIEW_ANCHOR_MARGIN_STEP) {
+          const y = originalImageData.height - marginBottom - size;
+          if (y < 0 || y + size > originalImageData.height) continue;
+          const coarseSpatialScore = computeRegionSpatialCorrelation({
+            imageData: originalImageData,
+            alphaMap,
+            region: { x, y, size }
+          });
+          const coarseGradientScore = computeRegionGradientCorrelation({
+            imageData: originalImageData,
+            alphaMap,
+            region: { x, y, size }
+          });
+          const coarseScore = Math.max(0, coarseGradientScore) * 0.6 + Math.max(0, coarseSpatialScore) * 0.4;
+          if (coarseScore < PREVIEW_ANCHOR_MIN_SCORE) continue;
+          insertTopPreviewCandidate(topCandidates, {
+            coarseScore,
+            alphaMap,
+            position: { x, y, width: size, height: size },
+            config: {
+              logoSize: size,
+              marginRight,
+              marginBottom
+            }
+          });
+        }
+      }
+    }
+    let bestCandidate = null;
+    for (const coarseCandidate of topCandidates) {
+      for (const sizeDelta of PREVIEW_ANCHOR_LOCAL_DELTAS) {
+        const size = coarseCandidate.position.width + sizeDelta;
+        if (size < PREVIEW_ANCHOR_MIN_SIZE) continue;
+        const alphaMap = typeof resolveAlphaMap === "function" ? resolveAlphaMap(size) : resolveAlphaMapForSize(size, {
+          alpha48,
+          alpha96,
+          getAlphaMap
+        });
+        if (!alphaMap) continue;
+        for (const dx of PREVIEW_ANCHOR_LOCAL_DELTAS) {
+          for (const dy of PREVIEW_ANCHOR_LOCAL_DELTAS) {
+            const position = {
+              x: coarseCandidate.position.x + dx,
+              y: coarseCandidate.position.y + dy,
+              width: size,
+              height: size
+            };
+            if (position.x < 0 || position.y < 0) continue;
+            if (position.x + position.width > originalImageData.width) continue;
+            if (position.y + position.height > originalImageData.height) continue;
+            const config2 = {
+              logoSize: size,
+              marginRight: originalImageData.width - position.x - size,
+              marginBottom: originalImageData.height - position.y - size
+            };
+            const candidate = evaluateRestorationCandidate({
+              originalImageData,
+              alphaMap,
+              position,
+              source: "standard+preview-anchor",
+              config: config2,
+              baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+              adaptiveConfidence,
+              provenance: {
+                previewAnchor: true,
+                previewAnchorLocalRefine: sizeDelta !== 0 || dx !== 0 || dy !== 0
+              },
+              includeImageData: false
+            });
+            if (!candidate?.accepted) continue;
+            bestCandidate = pickBetterCandidate(bestCandidate, candidate, 2e-3);
+          }
+        }
+      }
+    }
+    return bestCandidate;
+  }
+  function evaluateStandardTrialsForSeeds({
+    originalImageData,
+    candidateSeeds,
+    alphaPriorityGains = [1]
+  }) {
+    const standardTrials = candidateSeeds.map((seed) => evaluateStandardTrialForSeed({
+      originalImageData,
+      seed,
+      alphaPriorityGains
+    })).filter(Boolean);
+    const standardTrial = standardTrials.find((candidate) => candidate.source === "standard") ?? standardTrials[0] ?? null;
+    const standardSpatialScore = standardTrial?.originalSpatialScore ?? null;
+    const standardGradientScore = standardTrial?.originalGradientScore ?? null;
+    const hasReliableStandardMatch = hasReliableStandardWatermarkSignal({
+      spatialScore: standardSpatialScore,
+      gradientScore: standardGradientScore
+    });
+    return {
+      standardTrials,
+      standardTrial,
+      standardSpatialScore,
+      standardGradientScore,
+      hasReliableStandardMatch
+    };
+  }
+  function resolveStandardAnchorSelection({
+    originalImageData,
+    config,
+    catalogPriorConfig,
+    position,
+    alpha48,
+    alpha96,
+    alpha96Variants,
+    getAlphaMap,
+    resolveAlphaMap,
+    alphaPriorityGains,
+    forceCatalogVariants = false
+  }) {
+    let standardCandidateSeeds = buildStandardCandidateSeeds({
+      originalImageData,
+      config,
+      catalogPriorConfig,
+      position,
+      alpha48,
+      alpha96,
+      alpha96Variants,
+      getAlphaMap,
+      resolveAlphaMap,
+      includeCatalogVariants: false
+    });
+    let standardSelection = evaluateStandardTrialsForSeeds({
+      originalImageData,
+      candidateSeeds: standardCandidateSeeds,
+      alphaPriorityGains
+    });
+    const shouldSearchCatalogRescue = standardSelection.standardTrial && !standardSelection.standardTrial.accepted && shouldEscalateSearch(standardSelection.standardTrial);
+    const shouldExpandStandardCatalog = forceCatalogVariants || shouldSearchCatalogRescue || !standardSelection.hasReliableStandardMatch && (!standardSelection.standardTrial || shouldEscalateSearch(standardSelection.standardTrial) || matchOfficialGeminiImageSize(originalImageData.width, originalImageData.height) === null && shouldExpandCatalogForWeakOriginalStandardEvidence(standardSelection.standardTrial));
+    if (shouldExpandStandardCatalog) {
+      standardCandidateSeeds = buildStandardCandidateSeeds({
+        originalImageData,
+        config,
+        catalogPriorConfig,
+        position,
+        alpha48,
+        alpha96,
+        alpha96Variants,
+        getAlphaMap,
+        resolveAlphaMap,
+        includeCatalogVariants: true
+      });
+      standardSelection = evaluateStandardTrialsForSeeds({
+        originalImageData,
+        candidateSeeds: standardCandidateSeeds,
+        alphaPriorityGains
+      });
+    }
+    return {
+      standardCandidateSeeds,
+      ...standardSelection
+    };
+  }
+  function resolveCandidatePromotion(candidate, {
+    reliableMatch = false
+  } = {}) {
+    if (!candidate?.accepted) {
+      return null;
+    }
+    if (reliableMatch) {
+      return {
+        candidate,
+        decisionTier: "direct-match"
+      };
+    }
+    return {
+      candidate: {
+        ...candidate,
+        source: `${candidate.source}+validated`
+      },
+      decisionTier: "validated-match"
+    };
+  }
+  function promoteBaseCandidate(baseCandidate, baseDecisionTier, candidate, {
+    reliableMatch = false,
+    minCostDelta = 2e-3
+  } = {}) {
+    const promotion = resolveCandidatePromotion(candidate, {
+      reliableMatch
+    });
+    if (!promotion) {
+      return {
+        baseCandidate,
+        baseDecisionTier
+      };
+    }
+    if (shouldPreserveCanonicalAnchor(baseCandidate, promotion.candidate)) {
+      return {
+        baseCandidate,
+        baseDecisionTier
+      };
+    }
+    if (reliableMatch && shouldPreferCatalogOriginalSignal(promotion.candidate, baseCandidate)) {
+      return {
+        baseCandidate: promotion.candidate,
+        baseDecisionTier: promotion.decisionTier
+      };
+    }
+    const previousCandidate = baseCandidate;
+    const nextCandidate = pickBetterCandidate(baseCandidate, promotion.candidate, minCostDelta);
+    return {
+      baseCandidate: nextCandidate,
+      baseDecisionTier: nextCandidate !== previousCandidate ? promotion.decisionTier : baseDecisionTier
+    };
+  }
+  function shouldPreferOutlineDarkCandidate(currentCandidate, outlineDarkCandidate) {
+    if (outlineDarkCandidate?.accepted !== true || outlineDarkCandidate?.provenance?.outlineDark !== true || outlineDarkCandidate?.evaluation?.gates?.outlineDarkEvidenceAllowed !== true) {
+      return false;
+    }
+    if (!currentCandidate) return true;
+    if (currentCandidate?.provenance?.outlineDark === true) return false;
+    if (!sameCandidateAnchor(currentCandidate, outlineDarkCandidate)) return false;
+    return currentCandidate?.damage?.safe !== true || Math.abs(Number(currentCandidate.processedSpatialScore)) > OUTLINE_DARK_MAX_PROCESSED_SPATIAL || Math.max(0, Number(currentCandidate.processedGradientScore)) > OUTLINE_DARK_MAX_PROCESSED_GRADIENT;
+  }
+  function getOutlineDarkBodyGainResidualCost(candidate) {
+    const processedSpatial = Number(candidate?.processedSpatialScore);
+    const processedGradient = Number(candidate?.processedGradientScore);
+    if (!Number.isFinite(processedSpatial) || !Number.isFinite(processedGradient)) {
+      return Infinity;
+    }
+    return Math.abs(processedSpatial) + Math.max(0, processedGradient) * OUTLINE_DARK_BODY_GAIN_GRADIENT_WEIGHT;
+  }
+  function pickBestOutlineDarkCandidate(candidates) {
+    const accepted = candidates.filter((candidate) => candidate?.accepted === true && candidate?.provenance?.outlineDark === true && candidate?.evaluation?.gates?.outlineDarkEvidenceAllowed === true);
+    if (accepted.length === 0) return null;
+    const fullBodyCandidate = accepted.find((candidate) => Number(candidate.provenance?.outlineDarkBodyGain ?? 1) === 1) ?? null;
+    const anchorCandidate = fullBodyCandidate ?? accepted[0];
+    let bestCandidate = anchorCandidate;
+    let bestCost = getOutlineDarkBodyGainResidualCost(bestCandidate);
+    for (const candidate of accepted) {
+      if (!sameCandidateAnchor(anchorCandidate, candidate)) continue;
+      const candidateCost = getOutlineDarkBodyGainResidualCost(candidate);
+      if (candidateCost < bestCost) {
+        bestCandidate = candidate;
+        bestCost = candidateCost;
+      }
+    }
+    if (!fullBodyCandidate || bestCandidate === fullBodyCandidate) {
+      return bestCandidate;
+    }
+    const fullBodyCost = getOutlineDarkBodyGainResidualCost(fullBodyCandidate);
+    return fullBodyCost - bestCost >= OUTLINE_DARK_BODY_GAIN_MIN_COST_IMPROVEMENT ? bestCandidate : fullBodyCandidate;
+  }
+  function searchOutlineDarkBodyGainCandidates({
+    originalImageData,
+    standardTrials
+  }) {
+    const fullBodyCandidate = standardTrials.find((candidate) => candidate?.provenance?.outlineDark === true && Number(candidate.provenance?.outlineDarkBodyGain ?? 1) === 1) ?? null;
+    if (!fullBodyCandidate) return [];
+    const fullBodySpatial = Number(fullBodyCandidate.processedSpatialScore);
+    const shouldSearch = fullBodyCandidate.outlineDarkRepair?.accepted === true && Number.isFinite(fullBodySpatial) && fullBodySpatial <= OUTLINE_DARK_BODY_GAIN_SEARCH_MAX_FULL_BODY_SPATIAL;
+    if (!shouldSearch) return [fullBodyCandidate];
+    const candidates = [fullBodyCandidate];
+    const baselineNearBlackRatio = calculateNearBlackRatio(
+      originalImageData,
+      fullBodyCandidate.position
+    );
+    for (const bodyGain of OUTLINE_DARK_BODY_GAINS) {
+      if (bodyGain === 1) continue;
+      const candidate = evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: createOutlineDarkBodyGainAlphaMap(fullBodyCandidate.alphaMap, bodyGain),
+        position: fullBodyCandidate.position,
+        source: `${fullBodyCandidate.source}+body-gain`,
+        config: fullBodyCandidate.config,
+        baselineNearBlackRatio,
+        alphaGain: 1,
+        provenance: mergeCandidateProvenance(
+          fullBodyCandidate.provenance,
+          { outlineDarkBodyGain: bodyGain }
+        ),
+        includeImageData: false
+      });
+      if (candidate) candidates.push(candidate);
+    }
+    return candidates;
+  }
+  function evaluateAdaptiveTrial({
+    originalImageData,
+    config,
+    alpha96,
+    resolveAlphaMap,
+    allowAdaptiveSearch
+  }) {
+    if (!allowAdaptiveSearch || !alpha96) {
+      return {
+        adaptive: null,
+        adaptiveConfidence: null,
+        adaptiveTrial: null
+      };
+    }
+    const adaptive = detectAdaptiveWatermarkRegion({
+      imageData: originalImageData,
+      alpha96,
+      defaultConfig: config
+    });
+    const adaptiveConfidence = adaptive?.confidence ?? null;
+    if (!adaptive?.region || !(hasReliableAdaptiveWatermarkSignal(adaptive) || adaptive.confidence >= VALIDATION_MIN_CONFIDENCE_FOR_ADAPTIVE_TRIAL)) {
+      return {
+        adaptive,
+        adaptiveConfidence,
+        adaptiveTrial: null
+      };
+    }
+    const size = adaptive.region.size;
+    const adaptivePosition = {
+      x: adaptive.region.x,
+      y: adaptive.region.y,
+      width: size,
+      height: size
+    };
+    const adaptiveAlphaMap = resolveAlphaMap(size);
+    if (!adaptiveAlphaMap) {
+      throw new Error(`Missing alpha map for adaptive size ${size}`);
+    }
+    const adaptiveConfig = {
+      logoSize: size,
+      marginRight: originalImageData.width - adaptivePosition.x - size,
+      marginBottom: originalImageData.height - adaptivePosition.y - size
+    };
+    return {
+      adaptive,
+      adaptiveConfidence,
+      adaptiveTrial: evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: adaptiveAlphaMap,
+        position: adaptivePosition,
+        source: "adaptive",
+        config: adaptiveConfig,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, adaptivePosition),
+        adaptiveConfidence: adaptive.confidence,
+        provenance: mergeCandidateProvenance(
+          { adaptive: true },
+          adaptive.strongUndersizedMatch === true ? { strongUndersizedMatch: true } : null
+        ),
+        includeImageData: false
+      })
+    };
+  }
+  function refineSelectedAnchorCandidate({
+    originalImageData,
+    baseCandidate,
+    baseDecisionTier,
+    adaptiveConfidence,
+    alphaGainCandidates,
+    allowTemplateWarp = true
+  }) {
+    let selectedTrial = ensureCandidateImageData(baseCandidate, originalImageData);
+    let alphaMap = baseCandidate.alphaMap;
+    let position = baseCandidate.position;
+    let config = baseCandidate.config;
+    let source = baseCandidate.source;
+    let decisionTier = baseDecisionTier || inferDecisionTier(baseCandidate);
+    let templateWarp = null;
+    let selectedAlphaGain = baseCandidate.alphaGain ?? 1;
+    const warpCandidate = allowTemplateWarp ? findBestTemplateWarp({
+      originalImageData,
+      alphaMap,
+      position,
+      baselineSpatialScore: selectedTrial.originalSpatialScore,
+      baselineGradientScore: selectedTrial.originalGradientScore,
+      shiftCandidates: selectedTrial.provenance?.previewAnchor === true ? PREVIEW_TEMPLATE_ALIGN_SHIFTS : TEMPLATE_ALIGN_SHIFTS,
+      scaleCandidates: selectedTrial.provenance?.previewAnchor === true ? PREVIEW_TEMPLATE_ALIGN_SCALES : TEMPLATE_ALIGN_SCALES
+    }) : null;
+    if (warpCandidate) {
+      const warpedTrial = evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: warpCandidate.alphaMap,
+        position,
+        source: `${source}+warp`,
+        config,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+        adaptiveConfidence,
+        provenance: selectedTrial.provenance,
+        includeImageData: false
+      });
+      const betterWarpTrial = pickBetterCandidate(selectedTrial, warpedTrial);
+      if (betterWarpTrial !== selectedTrial) {
+        alphaMap = warpedTrial.alphaMap;
+        source = betterWarpTrial.source;
+        selectedTrial = ensureCandidateImageData(betterWarpTrial, originalImageData);
+        templateWarp = warpCandidate.shift;
+        decisionTier = inferDecisionTier(betterWarpTrial, {
+          directMatch: decisionTier === "direct-match"
+        });
+      }
+    }
+    const shouldRunGainSearch = selectedTrial.provenance?.previewAnchor === true ? isPreviewAnchorGainSearchRequired(selectedTrial) : isCurrentLargeMarginCatalogCandidate(selectedTrial) && selectedTrial.alphaGain < 1 ? false : shouldEscalateSearch(selectedTrial);
+    let bestGainTrial = selectedTrial;
+    if (shouldRunGainSearch) {
+      for (const candidateGain of alphaGainCandidates) {
+        if (!Number.isFinite(candidateGain) || candidateGain <= 1) continue;
+        if (selectedTrial.provenance?.previewAnchor === true && position.width < 40 && candidateGain > 1.1) {
+          continue;
+        }
+        const gainTrial = evaluateRestorationCandidate({
+          originalImageData,
+          alphaMap,
+          position,
+          source: `${source}+gain`,
+          config,
+          baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+          adaptiveConfidence,
+          alphaGain: candidateGain,
+          provenance: selectedTrial.provenance,
+          includeImageData: false
+        });
+        bestGainTrial = pickBetterCandidate(bestGainTrial, gainTrial);
+      }
+    }
+    if (bestGainTrial !== selectedTrial) {
+      selectedTrial = ensureCandidateImageData(bestGainTrial, originalImageData);
+      source = bestGainTrial.source;
+      selectedAlphaGain = bestGainTrial.alphaGain;
+      decisionTier = inferDecisionTier(bestGainTrial, {
+        directMatch: decisionTier === "direct-match"
+      });
+    }
+    return {
+      selectedTrial: ensureCandidateImageData(selectedTrial, originalImageData),
+      source,
+      alphaMap,
+      position,
+      config,
+      templateWarp,
+      alphaGain: selectedAlphaGain,
+      decisionTier
+    };
+  }
+  function selectInitialCandidate({
+    originalImageData,
+    config,
+    catalogPriorConfig = null,
+    position,
+    alpha48,
+    alpha96,
+    getAlphaMap,
+    allowAdaptiveSearch,
+    allowAutomaticSearch = true,
+    allowAggressiveStrongLocated = false,
+    alphaGainCandidates,
+    alphaPriorityGains = [1],
+    alpha96Variants = null
+  }) {
+    const resolveAlphaMap = createAlphaMapResolver({ alpha48, alpha96, getAlphaMap });
+    const fallbackAlphaMap = config.logoSize === 96 ? alpha96 : alpha48;
+    const {
+      standardCandidateSeeds,
+      standardTrials,
+      standardTrial,
+      standardSpatialScore,
+      standardGradientScore,
+      hasReliableStandardMatch
+    } = resolveStandardAnchorSelection({
+      originalImageData,
+      config,
+      catalogPriorConfig,
+      position,
+      alpha48,
+      alpha96,
+      alpha96Variants,
+      getAlphaMap,
+      resolveAlphaMap,
+      alphaPriorityGains,
+      forceCatalogVariants: !allowAutomaticSearch
+    });
+    const candidatePool = [];
+    const observeCandidates = (...values) => {
+      for (const candidate of values.flat()) {
+        if (candidate && !candidatePool.includes(candidate)) {
+          candidatePool.push(candidate);
+        }
+      }
+    };
+    observeCandidates(standardTrials);
+    let baseCandidate = null;
+    let baseDecisionTier = "insufficient";
+    if (hasReliableStandardMatch && standardTrial?.accepted) {
+      baseCandidate = standardTrial;
+      baseDecisionTier = "direct-match";
+    } else if (standardTrial?.accepted) {
+      baseCandidate = {
+        ...standardTrial,
+        source: `${standardTrial.source}+validated`
+      };
+      baseDecisionTier = "validated-match";
+    }
+    let adaptive = null;
+    let adaptiveConfidence = null;
+    let adaptiveTrial = null;
+    for (const candidate of standardTrials) {
+      if (!candidate || candidate === standardTrial) continue;
+      if (candidate.provenance?.outlineDark === true) continue;
+      ({
+        baseCandidate,
+        baseDecisionTier
+      } = promoteBaseCandidate(baseCandidate, baseDecisionTier, candidate, {
+        reliableMatch: hasReliableStandardWatermarkSignal({
+          spatialScore: candidate.originalSpatialScore,
+          gradientScore: candidate.originalGradientScore
+        })
+      }));
+    }
+    const outlineDarkCandidate = pickBestOutlineDarkCandidate(
+      searchOutlineDarkBodyGainCandidates({
+        originalImageData,
+        standardTrials
+      })
+    );
+    observeCandidates(outlineDarkCandidate);
+    if (shouldPreferOutlineDarkCandidate(baseCandidate, outlineDarkCandidate)) {
+      baseCandidate = outlineDarkCandidate;
+      baseDecisionTier = hasReliableStandardWatermarkSignal({
+        spatialScore: outlineDarkCandidate.originalSpatialScore,
+        gradientScore: outlineDarkCandidate.originalGradientScore
+      }) ? "direct-match" : "validated-match";
+    }
+    ({
+      baseCandidate,
+      baseDecisionTier
+    } = searchStrongStandardTrialAlphaGain({
+      originalImageData,
+      standardTrials,
+      standardTrial,
+      baseCandidate,
+      baseDecisionTier,
+      alphaGainCandidates
+    }));
+    observeCandidates(baseCandidate);
+    const defaultAlphaNewMarginRescue = searchDefaultAlphaNewMarginRescue({
+      originalImageData,
+      standardTrials,
+      alpha96,
+      alphaGainCandidates
+    });
+    observeCandidates(defaultAlphaNewMarginRescue);
+    if (defaultAlphaNewMarginRescue) {
+      ({
+        baseCandidate,
+        baseDecisionTier
+      } = promoteBaseCandidate(baseCandidate, baseDecisionTier, defaultAlphaNewMarginRescue));
+    }
+    if (allowAutomaticSearch) {
+      const previewAnchorCandidate = searchBottomRightPreviewCandidate({
+        originalImageData,
+        config,
+        alpha48,
+        alpha96,
+        getAlphaMap,
+        resolveAlphaMap,
+        adaptiveConfidence
+      });
+      observeCandidates(previewAnchorCandidate);
+      if (previewAnchorCandidate) {
+        ({
+          baseCandidate,
+          baseDecisionTier
+        } = promoteBaseCandidate(baseCandidate, baseDecisionTier, previewAnchorCandidate));
+      }
+    }
+    if (allowAutomaticSearch && baseDecisionTier !== "direct-match" && !baseCandidate?.provenance?.previewAnchor && shouldEscalateSearch(baseCandidate)) {
+      const sizeJitterCandidate = searchStandardSizeJitterCandidate({
+        originalImageData,
+        candidateSeeds: standardCandidateSeeds,
+        alpha48,
+        alpha96,
+        getAlphaMap,
+        resolveAlphaMap
+      });
+      observeCandidates(sizeJitterCandidate);
+      if (sizeJitterCandidate) {
+        ({
+          baseCandidate,
+          baseDecisionTier
+        } = promoteBaseCandidate(baseCandidate, baseDecisionTier, sizeJitterCandidate));
+      }
+    }
+    if (allowAutomaticSearch && baseDecisionTier !== "direct-match" && baseCandidate?.provenance?.sizeJitter === true && !baseCandidate?.provenance?.previewAnchor && isStandardCandidateSource(baseCandidate) && shouldEscalateSearch(baseCandidate)) {
+      const fineLocalCandidate = searchFineStandardLocalCandidate({
+        originalImageData,
+        seedCandidate: baseCandidate,
+        adaptiveConfidence
+      });
+      observeCandidates(fineLocalCandidate);
+      if (fineLocalCandidate) {
+        ({
+          baseCandidate,
+          baseDecisionTier
+        } = promoteBaseCandidate(baseCandidate, baseDecisionTier, fineLocalCandidate));
+      }
+    }
+    const shouldEvaluateAdaptive = () => {
+      if (!allowAdaptiveSearch || !alpha96) return false;
+      if (!baseCandidate) return true;
+      if (!shouldEscalateSearch(baseCandidate)) return false;
+      baseCandidate = ensureCandidateImageData(baseCandidate, originalImageData);
+      return shouldAttemptAdaptiveFallback({
+        processedImageData: baseCandidate.imageData,
+        alphaMap: baseCandidate.alphaMap,
+        position: baseCandidate.position,
+        originalImageData,
+        originalSpatialMismatchThreshold: 0
+      });
+    };
+    if (allowAutomaticSearch && shouldEvaluateAdaptive()) {
+      ({
+        adaptive,
+        adaptiveConfidence,
+        adaptiveTrial
+      } = evaluateAdaptiveTrial({
+        originalImageData,
+        config,
+        alpha96,
+        resolveAlphaMap,
+        allowAdaptiveSearch
+      }));
+    }
+    if (adaptiveTrial) {
+      observeCandidates(adaptiveTrial);
+      ({
+        baseCandidate,
+        baseDecisionTier
+      } = promoteBaseCandidate(baseCandidate, baseDecisionTier, adaptiveTrial, {
+        reliableMatch: hasReliableAdaptiveWatermarkSignal(adaptive)
+      }));
+    }
+    if (allowAutomaticSearch && !baseCandidate?.provenance?.previewAnchor && !hasReliableAdaptiveWatermarkSignal(adaptive) && shouldSearchNearbyStandardCandidate(baseCandidate, originalImageData)) {
+      const nearbyStandardCandidate = searchNearbyStandardCandidate({
+        originalImageData,
+        candidateSeeds: standardCandidateSeeds,
+        adaptiveConfidence
+      });
+      observeCandidates(nearbyStandardCandidate);
+      if (nearbyStandardCandidate) {
+        ({
+          baseCandidate,
+          baseDecisionTier
+        } = promoteBaseCandidate(baseCandidate, baseDecisionTier, nearbyStandardCandidate));
+      }
+    }
+    if (allowAutomaticSearch && !baseCandidate) {
+      const bestEffortCandidate = searchBestEffortCurrentLargeMarginWeakAlpha({
+        originalImageData,
+        standardTrials,
+        alphaGainCandidates
+      });
+      observeCandidates(bestEffortCandidate);
+      if (bestEffortCandidate) {
+        baseCandidate = bestEffortCandidate;
+        baseDecisionTier = "direct-match";
+      }
+    }
+    if (!allowAutomaticSearch && !baseCandidate) {
+      const bestEffortCandidate = searchBestEffortCurrentLargeMarginWeakAlpha({
+        originalImageData,
+        standardTrials,
+        alphaGainCandidates
+      });
+      observeCandidates(bestEffortCandidate);
+      if (bestEffortCandidate) {
+        baseCandidate = bestEffortCandidate;
+        baseDecisionTier = "direct-match";
+      } else {
+        const fixedCoreLocalGeometryCandidate = searchFixedCoreLocalGeometryCandidate({
+          originalImageData,
+          candidateSeeds: standardCandidateSeeds,
+          resolveAlphaMap,
+          alphaGainCandidates
+        });
+        observeCandidates(fixedCoreLocalGeometryCandidate);
+        if (fixedCoreLocalGeometryCandidate) {
+          baseCandidate = fixedCoreLocalGeometryCandidate;
+          baseDecisionTier = "direct-match";
+        }
+      }
+    }
+    if (!baseCandidate) {
+      if (hasReliableStandardMatch && standardTrial?.accepted) {
+        baseCandidate = standardTrial;
+        baseDecisionTier = "direct-match";
+      } else if (hasReliableAdaptiveWatermarkSignal(adaptive) && adaptiveTrial) {
+        baseCandidate = adaptiveTrial;
+        baseDecisionTier = "direct-match";
+      }
+    }
+    if (!baseCandidate) {
+      const validatedCandidate = pickBestValidatedCandidate([
+        ...standardTrials,
+        adaptiveTrial
+      ]);
+      if (!validatedCandidate) {
+        const aggressiveLocatedCandidate = allowAggressiveStrongLocated ? pickAggressiveStrongLocatedCandidate([
+          ...standardTrials,
+          adaptiveTrial
+        ]) : null;
+        if (aggressiveLocatedCandidate) {
+          baseCandidate = {
+            ...aggressiveLocatedCandidate,
+            source: `${aggressiveLocatedCandidate.source}+aggressive-located`
+          };
+          observeCandidates(baseCandidate);
+          baseDecisionTier = "direct-match";
+        } else {
+          const fixedCoreLocalGeometryCandidate = !allowAutomaticSearch ? searchFixedCoreLocalGeometryCandidate({
+            originalImageData,
+            candidateSeeds: standardCandidateSeeds,
+            resolveAlphaMap,
+            alphaGainCandidates
+          }) : null;
+          if (fixedCoreLocalGeometryCandidate) {
+            observeCandidates(fixedCoreLocalGeometryCandidate);
+            baseCandidate = fixedCoreLocalGeometryCandidate;
+            baseDecisionTier = "direct-match";
+          } else {
+            return {
+              selectedTrial: null,
+              candidatePool,
+              source: "skipped",
+              alphaMap: fallbackAlphaMap,
+              position,
+              config,
+              adaptiveConfidence,
+              standardSpatialScore,
+              standardGradientScore,
+              templateWarp: null,
+              alphaGain: 1,
+              decisionTier: "insufficient"
+            };
+          }
+        }
+      } else {
+        baseCandidate = {
+          ...validatedCandidate,
+          source: `${validatedCandidate.source}+validated`
+        };
+        observeCandidates(baseCandidate);
+        baseDecisionTier = "validated-match";
+      }
+    }
+    if (shouldRevertLocalShiftToStandardTrial(baseCandidate, standardTrial)) {
+      baseCandidate = standardTrial;
+      baseDecisionTier = hasReliableStandardMatch ? "direct-match" : "validated-match";
+    }
+    if (!allowAutomaticSearch && isCurrentLargeMarginCatalogCandidate(baseCandidate)) {
+      const initialCanonical96Candidate = config?.logoSize === 96 && config.marginRight === 64 && config.marginBottom === 64 && fallbackAlphaMap ? evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: fallbackAlphaMap,
+        position,
+        source: "standard",
+        config,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+        alphaGain: 1,
+        provenance: null,
+        includeImageData: false
+      }) : null;
+      observeCandidates(initialCanonical96Candidate);
+      const fixedCoreCanonical96Candidate = searchFixedCoreStrongStandardAlphaGain({
+        originalImageData,
+        baseCandidate: initialCanonical96Candidate,
+        alphaGainCandidates
+      });
+      observeCandidates(fixedCoreCanonical96Candidate);
+      if (shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(fixedCoreCanonical96Candidate, baseCandidate)) {
+        baseCandidate = fixedCoreCanonical96Candidate;
+        baseDecisionTier = "direct-match";
+      }
+    }
+    if (!allowAutomaticSearch && !isStrictFixedCoreCandidate(baseCandidate)) {
+      const fixedCoreStrongAlphaGainCandidate = searchFixedCoreStrongStandardAlphaGain({
+        originalImageData,
+        baseCandidate,
+        alphaGainCandidates
+      });
+      observeCandidates(fixedCoreStrongAlphaGainCandidate);
+      if (fixedCoreStrongAlphaGainCandidate) {
+        baseCandidate = fixedCoreStrongAlphaGainCandidate;
+        baseDecisionTier = "direct-match";
+      } else {
+        const bestEffortCandidate = searchBestEffortCurrentLargeMarginWeakAlpha({
+          originalImageData,
+          standardTrials,
+          alphaGainCandidates
+        });
+        observeCandidates(bestEffortCandidate);
+        if (bestEffortCandidate) {
+          baseCandidate = bestEffortCandidate;
+          baseDecisionTier = "direct-match";
+        } else {
+          const fixedCoreLocalGeometryCandidate = searchFixedCoreLocalGeometryCandidate({
+            originalImageData,
+            candidateSeeds: standardCandidateSeeds,
+            resolveAlphaMap,
+            alphaGainCandidates
+          });
+          observeCandidates(fixedCoreLocalGeometryCandidate);
+          baseCandidate = fixedCoreLocalGeometryCandidate;
+          baseDecisionTier = fixedCoreLocalGeometryCandidate ? "direct-match" : "insufficient";
+        }
+      }
+    }
+    if (!baseCandidate) {
+      const validatedCandidate = allowAutomaticSearch ? pickBestValidatedCandidate([
+        ...standardTrials,
+        adaptiveTrial
+      ]) : null;
+      if (!validatedCandidate) {
+        const aggressiveLocatedCandidate = allowAggressiveStrongLocated ? pickAggressiveStrongLocatedCandidate([
+          ...standardTrials,
+          adaptiveTrial
+        ]) : null;
+        if (aggressiveLocatedCandidate) {
+          baseCandidate = {
+            ...aggressiveLocatedCandidate,
+            source: `${aggressiveLocatedCandidate.source}+aggressive-located`
+          };
+          observeCandidates(baseCandidate);
+          baseDecisionTier = "direct-match";
+        } else {
+          const fixedCoreLocalGeometryCandidate = !allowAutomaticSearch ? searchFixedCoreLocalGeometryCandidate({
+            originalImageData,
+            candidateSeeds: standardCandidateSeeds,
+            resolveAlphaMap,
+            alphaGainCandidates
+          }) : null;
+          if (fixedCoreLocalGeometryCandidate) {
+            observeCandidates(fixedCoreLocalGeometryCandidate);
+            baseCandidate = fixedCoreLocalGeometryCandidate;
+            baseDecisionTier = "direct-match";
+          } else {
+            return {
+              selectedTrial: null,
+              candidatePool,
+              source: "skipped",
+              alphaMap: fallbackAlphaMap,
+              position,
+              config,
+              adaptiveConfidence,
+              standardSpatialScore,
+              standardGradientScore,
+              templateWarp: null,
+              alphaGain: 1,
+              decisionTier: "insufficient"
+            };
+          }
+        }
+      } else {
+        baseCandidate = {
+          ...validatedCandidate,
+          source: `${validatedCandidate.source}+validated`
+        };
+        observeCandidates(baseCandidate);
+        baseDecisionTier = "validated-match";
+      }
+    }
+    if (isCurrentLargeMarginCatalogCandidate(baseCandidate)) {
+      const initialCanonical96Seed = config?.logoSize === 96 && config.marginRight === 64 && config.marginBottom === 64 && fallbackAlphaMap ? evaluateRestorationCandidate({
+        originalImageData,
+        alphaMap: fallbackAlphaMap,
+        position,
+        source: "standard",
+        config,
+        baselineNearBlackRatio: calculateNearBlackRatio(originalImageData, position),
+        alphaGain: 1,
+        provenance: null,
+        includeImageData: false
+      }) : null;
+      observeCandidates(initialCanonical96Seed);
+      const rawCanonical96Seed = standardTrials.find((candidate) => isCanonicalDefault96Candidate(candidate)) ?? (isCanonicalDefault96Candidate(standardTrial) ? standardTrial : null) ?? standardTrials.find((candidate) => isDefault96GeometryCandidate(candidate)) ?? (isDefault96GeometryCandidate(standardTrial) ? standardTrial : null) ?? initialCanonical96Seed;
+      const canonical96Seed = rawCanonical96Seed && !isCanonicalDefault96Candidate(rawCanonical96Seed) ? {
+        ...rawCanonical96Seed,
+        source: "standard",
+        provenance: null
+      } : rawCanonical96Seed;
+      const strictCanonical96Candidate = isStrictFixedCoreCandidate(canonical96Seed) ? canonical96Seed : searchFixedCoreStrongStandardAlphaGain({
+        originalImageData,
+        baseCandidate: canonical96Seed,
+        alphaGainCandidates
+      });
+      observeCandidates(strictCanonical96Candidate);
+      if (shouldPreserveStrongCanonical96AgainstWeakCurrentLargeMargin(strictCanonical96Candidate, baseCandidate)) {
+        baseCandidate = strictCanonical96Candidate;
+        baseDecisionTier = "direct-match";
+      }
+    }
+    const {
+      selectedTrial,
+      source,
+      alphaMap,
+      position: refinedPosition,
+      config: refinedConfig,
+      templateWarp,
+      alphaGain,
+      decisionTier
+    } = refineSelectedAnchorCandidate({
+      originalImageData,
+      baseCandidate,
+      baseDecisionTier,
+      adaptiveConfidence,
+      alphaGainCandidates,
+      allowTemplateWarp: allowAutomaticSearch
+    });
+    const materializedSelectedTrial = ensureCandidateImageData(selectedTrial, originalImageData);
+    observeCandidates(materializedSelectedTrial);
+    return {
+      selectedTrial: materializedSelectedTrial,
+      candidatePool,
+      source,
+      alphaMap,
+      position: refinedPosition,
+      config: refinedConfig,
+      adaptiveConfidence,
+      standardSpatialScore,
+      standardGradientScore,
+      templateWarp,
+      alphaGain,
+      decisionTier
+    };
+  }
+
+  // src/core/previewAlphaCalibration.js
+  function clamp01(value) {
+    if (!Number.isFinite(value)) return 0;
+    if (value <= 0) return 0;
+    if (value >= 1) return 1;
+    return value;
+  }
+  function blurAlphaMap(alphaMap, size, radius = 0) {
+    const blurPasses = Number.isInteger(radius) ? radius : Math.max(0, Math.round(radius || 0));
+    if (blurPasses <= 0 || size <= 0) {
+      return new Float32Array(alphaMap);
+    }
+    let current = new Float32Array(alphaMap);
+    for (let pass = 0; pass < blurPasses; pass++) {
+      const next = new Float32Array(current.length);
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          let sum = 0;
+          let weight = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const xx = x + dx;
+              const yy = y + dy;
+              if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue;
+              const w = dx === 0 && dy === 0 ? 4 : dx === 0 || dy === 0 ? 2 : 1;
+              sum += current[yy * size + xx] * w;
+              weight += w;
+            }
+          }
+          next[y * size + x] = clamp01(sum / Math.max(1, weight));
+        }
+      }
+      current = next;
+    }
+    return current;
+  }
+  function cloneImageData2(imageData) {
+    return {
+      width: imageData.width,
+      height: imageData.height,
+      data: new Uint8ClampedArray(imageData.data)
+    };
+  }
+  function clampChannel(value) {
+    if (!Number.isFinite(value)) return 0;
+    if (value <= 0) return 0;
+    if (value >= 255) return 255;
+    return Math.round(value);
+  }
+  function averageStripColor(imageData, {
+    xFrom,
+    xTo,
+    yFrom,
+    yTo
+  }) {
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let count = 0;
+    const minX = Math.max(0, Math.min(xFrom, xTo));
+    const maxX = Math.min(imageData.width - 1, Math.max(xFrom, xTo));
+    const minY = Math.max(0, Math.min(yFrom, yTo));
+    const maxY = Math.min(imageData.height - 1, Math.max(yFrom, yTo));
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const idx = (y * imageData.width + x) * 4;
+        sumR += imageData.data[idx];
+        sumG += imageData.data[idx + 1];
+        sumB += imageData.data[idx + 2];
+        count++;
+      }
+    }
+    if (count <= 0) {
+      return [0, 0, 0];
+    }
+    return [sumR / count, sumG / count, sumB / count];
+  }
+  function lerpColor(left, right, t) {
+    return [
+      left[0] * (1 - t) + right[0] * t,
+      left[1] * (1 - t) + right[1] * t,
+      left[2] * (1 - t) + right[2] * t
+    ];
+  }
+  function averageSampleColor(imageData, samples) {
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let count = 0;
+    for (const [x, y] of samples) {
+      if (x < 0 || y < 0 || x >= imageData.width || y >= imageData.height) {
+        continue;
+      }
+      const idx = (y * imageData.width + x) * 4;
+      sumR += imageData.data[idx];
+      sumG += imageData.data[idx + 1];
+      sumB += imageData.data[idx + 2];
+      count++;
+    }
+    if (count <= 0) {
+      return [0, 0, 0];
+    }
+    return [sumR / count, sumG / count, sumB / count];
+  }
+  function measurePreviewBoundaryMetrics(candidateImageData, previewImageData, position) {
+    let rawTotal = 0;
+    let previewBoundaryTotal = 0;
+    let localContrastTotal = 0;
+    let count = 0;
+    const compareBoundaryPixel = (x, y, insideSamples, outsideSamples) => {
+      const idx = (y * candidateImageData.width + x) * 4;
+      const previewIdx = (y * previewImageData.width + x) * 4;
+      const inside = averageSampleColor(previewImageData, insideSamples);
+      const outside = averageSampleColor(previewImageData, outsideSamples);
+      for (let channel = 0; channel < 3; channel++) {
+        rawTotal += Math.abs(candidateImageData.data[idx + channel] - outside[channel]);
+        previewBoundaryTotal += Math.abs(previewImageData.data[previewIdx + channel] - outside[channel]);
+        localContrastTotal += Math.abs(inside[channel] - outside[channel]);
+        count++;
+      }
+    };
+    for (let col = 0; col < position.width; col++) {
+      const x = position.x + col;
+      compareBoundaryPixel(
+        x,
+        position.y,
+        [
+          [x - 1, position.y],
+          [x, position.y],
+          [x + 1, position.y]
+        ],
+        [
+          [x - 1, position.y - 1],
+          [x, position.y - 1],
+          [x + 1, position.y - 1]
+        ]
+      );
+      compareBoundaryPixel(
+        x,
+        position.y + position.height - 1,
+        [
+          [x - 1, position.y + position.height - 1],
+          [x, position.y + position.height - 1],
+          [x + 1, position.y + position.height - 1]
+        ],
+        [
+          [x - 1, position.y + position.height],
+          [x, position.y + position.height],
+          [x + 1, position.y + position.height]
+        ]
+      );
+    }
+    for (let row = 1; row < position.height - 1; row++) {
+      const y = position.y + row;
+      compareBoundaryPixel(
+        position.x,
+        y,
+        [
+          [position.x, y - 1],
+          [position.x, y],
+          [position.x, y + 1]
+        ],
+        [
+          [position.x - 1, y - 1],
+          [position.x - 1, y],
+          [position.x - 1, y + 1]
+        ]
+      );
+      compareBoundaryPixel(
+        position.x + position.width - 1,
+        y,
+        [
+          [position.x + position.width - 1, y - 1],
+          [position.x + position.width - 1, y],
+          [position.x + position.width - 1, y + 1]
+        ],
+        [
+          [position.x + position.width, y - 1],
+          [position.x + position.width, y],
+          [position.x + position.width, y + 1]
+        ]
+      );
+    }
+    const rawScore = count > 0 ? rawTotal / count : 0;
+    const previewBoundaryScore = count > 0 ? previewBoundaryTotal / count : 0;
+    const localContrastScore = count > 0 ? localContrastTotal / count : 0;
+    const normalizer = Math.max(1, previewBoundaryScore, localContrastScore);
+    return {
+      rawScore,
+      previewBoundaryScore,
+      localContrastScore,
+      normalizer,
+      normalizedScore: rawScore / normalizer
+    };
+  }
+  function buildPreviewNeighborhoodPrior({
+    previewImageData,
+    position,
+    radius = 6,
+    relaxationPasses = null
+  }) {
+    if (!previewImageData || !position) {
+      throw new TypeError("buildPreviewNeighborhoodPrior requires previewImageData and position");
+    }
+    const stripRadius = Math.max(1, Math.round(radius || 1));
+    const prior = cloneImageData2(previewImageData);
+    const leftBoundary = [];
+    const rightBoundary = [];
+    const topBoundary = [];
+    const bottomBoundary = [];
+    for (let row = 0; row < position.height; row++) {
+      const y = position.y + row;
+      leftBoundary.push(averageStripColor(previewImageData, {
+        xFrom: position.x - stripRadius,
+        xTo: position.x - 1,
+        yFrom: y - 1,
+        yTo: y + 1
+      }));
+      rightBoundary.push(averageStripColor(previewImageData, {
+        xFrom: position.x + position.width,
+        xTo: position.x + position.width + stripRadius - 1,
+        yFrom: y - 1,
+        yTo: y + 1
+      }));
+    }
+    for (let col = 0; col < position.width; col++) {
+      const x = position.x + col;
+      topBoundary.push(averageStripColor(previewImageData, {
+        xFrom: x - 1,
+        xTo: x + 1,
+        yFrom: position.y - stripRadius,
+        yTo: position.y - 1
+      }));
+      bottomBoundary.push(averageStripColor(previewImageData, {
+        xFrom: x - 1,
+        xTo: x + 1,
+        yFrom: position.y + position.height,
+        yTo: position.y + position.height + stripRadius - 1
+      }));
+    }
+    for (let row = 0; row < position.height; row++) {
+      const ty = position.height <= 1 ? 0.5 : row / (position.height - 1);
+      for (let col = 0; col < position.width; col++) {
+        const tx = position.width <= 1 ? 0.5 : col / (position.width - 1);
+        const horizontal = lerpColor(leftBoundary[row], rightBoundary[row], tx);
+        const vertical = lerpColor(topBoundary[col], bottomBoundary[col], ty);
+        const idx = ((position.y + row) * prior.width + (position.x + col)) * 4;
+        prior.data[idx] = clampChannel((horizontal[0] + vertical[0]) * 0.5);
+        prior.data[idx + 1] = clampChannel((horizontal[1] + vertical[1]) * 0.5);
+        prior.data[idx + 2] = clampChannel((horizontal[2] + vertical[2]) * 0.5);
+      }
+    }
+    if (position.width <= 1 || position.height <= 1) {
+      return prior;
+    }
+    const resolvedRelaxationPasses = Number.isInteger(relaxationPasses) ? Math.max(0, relaxationPasses) : Math.max(24, Math.round((position.width + position.height) * 2));
+    for (let pass = 0; pass < resolvedRelaxationPasses; pass++) {
+      for (let row = 0; row < position.height; row++) {
+        const y = position.y + row;
+        for (let col = 0; col < position.width; col++) {
+          const x = position.x + col;
+          const idx = (y * prior.width + x) * 4;
+          for (let channel = 0; channel < 3; channel++) {
+            let sum = 0;
+            let weight = 0;
+            const neighbors = [
+              [x - 1, y, 1],
+              [x + 1, y, 1],
+              [x, y - 1, 1],
+              [x, y + 1, 1],
+              [x - 1, y - 1, 0.5],
+              [x + 1, y - 1, 0.5],
+              [x - 1, y + 1, 0.5],
+              [x + 1, y + 1, 0.5]
+            ];
+            for (const [neighborX, neighborY, neighborWeight] of neighbors) {
+              if (neighborX < 0 || neighborY < 0 || neighborX >= prior.width || neighborY >= prior.height) {
+                continue;
+              }
+              const neighborIdx = (neighborY * prior.width + neighborX) * 4;
+              sum += prior.data[neighborIdx + channel] * neighborWeight;
+              weight += neighborWeight;
+            }
+            prior.data[idx + channel] = clampChannel(sum / Math.max(1, weight));
+          }
+        }
+      }
+    }
+    return prior;
+  }
+
+  // src/core/watermarkConfig.js
+  function detectWatermarkConfig(imageWidth, imageHeight) {
+    const officialConfig = resolveOfficialGeminiWatermarkConfig(imageWidth, imageHeight);
+    if (officialConfig) {
+      return { ...officialConfig };
+    }
+    if (imageWidth > 1024 && imageHeight > 1024) {
+      return {
+        logoSize: 96,
+        marginRight: 64,
+        marginBottom: 64
+      };
+    }
+    return {
+      logoSize: 48,
+      marginRight: 32,
+      marginBottom: 32
+    };
+  }
+  function calculateWatermarkPosition(imageWidth, imageHeight, config) {
+    const { logoSize, marginRight, marginBottom } = config;
+    return {
+      x: imageWidth - marginRight - logoSize,
+      y: imageHeight - marginBottom - logoSize,
+      width: logoSize,
+      height: logoSize
+    };
+  }
+  function getStandardConfig(size) {
+    return size === 96 ? { logoSize: 96, marginRight: 64, marginBottom: 64 } : { logoSize: 48, marginRight: 32, marginBottom: 32 };
+  }
+  function getAlphaMapForConfig(config, alpha48, alpha96) {
+    if (!config) return null;
+    if (config.logoSize === 48) return alpha48;
+    if (config.logoSize === 96) return alpha96;
+    return alpha96 ? interpolateAlphaMap(alpha96, 96, config.logoSize) : null;
+  }
+  function isRegionInsideImage(imageData, region) {
+    return region.x >= 0 && region.y >= 0 && region.x + region.width <= imageData.width && region.y + region.height <= imageData.height;
+  }
+  function resolveInitialStandardConfig({
+    imageData,
+    defaultConfig,
+    alpha48,
+    alpha96,
+    minSwitchScore = 0.25,
+    minScoreDelta = 0.08
+  }) {
+    if (!imageData || !defaultConfig || !alpha48 || !alpha96) return defaultConfig;
+    const fallbackConfig = getStandardConfig(48);
+    const primaryConfig = defaultConfig.logoSize === 96 ? getStandardConfig(96) : fallbackConfig;
+    const alternateConfig = defaultConfig.logoSize === 96 ? fallbackConfig : getStandardConfig(96);
+    const candidateConfigs = [primaryConfig, alternateConfig];
+    for (const officialConfig of resolveOfficialGeminiSearchConfigs(imageData.width, imageData.height, {
+      limit: 1
+    })) {
+      if (!candidateConfigs.some((candidate) => candidate.logoSize === officialConfig.logoSize && candidate.marginRight === officialConfig.marginRight && candidate.marginBottom === officialConfig.marginBottom)) {
+        candidateConfigs.push(officialConfig);
+      }
+    }
+    let bestConfig = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const candidateConfig of candidateConfigs) {
+      const candidateRegion = calculateWatermarkPosition(
+        imageData.width,
+        imageData.height,
+        candidateConfig
+      );
+      if (!isRegionInsideImage(imageData, candidateRegion)) continue;
+      const alphaMap = getAlphaMapForConfig(candidateConfig, alpha48, alpha96);
+      if (!alphaMap) continue;
+      const candidateScore = computeRegionSpatialCorrelation({
+        imageData,
+        alphaMap,
+        region: {
+          x: candidateRegion.x,
+          y: candidateRegion.y,
+          size: candidateRegion.width
+        }
+      });
+      if (!bestConfig) {
+        bestConfig = candidateConfig;
+        bestScore = candidateScore;
+        continue;
+      }
+      if (candidateScore >= minSwitchScore && candidateScore > bestScore + minScoreDelta) {
+        bestConfig = candidateConfig;
+        bestScore = candidateScore;
+      }
+    }
+    return bestConfig ?? defaultConfig;
+  }
+
+  // src/core/pipelineInitialContext.js
+  function createInitialPipelineContext({
+    imageData,
+    options = {},
+    cloneImageData: cloneImageData4,
+    alphaGainCandidates = [],
+    alphaPriorityGains = [],
+    detectConfig = detectWatermarkConfig,
+    resolveConfig = resolveInitialStandardConfig,
+    calculatePosition = calculateWatermarkPosition
+  } = {}) {
+    const adaptiveMode = options.adaptiveMode || "auto";
+    const allowAdaptiveSearch = adaptiveMode !== "never" && adaptiveMode !== "off";
+    const originalImageData = cloneImageData4(imageData);
+    const { alpha48, alpha96 } = options;
+    if (!alpha48 || !alpha96) {
+      throw new Error("processWatermarkImageData requires alpha48 and alpha96");
+    }
+    const defaultConfig = detectConfig(originalImageData.width, originalImageData.height);
+    const resolvedConfig = resolveConfig({
+      imageData: originalImageData,
+      defaultConfig,
+      alpha48,
+      alpha96
+    });
+    const position = calculatePosition(
+      originalImageData.width,
+      originalImageData.height,
+      resolvedConfig
+    );
+    return {
+      originalImageData,
+      alpha48,
+      alpha96,
+      alphaGainCandidates,
+      alphaPriorityGains,
+      allowAdaptiveSearch,
+      defaultConfig,
+      resolvedConfig,
+      position
+    };
+  }
+
+  // src/core/pipelineCandidatePool.js
+  var FAMILY_ORDER = [
+    "standard",
+    "geometry",
+    "polarity",
+    "alpha",
+    "aggressive"
+  ];
+  var DEFAULT_RANKING_KEY = [99, 99, 99, 99, 99, 99];
+  var NEAR_EQUIVALENT_PIXEL_TOLERANCE = 1;
+  var NEAR_EQUIVALENT_ALPHA_GAIN_TOLERANCE = 0.05;
+  function classifyCandidateFamily(trial) {
+    const source = String(trial?.source ?? "");
+    const provenance = trial?.provenance ?? {};
+    if (provenance.topNConservative === true) return "alpha";
+    if (source.includes("aggressive-located")) return "aggressive";
+    if (provenance.outlineDark === true || provenance.outlineLight === true || provenance.darkPolarity === true) {
+      return "polarity";
+    }
+    if (provenance.adaptive === true || provenance.localShift === true || provenance.sizeJitter === true || provenance.previewAnchor === true) {
+      return "geometry";
+    }
+    if (Number(trial?.alphaGain ?? 1) !== 1 || String(trial?.config?.alphaVariant ?? "").length > 0) {
+      return "alpha";
+    }
+    return "standard";
+  }
+  function createCandidateHypothesis(trial, index = 0) {
+    const position = trial?.position;
+    const config = trial?.config;
+    if (!trial || !position || !config || ![
+      position.x,
+      position.y,
+      position.width,
+      position.height
+    ].every(Number.isFinite)) {
+      return null;
+    }
+    const alphaGain = Number.isFinite(trial.alphaGain) ? trial.alphaGain : 1;
+    return {
+      id: `candidate-${index}-${position.x}-${position.y}-${position.width}-${alphaGain}`,
+      family: classifyCandidateFamily(trial),
+      trial,
+      config,
+      position,
+      alphaGain,
+      alphaMap: trial.alphaMap ?? null,
+      alphaProfile: config.alphaVariant ?? "default",
+      polarity: trial.provenance?.darkPolarity === true ? "dark" : "light",
+      rankingKey: Array.isArray(trial.rankingKey) ? trial.rankingKey : DEFAULT_RANKING_KEY
+    };
+  }
+  function areNearEquivalent(left, right) {
+    return left.alphaProfile === right.alphaProfile && left.polarity === right.polarity && left.alphaMap === right.alphaMap && Math.abs(left.alphaGain - right.alphaGain) <= NEAR_EQUIVALENT_ALPHA_GAIN_TOLERANCE && Math.abs(left.position.x - right.position.x) <= NEAR_EQUIVALENT_PIXEL_TOLERANCE && Math.abs(left.position.y - right.position.y) <= NEAR_EQUIVALENT_PIXEL_TOLERANCE && Math.abs(left.position.width - right.position.width) <= NEAR_EQUIVALENT_PIXEL_TOLERANCE && Math.abs(left.position.height - right.position.height) <= NEAR_EQUIVALENT_PIXEL_TOLERANCE;
+  }
+  function dedupeCandidateHypotheses(hypotheses = []) {
+    const sorted = hypotheses.filter(Boolean).sort((left, right) => compareRankingKey(left.rankingKey, right.rankingKey));
+    const deduped = [];
+    for (const candidate of sorted) {
+      if (!deduped.some((current) => areNearEquivalent(candidate, current))) {
+        deduped.push(candidate);
+      }
+    }
+    return deduped;
+  }
+  function selectDiverseCandidateHypotheses(trials = [], { limit = 5 } = {}) {
+    const resolvedLimit = Number.isInteger(limit) && limit > 0 ? limit : 5;
+    const hypotheses = dedupeCandidateHypotheses(
+      trials.map((trial, index) => createCandidateHypothesis(trial, index)).filter(Boolean)
+    );
+    const selected = [];
+    for (const family of FAMILY_ORDER) {
+      const candidate = hypotheses.find((item) => item.family === family && !selected.includes(item));
+      if (candidate) selected.push(candidate);
+      if (selected.length === resolvedLimit) return selected;
+    }
+    for (const candidate of hypotheses) {
+      if (!selected.includes(candidate)) selected.push(candidate);
+      if (selected.length === resolvedLimit) break;
+    }
+    return selected;
+  }
+
+  // src/core/outputResidualLocalization.js
+  function assertInputs(imageData, alphaMap, position, decoyShifts) {
+    if (!imageData || !Number.isInteger(imageData.width) || !Number.isInteger(imageData.height) || !imageData.data || imageData.data.length !== imageData.width * imageData.height * 4) {
+      throw new TypeError("imageData must be valid RGBA ImageData-like data");
+    }
+    if (!position || !Number.isInteger(position.x) || !Number.isInteger(position.y) || !Number.isInteger(position.width) || !Number.isInteger(position.height) || position.width <= 2 || position.height !== position.width || position.x < 0 || position.y < 0 || position.x + position.width > imageData.width || position.y + position.height > imageData.height) {
+      throw new RangeError("position must be a square inside imageData");
+    }
+    if (!alphaMap || alphaMap.length !== position.width * position.height) {
+      throw new RangeError(
+        "alphaMap length must match the square position"
+      );
+    }
+    if (!Array.isArray(decoyShifts) || decoyShifts.length === 0) {
+      throw new TypeError("decoyShifts must be a non-empty array");
+    }
+  }
+  function shiftAlphaMap(alphaMap, size, shiftX, shiftY) {
+    const shifted = new Float64Array(alphaMap.length);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const sourceX = x - shiftX;
+        const sourceY = y - shiftY;
+        if (sourceX >= 0 && sourceY >= 0 && sourceX < size && sourceY < size) {
+          shifted[y * size + x] = alphaMap[sourceY * size + sourceX];
+        }
+      }
+    }
+    return shifted;
+  }
+  function median2(values) {
+    const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+    if (sorted.length === 0) return null;
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+  }
+  function summarizeLocalization(target, decoys) {
+    const decoyMedian = median2(decoys);
+    const hasEnergy = Math.max(target, ...decoys) > Number.EPSILON;
+    return {
+      target,
+      decoyMedian,
+      prominence: decoyMedian === null ? null : target - decoyMedian,
+      ratio: target > Number.EPSILON && decoyMedian !== null && decoyMedian > Number.EPSILON ? target / decoyMedian : null,
+      percentile: hasEnergy ? decoys.filter((value) => value <= target).length / decoys.length : null
+    };
+  }
+  function summarizeLocalDriftBank(target, decoys, decoyShifts) {
+    const local = [{ value: target, shift: [0, 0] }];
+    const farControls = [];
+    for (const [index, shift] of decoyShifts.entries()) {
+      const value = decoys[index];
+      if (Math.hypot(...shift) <= 4) {
+        local.push({ value, shift });
+      } else {
+        farControls.push(value);
+      }
+    }
+    const winner = local.reduce(
+      (best, candidate) => candidate.value > best.value ? candidate : best,
+      local[0]
+    );
+    const farMaximum = farControls.length > 0 ? Math.max(...farControls) : null;
+    return {
+      localPeak: winner.value,
+      localWinnerShift: winner.shift,
+      farMaximum,
+      localProminence: farMaximum === null ? null : winner.value - farMaximum,
+      localRatio: winner.value > Number.EPSILON && farMaximum !== null && farMaximum > Number.EPSILON ? winner.value / farMaximum : null
+    };
+  }
+  function luminanceAt(imageData, x, y) {
+    const offset = (y * imageData.width + x) * 4;
+    return imageData.data[offset] * 0.2126 + imageData.data[offset + 1] * 0.7152 + imageData.data[offset + 2] * 0.0722;
+  }
+  function buildImageGradientField(imageData, position) {
+    const gradientX = new Float64Array(position.width * position.height);
+    const gradientY = new Float64Array(position.width * position.height);
+    for (let localY = 1; localY < position.height - 1; localY++) {
+      for (let localX = 1; localX < position.width - 1; localX++) {
+        const index = localY * position.width + localX;
+        const x = position.x + localX;
+        const y = position.y + localY;
+        gradientX[index] = (luminanceAt(imageData, x + 1, y) - luminanceAt(imageData, x - 1, y)) / 2;
+        gradientY[index] = (luminanceAt(imageData, x, y + 1) - luminanceAt(imageData, x, y - 1)) / 2;
+      }
+    }
+    return { gradientX, gradientY };
+  }
+  function buildAlphaEdgeSamples(alphaMap, position) {
+    const samples = [];
+    for (let localY = 1; localY < position.height - 1; localY++) {
+      for (let localX = 1; localX < position.width - 1; localX++) {
+        const index = localY * position.width + localX;
+        const gradientX = (alphaMap[index + 1] - alphaMap[index - 1]) / 2;
+        const gradientY = (alphaMap[index + position.width] - alphaMap[index - position.width]) / 2;
+        const magnitude = Math.hypot(gradientX, gradientY);
+        if (magnitude > Number.EPSILON) {
+          samples.push({
+            localX,
+            localY,
+            gradientX,
+            gradientY,
+            magnitude
+          });
+        }
+      }
+    }
+    return samples;
+  }
+  function measureTwoSidedAlphaEdgeStrength({
+    imageGradientField,
+    alphaEdgeSamples,
+    position,
+    shiftX = 0,
+    shiftY = 0
+  }) {
+    let weightedStrength = 0;
+    let totalWeight = 0;
+    for (const sample2 of alphaEdgeSamples) {
+      const localX = sample2.localX + shiftX;
+      const localY = sample2.localY + shiftY;
+      if (localX <= 0 || localY <= 0 || localX >= position.width - 1 || localY >= position.height - 1) {
+        continue;
+      }
+      const index = localY * position.width + localX;
+      const normalStrength = Math.abs(
+        imageGradientField.gradientX[index] * sample2.gradientX + imageGradientField.gradientY[index] * sample2.gradientY
+      ) / sample2.magnitude;
+      weightedStrength += normalStrength * sample2.magnitude;
+      totalWeight += sample2.magnitude;
+    }
+    return totalWeight > Number.EPSILON ? weightedStrength / totalWeight : 0;
+  }
+  function measureOutputResidualLocalization({
+    imageData,
+    alphaMap,
+    position,
+    decoyShifts
+  }) {
+    assertInputs(imageData, alphaMap, position, decoyShifts);
+    const region = {
+      x: position.x,
+      y: position.y,
+      width: position.width,
+      height: position.height,
+      size: position.width
+    };
+    const spatialSignedTarget = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap,
+      region
+    });
+    const gradientSignedTarget = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap,
+      region
+    });
+    const spatialDecoys = [];
+    const gradientDecoys = [];
+    const twoSidedEdgeDecoys = [];
+    const imageGradientField = buildImageGradientField(
+      imageData,
+      position
+    );
+    const alphaEdgeSamples = buildAlphaEdgeSamples(alphaMap, position);
+    const twoSidedEdgeTarget = measureTwoSidedAlphaEdgeStrength({
+      imageGradientField,
+      alphaEdgeSamples,
+      position
+    });
+    for (const [shiftX, shiftY] of decoyShifts) {
+      const shiftedAlpha = shiftAlphaMap(
+        alphaMap,
+        position.width,
+        shiftX,
+        shiftY
+      );
+      spatialDecoys.push(
+        Math.abs(
+          computeRegionSpatialCorrelation({
+            imageData,
+            alphaMap: shiftedAlpha,
+            region
+          })
+        )
+      );
+      gradientDecoys.push(
+        Math.max(
+          0,
+          computeRegionGradientCorrelation({
+            imageData,
+            alphaMap: shiftedAlpha,
+            region
+          })
+        )
+      );
+      twoSidedEdgeDecoys.push(
+        measureTwoSidedAlphaEdgeStrength({
+          imageGradientField,
+          alphaEdgeSamples,
+          position,
+          shiftX,
+          shiftY
+        })
+      );
+    }
+    const spatial = summarizeLocalization(
+      Math.abs(spatialSignedTarget),
+      spatialDecoys
+    );
+    const gradient = summarizeLocalization(
+      Math.max(0, gradientSignedTarget),
+      gradientDecoys
+    );
+    const twoSidedEdge = summarizeLocalization(
+      twoSidedEdgeTarget,
+      twoSidedEdgeDecoys
+    );
+    const spatialDriftBank = summarizeLocalDriftBank(
+      spatial.target,
+      spatialDecoys,
+      decoyShifts
+    );
+    const gradientDriftBank = summarizeLocalDriftBank(
+      gradient.target,
+      gradientDecoys,
+      decoyShifts
+    );
+    const twoSidedEdgeDriftBank = summarizeLocalDriftBank(
+      twoSidedEdge.target,
+      twoSidedEdgeDecoys,
+      decoyShifts
+    );
+    return {
+      spatialSignedTarget,
+      spatialTarget: spatial.target,
+      spatialDecoyMedian: spatial.decoyMedian,
+      spatialProminence: spatial.prominence,
+      spatialRatio: spatial.ratio,
+      spatialPercentile: spatial.percentile,
+      spatialDecoys,
+      spatialLocalPeak: spatialDriftBank.localPeak,
+      spatialLocalWinnerShift: spatialDriftBank.localWinnerShift,
+      spatialFarMaximum: spatialDriftBank.farMaximum,
+      spatialLocalProminence: spatialDriftBank.localProminence,
+      spatialLocalRatio: spatialDriftBank.localRatio,
+      gradientSignedTarget,
+      gradientTarget: gradient.target,
+      gradientDecoyMedian: gradient.decoyMedian,
+      gradientProminence: gradient.prominence,
+      gradientRatio: gradient.ratio,
+      gradientPercentile: gradient.percentile,
+      gradientDecoys,
+      gradientLocalPeak: gradientDriftBank.localPeak,
+      gradientLocalWinnerShift: gradientDriftBank.localWinnerShift,
+      gradientFarMaximum: gradientDriftBank.farMaximum,
+      gradientLocalProminence: gradientDriftBank.localProminence,
+      gradientLocalRatio: gradientDriftBank.localRatio,
+      twoSidedEdgeTarget: twoSidedEdge.target,
+      twoSidedEdgeDecoyMedian: twoSidedEdge.decoyMedian,
+      twoSidedEdgeProminence: twoSidedEdge.prominence,
+      twoSidedEdgeRatio: twoSidedEdge.ratio,
+      twoSidedEdgePercentile: twoSidedEdge.percentile,
+      twoSidedEdgeDecoys,
+      twoSidedEdgeLocalPeak: twoSidedEdgeDriftBank.localPeak,
+      twoSidedEdgeLocalWinnerShift: twoSidedEdgeDriftBank.localWinnerShift,
+      twoSidedEdgeFarMaximum: twoSidedEdgeDriftBank.farMaximum,
+      twoSidedEdgeLocalProminence: twoSidedEdgeDriftBank.localProminence,
+      twoSidedEdgeLocalRatio: twoSidedEdgeDriftBank.localRatio
+    };
+  }
+
+  // src/core/rowAlphaEvidence.js
+  function quantile(values, fraction) {
+    if (values.length === 0) return NaN;
+    const sorted = values.slice().sort((a, b) => a - b);
+    return sorted[Math.floor((sorted.length - 1) * fraction)];
+  }
+  function measureRowAlphaEvidence(image, position, alphaMap) {
+    if (!image?.data || !position || position.width !== 48 || position.height !== 48 || alphaMap?.length !== 48 * 48 || position.x < 20 || position.y < 0 || position.x + 68 > image.width || position.y + 48 > image.height) return null;
+    const gains = [];
+    const quadrants = [[], [], [], []];
+    const points = [];
+    let outsideError = 0;
+    let outsideCount = 0;
+    for (let row = 0; row < 48; row++) {
+      for (let channel = 0; channel < 3; channel++) {
+        const value = (column) => image.data[((position.y + row) * image.width + position.x + column) * 4 + channel];
+        const left = quantile(Array.from({ length: 12 }, (_, i) => value(-20 + i)), 0.5);
+        const right = quantile(Array.from({ length: 12 }, (_, i) => value(56 + i)), 0.5);
+        const background = (column) => left + (right - left) * (column + 14.5) / 76;
+        for (const column of [-8, -6, -4, -2, 48, 50, 52, 54]) {
+          outsideError += Math.abs(value(column) - background(column));
+          outsideCount++;
+        }
+        for (let column = 0; column < 48; column++) {
+          const alpha = alphaMap[row * 48 + column];
+          const reference = background(column);
+          if (alpha < 0.05 || reference > 220) continue;
+          const observed = value(column);
+          const gain2 = (observed - reference) / ((255 - reference) * alpha);
+          gains.push(gain2);
+          quadrants[(row >= 24 ? 2 : 0) + (column >= 24 ? 1 : 0)].push(gain2);
+          points.push({ observed, reference, alpha });
+        }
+      }
+    }
+    if (quadrants.some((values) => values.length < 24)) return null;
+    const gain = quantile(gains, 0.5);
+    return {
+      gain,
+      spread: quantile(gains, 0.75) - quantile(gains, 0.25),
+      quadrants: quadrants.map((values) => quantile(values, 0.5)),
+      outsideError: outsideError / outsideCount,
+      fitError: points.reduce((sum, point) => sum + Math.abs(
+        point.observed - point.reference - (255 - point.reference) * point.alpha * gain
+      ), 0) / points.length
+    };
+  }
+  function supportsRowAlphaGain(evidence, gain = 0.6) {
+    return evidence != null && Math.abs(evidence.gain - gain) <= 0.05 && evidence.spread <= 0.08 && evidence.outsideError <= 4 && evidence.fitError <= 3 && evidence.quadrants.every((value) => Math.abs(value - gain) <= 0.08);
+  }
+
+  // src/core/planeAlphaEvidence.js
+  function median3(values) {
+    return values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  }
+  function solvePlane(matrix, values) {
+    const rows = matrix.map((row, index) => [...row, values[index]]);
+    for (let column = 0; column < 3; column++) {
+      let pivot = column;
+      for (let row = column + 1; row < 3; row++) {
+        if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+      }
+      [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+      if (Math.abs(rows[column][column]) < 1e-10) return null;
+      const divisor = rows[column][column];
+      for (let index = column; index < 4; index++) rows[column][index] /= divisor;
+      for (let row = 0; row < 3; row++) {
+        if (row === column) continue;
+        const factor = rows[row][column];
+        for (let index = column; index < 4; index++) rows[row][index] -= factor * rows[column][index];
+      }
+    }
+    return rows.map((row) => row[3]);
+  }
+  function measurePlaneAlphaEvidence(image, position, alphaMap) {
+    const size = 96;
+    if (!image?.data || alphaMap?.length !== size * size || position?.width !== size || position.height !== size || position.x < 32 || position.y < 32 || position.x + size + 32 > image.width || position.y + size + 32 > image.height) return null;
+    const read = (x, y) => {
+      const offset = ((position.y + y) * image.width + position.x + x) * 4;
+      return [image.data[offset], image.data[offset + 1], image.data[offset + 2]];
+    };
+    const points = [];
+    for (let y = -32; y < size + 32; y += 2) {
+      for (let x = -32; x < size + 32; x += 2) {
+        if (x >= 0 && x < size && y >= 0 && y < size) continue;
+        points.push({ vector: [1, x / size, y / size], rgb: read(x, y) });
+      }
+    }
+    const training = points.filter((_, index) => index % 2 === 0);
+    const validation = points.filter((_, index) => index % 2 === 1);
+    let coefficients = [0, 1, 2].map((channel) => [median3(training.map((point) => point.rgb[channel])), 0, 0]);
+    const predict = (vector) => coefficients.map((row) => row.reduce((sum, value, index) => sum + value * vector[index], 0));
+    const error = (point) => {
+      const predicted = predict(point.vector);
+      return point.rgb.reduce((sum, value, channel) => sum + Math.abs(value - predicted[channel]), 0) / 3;
+    };
+    for (let iteration = 0; iteration < 8; iteration++) {
+      const errors = training.map(error);
+      const scale = Math.max(2, median3(errors) * 2);
+      const matrix = Array.from({ length: 3 }, () => [0, 0, 0]);
+      const values = Array.from({ length: 3 }, () => [0, 0, 0]);
+      for (let index = 0; index < training.length; index++) {
+        const point = training[index];
+        const weight = Math.min(1, scale / Math.max(errors[index], 1e-3)) ** 2;
+        for (let row = 0; row < 3; row++) {
+          for (let column = 0; column < 3; column++) matrix[row][column] += weight * point.vector[row] * point.vector[column];
+          for (let channel = 0; channel < 3; channel++) values[channel][row] += weight * point.vector[row] * point.rgb[channel];
+        }
+      }
+      coefficients = values.map((value) => solvePlane(matrix, value));
+      if (coefficients.some((row) => row === null)) return null;
+    }
+    const backgroundSupport = validation.filter((point) => error(point) < 3).length / validation.length;
+    if (backgroundSupport < 0.8) return null;
+    const trials = [];
+    for (let step = 0; step <= 24; step++) {
+      const gain = step * 0.05;
+      let matches = 0;
+      let total = 0;
+      let inlierError = 0;
+      const quadrants = Array.from({ length: 4 }, () => ({ matches: 0, total: 0 }));
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const alpha = alphaMap[y * size + x];
+          if (alpha < 0.1) continue;
+          const background = predict([1, x / size, y / size]);
+          if (Math.max(...background) > 245 || Math.min(...background) < 0) continue;
+          const difference = read(x, y).reduce((sum, value, channel) => sum + Math.abs(
+            value - ((1 - alpha * gain) * background[channel] + alpha * gain * 255)
+          ), 0) / 3;
+          const quadrant = quadrants[(y >= size / 2 ? 2 : 0) + (x >= size / 2 ? 1 : 0)];
+          total++;
+          quadrant.total++;
+          if (difference < 3) {
+            matches++;
+            quadrant.matches++;
+            inlierError += difference;
+          }
+        }
+      }
+      trials.push({
+        gain,
+        fraction: matches / total,
+        error: matches ? inlierError / matches : Infinity,
+        quadrants: quadrants.map((quadrant) => quadrant.matches / quadrant.total)
+      });
+    }
+    trials.sort((left, right) => right.fraction - left.fraction || left.error - right.error);
+    const best = trials[0];
+    const zero = trials.find((trial) => trial.gain === 0);
+    if (best.gain !== 1 || best.fraction < 0.55 || zero.fraction >= 0.1 || !best.quadrants.every((fraction) => fraction >= 0.3)) return null;
+    return {
+      backgroundSupport,
+      gain: best.gain,
+      matchFraction: best.fraction,
+      quadrantSupport: best.quadrants,
+      zeroGainSupport: zero.fraction
+    };
+  }
+
+  // src/core/pipelineInitialSelection.js
+  var MIN_VALIDATED_GRADIENT_IMPROVEMENT = 0.01;
+  var MIN_VALIDATED_SPATIAL_SCORE = 0.6;
+  var MIN_VALIDATED_SPATIAL_SUPPRESSION = 0.3;
+  var MIN_LOCALIZED_PEAK_PROMINENCE = 0.06;
+  var STRONG_GEOMETRY_MIN_SPATIAL_SCORE = 0.95;
+  var STRONG_GEOMETRY_MIN_GRADIENT_SCORE = 0.8;
+  var GEOMETRY_LOCK_MIN_SIZE_RATIO = 0.75;
+  var GEOMETRY_LOCK_MIN_OVERLAP_RATIO = 0.5;
+  var SMALL_V2_MIN_SPATIAL_SCORE = 0.16;
+  var SMALL_V2_MIN_SPATIAL_SUPPRESSION = 0.13;
+  var SMALL_V2_MAX_ABS_SPATIAL_RESIDUAL = 0.08;
+  var BEST_EFFORT_SPATIAL_COLLISION_MIN_SCORE = 0.3;
+  var BEST_EFFORT_NONLOCAL_GRADIENT_EXCEPTION_MIN_SCORE = 0.28;
+  var REPEATED_TEMPLATE_CONTROL_MIN_SPATIAL_SCORE = 0.3;
+  var LOCALIZATION_CONTROL_OFFSETS = [
+    [-1, 0],
+    [0, -1],
+    [-1, -1],
+    [-2, 0],
+    [0, -2],
+    [-2, -2]
+  ];
+  var REPEATED_TEMPLATE_CONTROL_SQUARES = [
+    [[-1, 0], [0, -1], [-1, -1]],
+    [[-2, 0], [0, -2], [-2, -2]]
+  ];
+  var CONFIRMED_V2_MEDIUM_IMAGE_WIDTH = 768;
+  var CONFIRMED_V2_MEDIUM_IMAGE_HEIGHT = 1376;
+  var CONFIRMED_V2_MEDIUM_LOGO_SIZE = 48;
+  var CONFIRMED_V2_MEDIUM_MARGIN = 73;
+  var CONFIRMED_V2_MEDIUM_MIN_RESCUE_SPATIAL = 0.4;
+  var CONFIRMED_V2_MEDIUM_MIN_RESCUE_GRADIENT = 0.5;
+  var CONFIRMED_V2_SMALL_PRIOR_MIN_SPATIAL = 0.3;
+  var EXACT_48_R96_SOURCE_WITNESS_MIN_PRIMARY = 0.36;
+  var EXACT_48_R96_SOURCE_WITNESS_MIN_EDGE_PROMINENCE = 2.5;
+  var EXACT_48_R96_SOURCE_WITNESS_MIN_GRADIENT_PERCENTILE = 0.9;
+  var EXACT_48_R96_SOURCE_WITNESS_GAIN = 0.6;
+  var EXACT_48_R96_SOURCE_WITNESS_REASON = "exact-48-r96-source-witness";
+  var EXACT_48_R96_SOURCE_WITNESS_DECOY_SHIFTS = [
+    [-12, 0],
+    [-8, 0],
+    [-4, 0],
+    [4, 0],
+    [8, 0],
+    [12, 0],
+    [0, -12],
+    [0, -8],
+    [0, -4],
+    [0, 4],
+    [0, 8],
+    [0, 12],
+    [-8, -8],
+    [-4, -4],
+    [4, 4],
+    [8, 8],
+    [-8, 8],
+    [-4, 4],
+    [4, -4],
+    [8, -8],
+    [-12, -6],
+    [-6, -12],
+    [6, 12],
+    [12, 6]
+  ];
+  var EXACT_96_R192_SOURCE_WITNESS_MIN_GRADIENT = 0.02;
+  var EXACT_96_R192_SOURCE_WITNESS_MIN_EDGE_PROMINENCE = 0.2;
+  var EXACT_96_R192_SOURCE_WITNESS_MIN_EDGE_PERCENTILE = 0.5;
+  var EXACT_96_R192_SOURCE_WITNESS_MIN_INVERSE_SPATIAL = 0.1;
+  var EXACT_96_R192_SOURCE_WITNESS_MIN_INVERSE_SPATIAL_PERCENTILE = 0.5;
+  var EXACT_96_R192_SOURCE_WITNESS_GAIN = 0.45;
+  var EXACT_96_R192_SOURCE_WITNESS_REASON = "exact-96-r192-source-witness";
+  var EXACT_96_R192_SOURCE_WITNESS_DECOY_SHIFTS = [
+    [-24, 0],
+    [-16, 0],
+    [-8, 0],
+    [8, 0],
+    [16, 0],
+    [24, 0],
+    [0, -24],
+    [0, -16],
+    [0, -8],
+    [0, 8],
+    [0, 16],
+    [0, 24],
+    [-16, -16],
+    [-8, -8],
+    [8, 8],
+    [16, 16],
+    [-16, 16],
+    [-8, 8],
+    [8, -8],
+    [16, -16],
+    [-24, -12],
+    [-12, -24],
+    [12, 24],
+    [24, 12]
+  ];
+  function isConfirmedV2SmallSelection(trial) {
+    return trial?.config?.logoSize === 36 && trial.config.marginRight === 96 && trial.config.marginBottom === 96 && Number(trial.originalSpatialScore) >= CONFIRMED_V2_SMALL_PRIOR_MIN_SPATIAL && (trial.config.alphaVariant === "v2" || trial.provenance?.alphaVariant === "v2");
+  }
+  function createConfirmedV2MediumRescueTrial({
+    originalImageData,
+    getAlphaMap,
+    fixedSelection,
+    automaticSelection
+  }) {
+    if (originalImageData?.width !== CONFIRMED_V2_MEDIUM_IMAGE_WIDTH || originalImageData?.height !== CONFIRMED_V2_MEDIUM_IMAGE_HEIGHT || typeof getAlphaMap !== "function") {
+      return null;
+    }
+    const fixedTrial = fixedSelection?.selectedTrial;
+    const automaticTrial = automaticSelection?.selectedTrial;
+    const hasV2SmallPrior = isConfirmedV2SmallSelection(fixedTrial) || isConfirmedV2SmallSelection(automaticTrial);
+    const alpha36V2 = getAlphaMap("36-v2");
+    if (!alpha36V2 || alpha36V2.length !== 36 * 36) return null;
+    const alphaMap = interpolateAlphaMap(
+      alpha36V2,
+      36,
+      CONFIRMED_V2_MEDIUM_LOGO_SIZE
+    );
+    const config = {
+      logoSize: CONFIRMED_V2_MEDIUM_LOGO_SIZE,
+      marginRight: CONFIRMED_V2_MEDIUM_MARGIN,
+      marginBottom: CONFIRMED_V2_MEDIUM_MARGIN,
+      alphaVariant: "v2"
+    };
+    const position = {
+      x: originalImageData.width - config.marginRight - config.logoSize,
+      y: originalImageData.height - config.marginBottom - config.logoSize,
+      width: config.logoSize,
+      height: config.logoSize
+    };
+    const trial = evaluateRestorationCandidate({
+      originalImageData,
+      alphaMap,
+      position,
+      source: "standard+confirmed-v2-medium-rescue",
+      config,
+      baselineNearBlackRatio: calculateNearBlackRatio(
+        originalImageData,
+        position
+      ),
+      alphaGain: 1,
+      provenance: {
+        catalogVariant: true,
+        fixedVariant: true,
+        alphaVariant: "v2",
+        catalogFamily: "confirmed-v2-medium-rescue",
+        catalogEvidenceGate: "medium",
+        confirmedV2MediumRescue: true,
+        rescueReason: hasV2SmallPrior ? "replace-confirmed-v2-small-geometry" : "recover-strong-unconfirmed-v2-medium"
+      },
+      includeImageData: false
+    });
+    if (!trial?.accepted) return null;
+    if (!hasV2SmallPrior && (Number(trial.originalSpatialScore) < CONFIRMED_V2_MEDIUM_MIN_RESCUE_SPATIAL || Number(trial.originalGradientScore) < CONFIRMED_V2_MEDIUM_MIN_RESCUE_GRADIENT || trial.damage?.safe !== true)) {
+      return null;
+    }
+    return trial;
+  }
+  function createExact48R96SourceWitnessRescueTrial({
+    originalImageData,
+    alpha48,
+    config,
+    catalogPriorConfig
+  }) {
+    if (!originalImageData || !alpha48) return null;
+    const catalogEntry = resolveGeminiWatermarkSearchCatalogEntries(
+      originalImageData.width,
+      originalImageData.height,
+      catalogPriorConfig ?? config
+    ).find((entry) => entry?.metadata?.family === "known-current-variant" && entry.metadata.evidenceGate === "required" && entry.config?.logoSize === 48 && entry.config.marginRight === 96 && entry.config.marginBottom === 96 && entry.config.alphaVariant == null);
+    if (!catalogEntry) return null;
+    const sourceTrial = {
+      source: "standard+catalog",
+      config: catalogEntry.config,
+      position: {
+        x: originalImageData.width - 96 - 48,
+        y: originalImageData.height - 96 - 48,
+        width: 48,
+        height: 48
+      },
+      alphaMap: alpha48,
+      alphaGain: 1,
+      provenance: {
+        catalogVariant: true,
+        catalogFamily: catalogEntry.metadata.family,
+        catalogSourcePriority: catalogEntry.metadata.sourcePriority,
+        catalogEvidenceGate: catalogEntry.metadata.evidenceGate
+      }
+    };
+    const sourceLocalization = measureOutputResidualLocalization({
+      imageData: originalImageData,
+      alphaMap: sourceTrial.alphaMap,
+      position: sourceTrial.position,
+      decoyShifts: EXACT_48_R96_SOURCE_WITNESS_DECOY_SHIFTS
+    });
+    const spatialSignal = Number(sourceLocalization.spatialSignedTarget);
+    const gradientSignal = Number(sourceLocalization.gradientSignedTarget);
+    const primarySignal = Math.max(spatialSignal, gradientSignal);
+    if (!Number.isFinite(spatialSignal) || spatialSignal <= 0 || !Number.isFinite(primarySignal) || primarySignal < EXACT_48_R96_SOURCE_WITNESS_MIN_PRIMARY || Number(sourceLocalization.twoSidedEdgeProminence) < EXACT_48_R96_SOURCE_WITNESS_MIN_EDGE_PROMINENCE || Number(sourceLocalization.gradientPercentile) < EXACT_48_R96_SOURCE_WITNESS_MIN_GRADIENT_PERCENTILE) {
+      return null;
+    }
+    const rescueTrial = evaluateRestorationCandidate({
+      originalImageData,
+      alphaMap: sourceTrial.alphaMap,
+      position: sourceTrial.position,
+      source: `${sourceTrial.source ?? "standard+catalog"}+source-witness-rescue`,
+      config: sourceTrial.config,
+      baselineNearBlackRatio: calculateNearBlackRatio(
+        originalImageData,
+        sourceTrial.position
+      ),
+      alphaGain: EXACT_48_R96_SOURCE_WITNESS_GAIN,
+      provenance: {
+        ...sourceTrial.provenance,
+        sourceWitnessRescue: true,
+        sourceWitnessReason: EXACT_48_R96_SOURCE_WITNESS_REASON,
+        sourceWitnessGate: {
+          primarySignal,
+          spatialSignedTarget: spatialSignal,
+          gradientSignedTarget: gradientSignal,
+          twoSidedEdgeProminence: sourceLocalization.twoSidedEdgeProminence,
+          gradientPercentile: sourceLocalization.gradientPercentile
+        }
+      },
+      includeImageData: false
+    });
+    return measurePresenceLocalization(
+      originalImageData,
+      rescueTrial
+    ).repeatedTemplateCollision ? null : rescueTrial;
+  }
+  function createExact96R192SourceWitnessRescueTrial({
+    originalImageData,
+    alpha96Variants,
+    config,
+    catalogPriorConfig,
+    fixedSelection,
+    automaticSelection
+  }) {
+    const alphaMap = alpha96Variants?.["20260520"];
+    if (!originalImageData || !alphaMap || alphaMap.length !== 96 * 96) {
+      return null;
+    }
+    const catalogEntry = resolveGeminiWatermarkSearchCatalogEntries(
+      originalImageData.width,
+      originalImageData.height,
+      catalogPriorConfig ?? config
+    ).find((entry) => entry?.metadata?.evidenceGate === "required" && entry.config?.logoSize === 96 && entry.config.marginRight === 192 && entry.config.marginBottom === 192 && entry.config.alphaVariant === "20260520");
+    if (!catalogEntry) return null;
+    const position = {
+      x: originalImageData.width - 192 - 96,
+      y: originalImageData.height - 192 - 96,
+      width: 96,
+      height: 96
+    };
+    const acceptedEligibleTrials = [
+      fixedSelection?.selectedTrial,
+      automaticSelection?.selectedTrial
+    ].filter((trial, index, trials) => trial?.accepted === true && trial.evaluation?.eligible === true && trials.indexOf(trial) === index);
+    const hasDriftedDarkPolaritySelection = acceptedEligibleTrials.some(
+      (trial) => trial.provenance?.darkPolarity === true && (trial.position?.x !== position.x || trial.position?.y !== position.y || trial.position?.width !== position.width || trial.position?.height !== position.height)
+    );
+    const sourceLocalization = measureOutputResidualLocalization({
+      imageData: originalImageData,
+      alphaMap,
+      position,
+      decoyShifts: EXACT_96_R192_SOURCE_WITNESS_DECOY_SHIFTS
+    });
+    const spatialSignal = Number(sourceLocalization.spatialSignedTarget);
+    const spatialPercentile = Number(sourceLocalization.spatialPercentile);
+    const gradientSignal = Number(sourceLocalization.gradientSignedTarget);
+    const hasSupportedSpatialPolarity = spatialSignal > 0 || hasDriftedDarkPolaritySelection && Math.abs(spatialSignal) >= EXACT_96_R192_SOURCE_WITNESS_MIN_INVERSE_SPATIAL && spatialPercentile >= EXACT_96_R192_SOURCE_WITNESS_MIN_INVERSE_SPATIAL_PERCENTILE;
+    if (!Number.isFinite(spatialSignal) || !Number.isFinite(spatialPercentile) || !hasSupportedSpatialPolarity || !Number.isFinite(gradientSignal) || gradientSignal < EXACT_96_R192_SOURCE_WITNESS_MIN_GRADIENT || Number(sourceLocalization.twoSidedEdgeProminence) < EXACT_96_R192_SOURCE_WITNESS_MIN_EDGE_PROMINENCE || Number(sourceLocalization.twoSidedEdgePercentile) < EXACT_96_R192_SOURCE_WITNESS_MIN_EDGE_PERCENTILE) {
+      return null;
+    }
+    const baselineNearBlackRatio = calculateNearBlackRatio(
+      originalImageData,
+      position
+    );
+    const provenance = {
+      catalogVariant: true,
+      alphaVariant: "20260520",
+      catalogFamily: catalogEntry.metadata.family,
+      catalogSourcePriority: catalogEntry.metadata.sourcePriority,
+      catalogEvidenceGate: catalogEntry.metadata.evidenceGate,
+      sourceWitnessRescue: true,
+      sourceWitnessReason: EXACT_96_R192_SOURCE_WITNESS_REASON,
+      sourceWitnessGate: {
+        spatialSignedTarget: spatialSignal,
+        spatialPercentile,
+        gradientSignedTarget: gradientSignal,
+        twoSidedEdgeProminence: sourceLocalization.twoSidedEdgeProminence,
+        twoSidedEdgePercentile: sourceLocalization.twoSidedEdgePercentile
+      }
+    };
+    const createRescueTrial = (alphaGain) => evaluateRestorationCandidate({
+      originalImageData,
+      alphaMap,
+      position,
+      source: "standard+catalog+source-witness-rescue",
+      config: catalogEntry.config,
+      baselineNearBlackRatio,
+      alphaGain,
+      provenance,
+      includeImageData: false
+    });
+    const conservativeTrial = createRescueTrial(EXACT_96_R192_SOURCE_WITNESS_GAIN);
+    const fullStrengthTrial = spatialSignal > 0 ? createRescueTrial(1) : null;
+    const rescueTrial = fullStrengthTrial && shouldPreferFullStrengthNewMarginVariant(fullStrengthTrial, conservativeTrial) ? fullStrengthTrial : conservativeTrial;
+    if (acceptedEligibleTrials.length > 0 && !hasDriftedDarkPolaritySelection && rescueTrial !== fullStrengthTrial) {
+      return null;
+    }
+    return measurePresenceLocalization(
+      originalImageData,
+      rescueTrial
+    ).repeatedTemplateCollision ? null : rescueTrial;
+  }
+  function getPositiveSourceEvidenceScore(trial) {
+    const spatial = Number(trial?.originalSpatialScore);
+    const gradient = Number(trial?.originalGradientScore);
+    return Math.max(
+      Number.isFinite(spatial) ? spatial : Number.NEGATIVE_INFINITY,
+      Number.isFinite(gradient) ? gradient : Number.NEGATIVE_INFINITY
+    );
+  }
+  function findCanonical96CatalogPriorTrial({
+    fixedSelection,
+    automaticSelection,
+    catalogPriorConfig
+  }) {
+    if (catalogPriorConfig?.logoSize !== 96 || catalogPriorConfig.marginRight !== 64 || catalogPriorConfig.marginBottom !== 64) {
+      return null;
+    }
+    const trials = [fixedSelection, automaticSelection].flatMap((selection) => [
+      ...selection?.candidatePool ?? [],
+      selection?.selectedTrial
+    ]).filter(Boolean);
+    const canonicalTrial = trials.find((trial) => trial.config?.logoSize === 96 && trial.config.marginRight === 64 && trial.config.marginBottom === 64 && !trial.config.alphaVariant && trial.provenance?.darkPolarity !== true && trial.alphaGain === 1);
+    if (!canonicalTrial) return null;
+    return {
+      ...canonicalTrial,
+      source: `${canonicalTrial.source ?? "standard"}+catalog-prior-best-effort`,
+      provenance: {
+        ...canonicalTrial.provenance,
+        sourceWitnessRescue: true,
+        sourceWitnessReason: "canonical-96-prior-over-weaker-r192",
+        catalogPriorBestEffort: true
+      }
+    };
+  }
+  function createPlaneSourceWitnessTrial(input, fixedSelection, automaticSelection) {
+    const image = input.originalImageData;
+    if (image?.width !== 2752 || image.height !== 1536) return null;
+    const position = { x: 2464, y: 1248, width: 96, height: 96 };
+    if ([fixedSelection?.selectedTrial, automaticSelection?.selectedTrial].some((trial2) => trial2?.accepted === true && trial2.position?.width === 96)) return null;
+    const alphaMap = input.alpha96Variants?.["20260520"];
+    const evidence = measurePlaneAlphaEvidence(image, position, alphaMap);
+    if (!evidence) return null;
+    const trial = evaluateRestorationCandidate({
+      originalImageData: image,
+      alphaMap,
+      position,
+      alphaGain: 1,
+      source: "standard+catalog+plane-source-witness",
+      config: { logoSize: 96, marginRight: 192, marginBottom: 192, alphaVariant: "20260520" },
+      baselineNearBlackRatio: calculateNearBlackRatio(image, position),
+      provenance: { sourceWitnessRescue: true, sourceWitnessReason: "plane-source-witness", planeSourceEvidence: evidence },
+      includeImageData: false
+    });
+    return measurePresenceLocalization(image, trial).repeatedTemplateCollision ? null : trial;
+  }
+  function selectExact96SourceWitnessTrial({
+    r192Trial,
+    fixedSelection,
+    automaticSelection,
+    catalogPriorConfig
+  }) {
+    if (!r192Trial) return null;
+    const canonicalTrial = findCanonical96CatalogPriorTrial({
+      fixedSelection,
+      automaticSelection,
+      catalogPriorConfig
+    });
+    if (!canonicalTrial || getPositiveSourceEvidenceScore(canonicalTrial) <= getPositiveSourceEvidenceScore(r192Trial)) {
+      return r192Trial;
+    }
+    return Number(canonicalTrial.originalGradientScore) > 0 ? canonicalTrial : null;
+  }
+  function createSelectorRequest(input) {
+    return {
+      originalImageData: input.originalImageData,
+      config: input.config,
+      catalogPriorConfig: input.catalogPriorConfig,
+      position: input.position,
+      alpha48: input.alpha48,
+      alpha96: input.alpha96,
+      alpha96Variants: input.alpha96Variants,
+      getAlphaMap: input.getAlphaMap,
+      allowAdaptiveSearch: input.allowAdaptiveSearch,
+      alphaGainCandidates: input.alphaGainCandidates,
+      alphaPriorityGains: input.alphaPriorityGains
+    };
+  }
+  function createConservativeTopNTrial(originalImageData, selection, maximumAllowedGain, origin) {
+    const trial = selection?.selectedTrial;
+    if (!trial?.alphaMap || !trial?.position || !trial?.config) return null;
+    const baselineNearBlackRatio = calculateNearBlackRatio(originalImageData, trial.position);
+    const maximumGain = Math.min(maximumAllowedGain, Number(trial.alphaGain ?? 1));
+    const gains = [0.5, 0.35, 0.25, 0.15, 0.1].filter((gain) => gain <= maximumGain + 1e-4);
+    const candidates = gains.map((alphaGain) => evaluateRestorationCandidate({
+      originalImageData,
+      alphaMap: trial.alphaMap,
+      position: trial.position,
+      source: `${trial.source ?? selection.source ?? "standard"}+top-n-conservative`,
+      config: trial.config,
+      baselineNearBlackRatio,
+      adaptiveConfidence: trial.adaptiveConfidence ?? selection.adaptiveConfidence ?? null,
+      alphaGain,
+      provenance: {
+        ...trial.provenance ?? {},
+        topNConservative: true,
+        topNOrigin: origin
+      },
+      includeImageData: false,
+      sourcePriority: trial.sourcePriority ?? null,
+      alphaPriorityIndex: trial.alphaPriorityIndex ?? null
+    })).filter(Boolean);
+    return candidates.find((candidate) => Number(candidate.nearBlackIncrease ?? Infinity) < 0.04 && Number(candidate.nearWhiteIncrease ?? Infinity) < 0.04) ?? candidates.at(-1) ?? null;
+  }
+  function sameTrialIdentity(left, right) {
+    if (!left || !right) return false;
+    const leftPosition = left.position;
+    const rightPosition = right.position;
+    return left.alphaMap === right.alphaMap && Math.abs(Number(left.alphaGain ?? 1) - Number(right.alphaGain ?? 1)) < 1e-4 && leftPosition?.x === rightPosition?.x && leftPosition?.y === rightPosition?.y && leftPosition?.width === rightPosition?.width && leftPosition?.height === rightPosition?.height;
+  }
+  function hasCompleteBestEffortTrial(trial, originalImageData) {
+    const position = trial?.position;
+    const config = trial?.config;
+    const alphaMap = trial?.alphaMap;
+    const alphaGain = Number(trial?.alphaGain ?? 1);
+    const coordinates = [
+      position?.x,
+      position?.y,
+      position?.width,
+      position?.height
+    ];
+    if (!originalImageData?.data || !coordinates.every(Number.isInteger) || position.width <= 0 || position.height <= 0 || position.x < 0 || position.y < 0 || position.x + position.width > originalImageData.width || position.y + position.height > originalImageData.height || !Number.isFinite(config?.logoSize) || config.logoSize !== position.width || position.width !== position.height || !alphaMap || alphaMap.length !== position.width * position.height || !Number.isFinite(alphaGain) || alphaGain <= 0) {
+      return false;
+    }
+    let hasNonZeroAlpha = false;
+    for (const alpha of alphaMap) {
+      if (!Number.isFinite(alpha)) return false;
+      if (alpha !== 0) hasNonZeroAlpha = true;
+    }
+    return hasNonZeroAlpha;
+  }
+  function hasMeasurableRestorationEffect(trial) {
+    const scorePairs = [
+      [trial?.originalSpatialScore, trial?.processedSpatialScore],
+      [trial?.originalGradientScore, trial?.processedGradientScore]
+    ];
+    let comparableScoreCount = 0;
+    for (const [beforeValue, afterValue] of scorePairs) {
+      const before = Number(beforeValue);
+      const after = Number(afterValue);
+      if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
+      comparableScoreCount++;
+      if (Math.abs(before - after) > 1e-8) return true;
+    }
+    return comparableScoreCount === 0;
+  }
+  function hasNonlocalizedSpatialCollision(trial, originalImageData) {
+    const originalSpatial = Number(trial?.originalSpatialScore);
+    const originalGradient = Number(trial?.originalGradientScore);
+    if (!Number.isFinite(originalSpatial) || !Number.isFinite(originalGradient)) {
+      return false;
+    }
+    const localization = measurePresenceLocalization(originalImageData, trial);
+    if (localization.repeatedTemplateCollision) {
+      return true;
+    }
+    if (originalSpatial < BEST_EFFORT_SPATIAL_COLLISION_MIN_SCORE) {
+      return false;
+    }
+    return !localization.localized && originalGradient < BEST_EFFORT_NONLOCAL_GRADIENT_EXCEPTION_MIN_SCORE;
+  }
+  function hasLocalizedPreviewRefinement(trial, originalImageData) {
+    const witness = measureOutputResidualLocalization({
+      imageData: originalImageData,
+      alphaMap: trial.alphaMap,
+      position: trial.position,
+      decoyShifts: [
+        [-4, 0],
+        [4, 0],
+        [0, -4],
+        [0, 4],
+        [-4, -4],
+        [4, 4],
+        [-4, 4],
+        [4, -4]
+      ]
+    });
+    return witness.gradientSignedTarget > 0 && witness.gradientPercentile === 1;
+  }
+  function isSafeSelectorBestEffortSelection(selection, originalImageData) {
+    const trial = selection?.selectedTrial;
+    const isSmallV2 = trial?.config?.alphaVariant === "v2" || trial?.provenance?.alphaVariant === "v2";
+    const catalogScopeAllowed = !isSmallV2 || trial?.provenance?.catalogFamily === "gemini-v2-small";
+    return Boolean(
+      trial && selection.source !== "skipped" && (selection.decisionTier === "direct-match" || selection.decisionTier === "validated-match") && trial.accepted === true && trial.evaluation?.eligible === true && trial.damage?.safe === true && catalogScopeAllowed && !hasNonlocalizedSpatialCollision(trial, originalImageData) && hasMeasurableRestorationEffect(trial) && hasCompleteBestEffortTrial(trial, originalImageData) && (trial.provenance?.previewAnchorLocalRefine !== true || hasLocalizedPreviewRefinement(trial, originalImageData))
+    );
+  }
+  function hasStrongRestorationEvidence(trial) {
+    if (trial?.residual?.cleared === true || trial?.evaluation?.postResidual?.cleared === true) {
+      return true;
+    }
+    const originalGradient = Number(trial?.originalGradientScore);
+    const processedGradient = Math.abs(Number(trial?.processedGradientScore));
+    if (Number.isFinite(originalGradient) && Number.isFinite(processedGradient) && originalGradient - processedGradient >= MIN_VALIDATED_GRADIENT_IMPROVEMENT) {
+      return true;
+    }
+    return false;
+  }
+  function hasValidatedRestorationEvidence(trial) {
+    if (hasStrongRestorationEvidence(trial)) {
+      return true;
+    }
+    const originalSpatial = Number(trial?.originalSpatialScore);
+    const processedSpatial = Math.abs(Number(trial?.processedSpatialScore));
+    return Number.isFinite(originalSpatial) && Number.isFinite(processedSpatial) && originalSpatial >= MIN_VALIDATED_SPATIAL_SCORE && originalSpatial - processedSpatial >= MIN_VALIDATED_SPATIAL_SUPPRESSION;
+  }
+  function hasEvidenceGatedSmallV2CatalogPresence(trial) {
+    if (trial?.provenance?.alphaVariant !== "v2" || trial?.provenance?.catalogFamily !== "gemini-v2-small" || trial?.damage?.safe !== true) {
+      return false;
+    }
+    const originalSpatial = Number(trial.originalSpatialScore);
+    const processedSpatial = Math.abs(Number(trial.processedSpatialScore));
+    return Number.isFinite(originalSpatial) && Number.isFinite(processedSpatial) && originalSpatial >= SMALL_V2_MIN_SPATIAL_SCORE && processedSpatial <= SMALL_V2_MAX_ABS_SPATIAL_RESIDUAL && originalSpatial - processedSpatial >= SMALL_V2_MIN_SPATIAL_SUPPRESSION;
+  }
+  function measurePresenceLocalization(originalImageData, trial) {
+    const position = trial?.position;
+    const alphaMap = trial?.alphaMap;
+    const width = Number(position?.width);
+    const height = Number(position?.height);
+    const x = Number(position?.x);
+    const y = Number(position?.y);
+    if (!originalImageData?.data || !Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(x) || !Number.isInteger(y) || width <= 0 || height <= 0 || !alphaMap || alphaMap.length !== width * height) {
+      return {
+        localized: true,
+        repeatedTemplateCollision: false
+      };
+    }
+    const controlScores = [];
+    const controlScoresByOffset = /* @__PURE__ */ new Map();
+    for (const [offsetX, offsetY] of LOCALIZATION_CONTROL_OFFSETS) {
+      const controlRegion = {
+        x: x + offsetX * width,
+        y: y + offsetY * height,
+        width,
+        height
+      };
+      if (controlRegion.x < 0 || controlRegion.y < 0 || controlRegion.x + width > originalImageData.width || controlRegion.y + height > originalImageData.height) {
+        continue;
+      }
+      const controlScore = computeRegionSpatialCorrelation({
+        imageData: originalImageData,
+        alphaMap,
+        region: controlRegion
+      });
+      controlScores.push(controlScore);
+      controlScoresByOffset.set(`${offsetX},${offsetY}`, controlScore);
+    }
+    if (controlScores.length === 0) {
+      return {
+        localized: true,
+        repeatedTemplateCollision: false
+      };
+    }
+    const reportedSpatial = Number(trial.originalSpatialScore);
+    const candidateSpatial = Number.isFinite(reportedSpatial) ? reportedSpatial : computeRegionSpatialCorrelation({
+      imageData: originalImageData,
+      alphaMap,
+      region: position
+    });
+    const maximumControlScore = Math.max(...controlScores);
+    const repeatedTemplateCollision = REPEATED_TEMPLATE_CONTROL_SQUARES.some(
+      (square) => square.every(([offsetX, offsetY]) => {
+        const score = controlScoresByOffset.get(`${offsetX},${offsetY}`);
+        return Number.isFinite(score) && score >= REPEATED_TEMPLATE_CONTROL_MIN_SPATIAL_SCORE;
+      })
+    );
+    return {
+      localized: Number.isFinite(candidateSpatial) && Number.isFinite(maximumControlScore) && candidateSpatial - maximumControlScore >= MIN_LOCALIZED_PEAK_PROMINENCE,
+      repeatedTemplateCollision
+    };
+  }
+  function hasSelectorConfirmedTarget(selection, originalImageData) {
+    const trial = selection?.selectedTrial;
+    if (!trial || selection.source === "skipped" || selection.decisionTier === "insufficient") {
+      return false;
+    }
+    const directMatch = hasReliableStandardWatermarkSignal({
+      spatialScore: trial.originalSpatialScore,
+      gradientScore: trial.originalGradientScore
+    });
+    const localization = measurePresenceLocalization(originalImageData, trial);
+    if (localization.repeatedTemplateCollision) {
+      return false;
+    }
+    const localizedPresence = localization.localized;
+    const hasCompleteRestorationDecision = trial.accepted === true && trial.evaluation?.eligible === true;
+    if (directMatch) {
+      return localizedPresence || hasCompleteRestorationDecision && (hasStrongRestorationEvidence(trial) || hasEvidenceGatedSmallV2CatalogPresence(trial));
+    }
+    if (trial.accepted === false || trial.evaluation?.eligible === false) {
+      return false;
+    }
+    if (!hasCompleteRestorationDecision) {
+      return true;
+    }
+    return hasStrongRestorationEvidence(trial) || hasEvidenceGatedSmallV2CatalogPresence(trial) || localizedPresence && hasValidatedRestorationEvidence(trial);
+  }
+  function findEligiblePresenceTrial(selection, originalImageData) {
+    return (selection?.candidatePool ?? []).find((trial) => {
+      if (trial?.accepted !== true || trial.evaluation?.eligible !== true) {
+        return false;
+      }
+      const directMatch = hasReliableStandardWatermarkSignal({
+        spatialScore: trial.originalSpatialScore,
+        gradientScore: trial.originalGradientScore
+      });
+      const localization = measurePresenceLocalization(originalImageData, trial);
+      if (localization.repeatedTemplateCollision) {
+        return false;
+      }
+      const localizedPresence = localization.localized;
+      return hasStrongRestorationEvidence(trial) || hasEvidenceGatedSmallV2CatalogPresence(trial) || localizedPresence && (directMatch || hasValidatedRestorationEvidence(trial));
+    });
+  }
+  function findConfirmedPoolPresenceTrial(selection, originalImageData) {
+    return (selection?.candidatePool ?? []).find((trial) => trial && trial !== selection?.selectedTrial && // A selected adaptive/catalog trial can hide the canonical candidate.
+    // Keep this recovery narrow so preview/content collisions in the wider
+    // diagnostic pool cannot confirm presence on their own.
+    trial.provenance?.catalogFamily === "default-standard" && hasSelectorConfirmedTarget({
+      ...selection,
+      selectedTrial: trial,
+      source: trial.source ?? "candidate-pool",
+      decisionTier: null
+    }, originalImageData));
+  }
+  function isStrongLocalizedGeometryTrial(trial, originalImageData) {
+    const spatialScore = Number(trial?.originalSpatialScore);
+    const gradientScore = Number(trial?.originalGradientScore);
+    if (!Number.isFinite(spatialScore) || !Number.isFinite(gradientScore) || spatialScore < STRONG_GEOMETRY_MIN_SPATIAL_SCORE || gradientScore < STRONG_GEOMETRY_MIN_GRADIENT_SCORE || !hasReliableStandardWatermarkSignal({
+      spatialScore,
+      gradientScore
+    })) {
+      return false;
+    }
+    const localization = measurePresenceLocalization(originalImageData, trial);
+    return localization.localized && !localization.repeatedTemplateCollision;
+  }
+  function findStrongLocalizedGeometryTrial(selection, originalImageData) {
+    const trials = [
+      selection?.selectedTrial,
+      ...selection?.candidatePool ?? []
+    ];
+    let bestTrial = null;
+    let bestScore = -Infinity;
+    for (const trial of trials) {
+      if (!isStrongLocalizedGeometryTrial(trial, originalImageData)) {
+        continue;
+      }
+      const score = Number(trial.originalSpatialScore) + Number(trial.originalGradientScore);
+      if (score > bestScore) {
+        bestTrial = trial;
+        bestScore = score;
+      }
+    }
+    return bestTrial;
+  }
+  function isGeometryCompatibleWithLock(trial, geometryLockTrial) {
+    if (!geometryLockTrial) return true;
+    const trialPosition = trial?.position;
+    const lockPosition = geometryLockTrial?.position;
+    const trialWidth = Number(trialPosition?.width);
+    const trialHeight = Number(trialPosition?.height);
+    const lockWidth = Number(lockPosition?.width);
+    const lockHeight = Number(lockPosition?.height);
+    if (![
+      trialPosition?.x,
+      trialPosition?.y,
+      trialWidth,
+      trialHeight,
+      lockPosition?.x,
+      lockPosition?.y,
+      lockWidth,
+      lockHeight
+    ].every(Number.isFinite) || trialWidth <= 0 || trialHeight <= 0 || lockWidth <= 0 || lockHeight <= 0) {
+      return false;
+    }
+    const widthRatio = Math.min(trialWidth, lockWidth) / Math.max(trialWidth, lockWidth);
+    const heightRatio = Math.min(trialHeight, lockHeight) / Math.max(trialHeight, lockHeight);
+    if (widthRatio < GEOMETRY_LOCK_MIN_SIZE_RATIO || heightRatio < GEOMETRY_LOCK_MIN_SIZE_RATIO) {
+      return false;
+    }
+    const intersectionWidth = Math.max(0, Math.min(
+      trialPosition.x + trialWidth,
+      lockPosition.x + lockWidth
+    ) - Math.max(trialPosition.x, lockPosition.x));
+    const intersectionHeight = Math.max(0, Math.min(
+      trialPosition.y + trialHeight,
+      lockPosition.y + lockHeight
+    ) - Math.max(trialPosition.y, lockPosition.y));
+    const intersectionArea = intersectionWidth * intersectionHeight;
+    const minimumArea = Math.min(
+      trialWidth * trialHeight,
+      lockWidth * lockHeight
+    );
+    return intersectionArea / minimumArea >= GEOMETRY_LOCK_MIN_OVERLAP_RATIO;
+  }
+  function findWatermarkPresenceWitness(selection, originalImageData) {
+    if (hasSelectorConfirmedTarget(selection, originalImageData)) {
+      return selection.selectedTrial;
+    }
+    return findConfirmedPoolPresenceTrial(selection, originalImageData) ?? findStrongLocalizedGeometryTrial(selection, originalImageData) ?? findEligiblePresenceTrial(selection, originalImageData) ?? null;
+  }
+  function collectInitialWatermarkCandidates(input = {}) {
+    const selectCandidate = input.selectCandidate ?? selectInitialCandidate;
+    const fixedSelection = selectCandidate({
+      ...createSelectorRequest(input),
+      allowAutomaticSearch: false,
+      allowAggressiveStrongLocated: false
+    });
+    const automaticSelection = input.allowAdaptiveSearch === false ? fixedSelection : selectCandidate({
+      ...createSelectorRequest(input),
+      allowAutomaticSearch: true,
+      allowAggressiveStrongLocated: true
+    });
+    const potentialV2MediumRescueTrial = createConfirmedV2MediumRescueTrial({
+      originalImageData: input.originalImageData,
+      getAlphaMap: input.getAlphaMap,
+      fixedSelection,
+      automaticSelection
+    });
+    const fixedPresenceWitness = findWatermarkPresenceWitness(
+      fixedSelection,
+      input.originalImageData
+    );
+    const automaticPresenceWitness = findWatermarkPresenceWitness(
+      automaticSelection,
+      input.originalImageData
+    );
+    const normalPresenceConfirmed = Boolean(
+      fixedPresenceWitness || automaticPresenceWitness
+    );
+    const confirmedV2MediumRescueTrial = potentialV2MediumRescueTrial?.provenance?.rescueReason === "replace-confirmed-v2-small-geometry" || !normalPresenceConfirmed ? potentialV2MediumRescueTrial : null;
+    const geometryLockWitness = findStrongLocalizedGeometryTrial(
+      fixedSelection,
+      input.originalImageData
+    ) ?? findStrongLocalizedGeometryTrial(
+      automaticSelection,
+      input.originalImageData
+    );
+    let presenceConfirmed = Boolean(
+      normalPresenceConfirmed || confirmedV2MediumRescueTrial
+    );
+    const possibleV2Collision = presenceConfirmed && !fixedSelection?.selectedTrial && automaticSelection?.selectedTrial?.config?.logoSize === 36 && automaticSelection.selectedTrial.config.alphaVariant === "v2";
+    const displacedStrongExact48 = presenceConfirmed && geometryLockWitness?.position?.width === 48 && geometryLockWitness.position.x === input.originalImageData.width - 144 && geometryLockWitness.position.y === input.originalImageData.height - 144 && fixedSelection?.selectedTrial?.position?.width !== 48;
+    const rowAlphaTrial = [fixedSelection?.selectedTrial, automaticSelection?.selectedTrial].find((trial) => trial?.position?.width === 48 && trial.position.x === input.originalImageData.width - 144 && trial.position.y === input.originalImageData.height - 144 && trial.alphaGain < 0.6 && !trial.config?.alphaVariant && trial.provenance?.darkPolarity !== true);
+    const rowAlphaEvidence = rowAlphaTrial ? measureRowAlphaEvidence(input.originalImageData, rowAlphaTrial.position, input.alpha48) : null;
+    const supportedRowAlpha = supportsRowAlphaGain(rowAlphaEvidence);
+    let exact48R96SourceWitnessRescueTrial = presenceConfirmed && !possibleV2Collision && !displacedStrongExact48 && !supportedRowAlpha ? null : createExact48R96SourceWitnessRescueTrial({
+      originalImageData: input.originalImageData,
+      alpha48: input.alpha48,
+      config: input.config,
+      catalogPriorConfig: input.catalogPriorConfig
+    });
+    if (supportedRowAlpha && exact48R96SourceWitnessRescueTrial) {
+      exact48R96SourceWitnessRescueTrial.provenance.rowAlphaEvidence = rowAlphaEvidence;
+    }
+    if (possibleV2Collision && exact48R96SourceWitnessRescueTrial) {
+      if (isGeometryCompatibleWithLock(
+        exact48R96SourceWitnessRescueTrial,
+        geometryLockWitness
+      ) && !isGeometryCompatibleWithLock(
+        automaticSelection.selectedTrial,
+        exact48R96SourceWitnessRescueTrial
+      )) {
+        presenceConfirmed = false;
+      } else {
+        exact48R96SourceWitnessRescueTrial = null;
+      }
+    }
+    const exact96R192SourceWitnessRescueTrial = exact48R96SourceWitnessRescueTrial ? null : createExact96R192SourceWitnessRescueTrial({
+      originalImageData: input.originalImageData,
+      alpha96Variants: input.alpha96Variants,
+      config: input.config,
+      catalogPriorConfig: input.catalogPriorConfig,
+      fixedSelection,
+      automaticSelection
+    });
+    const exact96SourceWitnessTrial = selectExact96SourceWitnessTrial({
+      r192Trial: exact96R192SourceWitnessRescueTrial,
+      fixedSelection,
+      automaticSelection,
+      catalogPriorConfig: input.catalogPriorConfig
+    });
+    const sourceWitnessRescueTrial = exact48R96SourceWitnessRescueTrial ?? exact96SourceWitnessTrial ?? createPlaneSourceWitnessTrial(input, fixedSelection, automaticSelection);
+    const bestEffortSelections = presenceConfirmed || sourceWitnessRescueTrial ? [] : [fixedSelection, automaticSelection].filter((selection, index, values) => values.indexOf(selection) === index && isSafeSelectorBestEffortSelection(
+      selection,
+      input.originalImageData
+    ));
+    const bestEffortFallback = !presenceConfirmed && Boolean(
+      sourceWitnessRescueTrial || bestEffortSelections.length > 0
+    );
+    if (!presenceConfirmed && !bestEffortFallback) {
+      return {
+        hypotheses: [],
+        presenceConfirmed: false,
+        bestEffortFallback: false,
+        bestEffortReason: null,
+        fixedSelection,
+        automaticSelection
+      };
+    }
+    const repeatedTemplateCollisionCache = /* @__PURE__ */ new Map();
+    const keepNonRepeatedTrial = (trial) => {
+      if (!trial) return false;
+      if (!repeatedTemplateCollisionCache.has(trial)) {
+        repeatedTemplateCollisionCache.set(
+          trial,
+          measurePresenceLocalization(
+            input.originalImageData,
+            trial
+          ).repeatedTemplateCollision
+        );
+      }
+      return repeatedTemplateCollisionCache.get(trial) !== true;
+    };
+    const includeFixedSelection = (presenceConfirmed || bestEffortSelections.includes(fixedSelection)) && isGeometryCompatibleWithLock(
+      fixedSelection?.selectedTrial,
+      geometryLockWitness
+    );
+    const includeAutomaticSelection = (presenceConfirmed || bestEffortSelections.includes(automaticSelection)) && isGeometryCompatibleWithLock(
+      automaticSelection?.selectedTrial,
+      geometryLockWitness
+    );
+    const fixedConservativeOrigin = fixedPresenceWitness ?? fixedSelection?.selectedTrial;
+    const automaticConservativeOrigin = automaticPresenceWitness ?? automaticSelection?.selectedTrial;
+    const includeFixedConservative = (presenceConfirmed || bestEffortSelections.includes(fixedSelection)) && isGeometryCompatibleWithLock(
+      fixedConservativeOrigin,
+      geometryLockWitness
+    );
+    const includeAutomaticConservative = (presenceConfirmed || bestEffortSelections.includes(automaticSelection)) && isGeometryCompatibleWithLock(
+      automaticConservativeOrigin,
+      geometryLockWitness
+    );
+    const conservativeTrials = [
+      includeFixedConservative ? createConservativeTopNTrial(
+        input.originalImageData,
+        {
+          ...fixedSelection,
+          selectedTrial: fixedConservativeOrigin
+        },
+        0.5,
+        "fixed"
+      ) : null,
+      includeAutomaticConservative ? createConservativeTopNTrial(
+        input.originalImageData,
+        {
+          ...automaticSelection,
+          selectedTrial: automaticConservativeOrigin
+        },
+        0.25,
+        "automatic"
+      ) : null
+    ].filter((trial) => trial && (!bestEffortFallback || trial.damage?.safe === true && trial.hardReject !== true && Number(trial.nearBlackIncrease ?? Infinity) < 0.04 && Number(trial.nearWhiteIncrease ?? Infinity) < 0.04 && hasMeasurableRestorationEffect(trial)));
+    const trials = (bestEffortFallback ? sourceWitnessRescueTrial ? [sourceWitnessRescueTrial] : [
+      includeFixedSelection ? fixedSelection?.selectedTrial : null,
+      includeAutomaticSelection ? automaticSelection?.selectedTrial : null,
+      ...conservativeTrials
+    ] : [
+      ...fixedSelection?.candidatePool ?? [],
+      fixedSelection?.selectedTrial,
+      ...automaticSelection?.candidatePool ?? [],
+      automaticSelection?.selectedTrial,
+      confirmedV2MediumRescueTrial,
+      ...conservativeTrials
+    ]).filter((trial) => keepNonRepeatedTrial(trial) && isGeometryCompatibleWithLock(trial, geometryLockWitness));
+    const diverseHypotheses = selectDiverseCandidateHypotheses(trials, { limit: 5 });
+    const fixedSelectedHypothesis = createCandidateHypothesis(
+      includeFixedSelection && keepNonRepeatedTrial(fixedSelection?.selectedTrial) ? fixedSelection?.selectedTrial : null,
+      1e3
+    );
+    const automaticSelectedHypothesis = createCandidateHypothesis(
+      includeAutomaticSelection && keepNonRepeatedTrial(automaticSelection?.selectedTrial) ? automaticSelection?.selectedTrial : null,
+      1001
+    );
+    const fixedPresenceHypothesis = createCandidateHypothesis(
+      keepNonRepeatedTrial(fixedPresenceWitness) && isGeometryCompatibleWithLock(
+        fixedPresenceWitness,
+        geometryLockWitness
+      ) ? fixedPresenceWitness : null,
+      1002
+    );
+    const automaticPresenceHypothesis = createCandidateHypothesis(
+      keepNonRepeatedTrial(automaticPresenceWitness) && isGeometryCompatibleWithLock(
+        automaticPresenceWitness,
+        geometryLockWitness
+      ) ? automaticPresenceWitness : null,
+      1003
+    );
+    const confirmedV2MediumRescueHypothesis = createCandidateHypothesis(
+      keepNonRepeatedTrial(confirmedV2MediumRescueTrial) && isGeometryCompatibleWithLock(
+        confirmedV2MediumRescueTrial,
+        geometryLockWitness
+      ) ? confirmedV2MediumRescueTrial : null,
+      1004
+    );
+    const sourceWitnessRescueHypothesis = createCandidateHypothesis(
+      keepNonRepeatedTrial(sourceWitnessRescueTrial) && isGeometryCompatibleWithLock(
+        sourceWitnessRescueTrial,
+        geometryLockWitness
+      ) ? sourceWitnessRescueTrial : null,
+      1005
+    );
+    const hasSupplementalSourceWitness = Boolean(
+      (displacedStrongExact48 || supportedRowAlpha || sourceWitnessRescueTrial?.provenance?.planeSourceEvidence) && sourceWitnessRescueHypothesis
+    );
+    const preferredHypotheses = [
+      fixedSelectedHypothesis,
+      automaticSelectedHypothesis,
+      sourceWitnessRescueHypothesis,
+      fixedPresenceHypothesis,
+      automaticPresenceHypothesis,
+      confirmedV2MediumRescueHypothesis
+    ].filter((hypothesis, index, values) => hypothesis && values.findIndex((candidate) => sameTrialIdentity(
+      candidate?.trial,
+      hypothesis.trial
+    )) === index);
+    const retainedAlternatives = diverseHypotheses.filter((hypothesis) => !preferredHypotheses.some((preferred) => sameTrialIdentity(preferred.trial, hypothesis.trial))).slice(0, Math.max(0, (hasSupplementalSourceWitness ? 6 : 5) - preferredHypotheses.length));
+    const hypotheses = [...preferredHypotheses, ...retainedAlternatives].map((hypothesis) => {
+      const trial = hypothesis.trial;
+      const rescue = exact48R96SourceWitnessRescueTrial;
+      if (!displacedStrongExact48 || !rescue || trial?.alphaGain !== 1 || trial.alphaMap !== rescue.alphaMap || trial.position?.x !== rescue.position.x || trial.position?.y !== rescue.position.y || trial.position?.width !== 48 || trial.position?.height !== 48) return hypothesis;
+      return {
+        ...hypothesis,
+        trial: {
+          ...trial,
+          provenance: {
+            ...trial.provenance,
+            sourceWitnessGeometry: true,
+            sourceWitnessGate: rescue.provenance.sourceWitnessGate
+          }
+        }
+      };
+    }).map((hypothesis) => ({
+      ...hypothesis,
+      presenceStatus: !presenceConfirmed && sourceWitnessRescueTrial ? "source-witness" : bestEffortFallback ? "selector-only" : "confirmed",
+      discoveryRole: hypothesis.trial?.provenance?.sourceWitnessGeometry === true ? "confirmed-rescue" : hypothesis.trial?.provenance?.sourceWitnessRescue === true ? "source-witness-rescue" : bestEffortFallback && hypothesis.trial?.provenance?.topNConservative !== true ? "discovered-alternative" : hypothesis.trial?.provenance?.topNConservative === true ? "conservative-derived" : hypothesis.trial?.provenance?.confirmedV2MediumRescue === true ? "confirmed-rescue" : sameTrialIdentity(hypothesis.trial, fixedSelection?.selectedTrial) ? "fixed-selected" : sameTrialIdentity(hypothesis.trial, automaticSelection?.selectedTrial) ? "automatic-selected" : automaticSelectedHypothesis?.family === "aggressive" ? "aggressive-fallback-alternative" : "discovered-alternative"
+    }));
+    return {
+      hypotheses,
+      hasSupplementalSourceWitness,
+      presenceConfirmed,
+      bestEffortFallback,
+      bestEffortReason: bestEffortFallback && sourceWitnessRescueTrial ? sourceWitnessRescueTrial.provenance?.sourceWitnessReason ?? "source-witness" : bestEffortFallback ? "presence-witness-unconfirmed" : null,
+      fixedSelection,
+      automaticSelection
+    };
+  }
+
+  // src/core/pipelineAlphaStageSpecs.js
+  function readPipelineAlphaState(readState) {
+    return typeof readState === "function" ? readState() : {};
+  }
+  function resolveNearBlackRatio({ calculateNearBlackRatio: calculateNearBlackRatio2, imageData, position }) {
+    return typeof calculateNearBlackRatio2 === "function" ? calculateNearBlackRatio2(imageData, position) : 0;
+  }
+  function markTimingAnchor({ timingAnchors, timingKey, nowMs: nowMs4 }) {
+    if (timingAnchors && timingKey) {
+      timingAnchors[timingKey] = nowMs4();
+    }
+  }
+  function createFineAlphaTrialSequenceSpecs({
+    nowMs: nowMs4 = Date.now,
+    readState,
+    originalImageData,
+    originalSpatialScore,
+    originalGradientScore,
+    calculateNearBlackRatio: calculateNearBlackRatio2,
+    acceptCurrentAlphaTrialResult,
+    debugTimings = null,
+    debugTimingsEnabled = false,
+    refiners = {}
+  } = {}) {
+    const {
+      refineLargeMargin48ProfileAlphaRescue: refineLargeMargin48ProfileAlphaRescue2,
+      fineTuneEvidenceGatedLocalAlpha: fineTuneEvidenceGatedLocalAlpha2,
+      recalibrateOverSubtractedAlpha: recalibrateOverSubtractedAlpha2,
+      fineTuneDarkCatalogAlpha: fineTuneDarkCatalogAlpha2,
+      fineTuneWeakPositiveResidualAlpha: fineTuneWeakPositiveResidualAlpha2
+    } = refiners;
+    const evidenceGatedStages = [];
+    if (typeof refineLargeMargin48ProfileAlphaRescue2 === "function") {
+      evidenceGatedStages.push({
+        stage: "large-margin-48-profile-alpha-rescue",
+        strategy: "large-margin-48-profile-alpha",
+        createTrial: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof refineLargeMargin48ProfileAlphaRescue2 === "function" ? refineLargeMargin48ProfileAlphaRescue2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentAlphaTrialResult,
+        source: () => {
+          const source = readPipelineAlphaState(readState).source;
+          return source.includes("+profile-alpha-rescue") ? source : `${source}+profile-alpha-rescue`;
+        },
+        stageExtras: (result) => ({
+          profileExponent: result.profileExponent
+        })
+      });
+    }
+    if (typeof fineTuneEvidenceGatedLocalAlpha2 === "function") {
+      evidenceGatedStages.push({
+        stage: "evidence-gated-local-alpha-search",
+        strategy: "evidence-gated-local-alpha",
+        createTrial: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof fineTuneEvidenceGatedLocalAlpha2 === "function" ? fineTuneEvidenceGatedLocalAlpha2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore,
+            originalNearBlackRatio: resolveNearBlackRatio({
+              calculateNearBlackRatio: calculateNearBlackRatio2,
+              imageData: originalImageData,
+              position: state.position
+            })
+          }) : null;
+        },
+        acceptCurrentAlphaTrialResult,
+        source: () => {
+          const source = readPipelineAlphaState(readState).source;
+          return source.includes("+fine-alpha") ? source : `${source}+fine-alpha`;
+        },
+        stageExtras: (result) => ({
+          localSearchTrigger: result.localSearchTrigger,
+          darkBackgroundSupportConvergence: result.darkBackgroundSupportConvergence ?? null
+        }),
+        debugTimings,
+        timingKey: debugTimingsEnabled ? "localAlphaSearchMs" : null,
+        nowMs: nowMs4
+      });
+    }
+    return [
+      ...evidenceGatedStages,
+      {
+        stage: "over-subtraction-recalibration",
+        strategy: "over-subtraction-fine-alpha",
+        createTrial: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof recalibrateOverSubtractedAlpha2 === "function" ? recalibrateOverSubtractedAlpha2({
+            originalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalNearBlackRatio: resolveNearBlackRatio({
+              calculateNearBlackRatio: calculateNearBlackRatio2,
+              imageData: originalImageData,
+              position: state.position
+            })
+          }) : null;
+        },
+        acceptCurrentAlphaTrialResult,
+        source: () => {
+          const source = readPipelineAlphaState(readState).source;
+          return source.includes("+gain") ? source : `${source}+gain`;
+        },
+        debugTimings,
+        timingKey: debugTimingsEnabled ? "overSubtractionRecalibrationMs" : null,
+        nowMs: nowMs4
+      },
+      {
+        stage: "dark-catalog-fine-alpha",
+        strategy: "dark-catalog-fine-alpha",
+        createTrial: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof fineTuneDarkCatalogAlpha2 === "function" ? fineTuneDarkCatalogAlpha2({
+            originalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            source: state.source,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore,
+            originalNearBlackRatio: resolveNearBlackRatio({
+              calculateNearBlackRatio: calculateNearBlackRatio2,
+              imageData: originalImageData,
+              position: state.position
+            })
+          }) : null;
+        },
+        acceptCurrentAlphaTrialResult,
+        source: () => {
+          const source = readPipelineAlphaState(readState).source;
+          return source.includes("+fine-alpha") ? source : `${source}+fine-alpha`;
+        },
+        debugTimings,
+        timingKey: debugTimingsEnabled ? "darkCatalogFineTuneMs" : null,
+        nowMs: nowMs4
+      },
+      {
+        stage: "weak-positive-residual-fine-alpha",
+        strategy: "over-subtraction-fine-alpha",
+        createTrial: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof fineTuneWeakPositiveResidualAlpha2 === "function" ? fineTuneWeakPositiveResidualAlpha2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore,
+            originalNearBlackRatio: resolveNearBlackRatio({
+              calculateNearBlackRatio: calculateNearBlackRatio2,
+              imageData: originalImageData,
+              position: state.position
+            })
+          }) : null;
+        },
+        acceptCurrentAlphaTrialResult,
+        source: () => {
+          const source = readPipelineAlphaState(readState).source;
+          return source.includes("+fine-alpha") ? source : `${source}+fine-alpha`;
+        },
+        debugTimings,
+        timingKey: debugTimingsEnabled ? "weakAlphaFineTuneMs" : null,
+        nowMs: nowMs4
+      }
+    ];
+  }
+  function createRecalibrationStageSpec({
+    nowMs: nowMs4 = Date.now,
+    readState,
+    shouldRecalibrateAlphaStrength: shouldRecalibrateAlphaStrength2,
+    calculateNearBlackRatio: calculateNearBlackRatio2,
+    computeRegionGradientCorrelation: computeRegionGradientCorrelation2,
+    acceptRecalibrationStageResult,
+    debugTimings = null,
+    debugTimingsEnabled = false,
+    refiners = {}
+  } = {}) {
+    const {
+      recalibrateAlphaStrength: recalibrateAlphaStrength2
+    } = refiners;
+    const state = readPipelineAlphaState(readState);
+    return {
+      shouldRun: typeof shouldRecalibrateAlphaStrength2 === "function" ? shouldRecalibrateAlphaStrength2({
+        originalScore: state.originalSpatialScore,
+        processedScore: state.finalProcessedSpatialScore,
+        suppressionGain: state.suppressionGain
+      }) : false,
+      createRecalibration: () => {
+        const current = readPipelineAlphaState(readState);
+        return typeof recalibrateAlphaStrength2 === "function" ? recalibrateAlphaStrength2({
+          sourceImageData: current.finalImageData,
+          alphaMap: current.alphaMap,
+          position: current.position,
+          originalSpatialScore: current.originalSpatialScore,
+          processedSpatialScore: current.finalProcessedSpatialScore,
+          originalNearBlackRatio: resolveNearBlackRatio({
+            calculateNearBlackRatio: calculateNearBlackRatio2,
+            imageData: current.finalImageData,
+            position: current.position
+          })
+        }) : null;
+      },
+      computeGradientScore: (recalibrated) => {
+        const current = readPipelineAlphaState(readState);
+        return typeof computeRegionGradientCorrelation2 === "function" ? computeRegionGradientCorrelation2({
+          imageData: recalibrated.imageData,
+          alphaMap: current.alphaMap,
+          region: {
+            x: current.position.x,
+            y: current.position.y,
+            size: current.position.width
+          }
+        }) : void 0;
+      },
+      acceptRecalibrationStageResult,
+      debugTimings,
+      timingKey: debugTimingsEnabled ? "recalibrationMs" : null,
+      nowMs: nowMs4
+    };
+  }
+  function createSmallAnchorAlphaStageSequenceSpecs({
+    nowMs: nowMs4 = Date.now,
+    timingAnchors = {},
+    readState,
+    originalImageData,
+    originalGradientScore,
+    alpha96,
+    getAlphaMap,
+    visualPostProcessingEnabled = false,
+    assessWatermarkResidualVisibility: assessWatermarkResidualVisibility2,
+    acceptCurrentAlphaStageResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refineSmallPreviewAnchorCandidate: refineSmallPreviewAnchorCandidate2,
+      refineSmallFixedLocalAnchorGeometry: refineSmallFixedLocalAnchorGeometry2
+    } = refiners;
+    markTimingAnchor({
+      timingAnchors,
+      timingKey: "smallPreviewRefinementStartedAt",
+      nowMs: nowMs4
+    });
+    return [
+      {
+        stage: "small-preview-refinement",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          const refined = visualPostProcessingEnabled && typeof refineSmallPreviewAnchorCandidate2 === "function" ? refineSmallPreviewAnchorCandidate2({
+            originalImageData,
+            source: state.source,
+            position: state.position,
+            originalGradientScore,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            getAlphaMap
+          }) : null;
+          if (!refined) return null;
+          const refinedPosition = refined.position;
+          return {
+            ...refined,
+            config: {
+              logoSize: refinedPosition.width,
+              marginRight: originalImageData.width - refinedPosition.x - refinedPosition.width,
+              marginBottom: originalImageData.height - refinedPosition.y - refinedPosition.height
+            }
+          };
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+small-preview-refine`
+      },
+      {
+        stage: "small-fixed-local-anchor-relocation",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          const currentResidualVisibility = typeof assessWatermarkResidualVisibility2 === "function" ? assessWatermarkResidualVisibility2({
+            imageData: state.finalImageData,
+            position: state.position,
+            alphaMap: state.alphaMap
+          }) : null;
+          return typeof refineSmallFixedLocalAnchorGeometry2 === "function" ? refineSmallFixedLocalAnchorGeometry2({
+            originalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSource: state.source,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentResidualVisibility,
+            alpha96,
+            getAlphaMap
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+small-anchor-relocated`,
+        stageExtras: {
+          allowSameAlphaGain: true
+        }
+      }
+    ];
+  }
+  function createSubpixelOutlineAlphaStageSpecs({
+    readState,
+    calculateNearBlackRatio: calculateNearBlackRatio2,
+    templateWarp = null,
+    visualPostProcessingEnabled = false,
+    usePreviewAnchorFastCleanup = false,
+    outlineConfig = {},
+    acceptCurrentAlphaStageResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refineSubpixelOutline: refineSubpixelOutline2
+    } = refiners;
+    const {
+      outlineRefinementThreshold,
+      outlineRefinementMinGain,
+      subpixelRefineShifts,
+      subpixelRefineScales,
+      minGradientImprovement = 0.04,
+      maxSpatialDrift = 0.08
+    } = outlineConfig;
+    return [
+      {
+        stage: "subpixel-outline-refinement",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          if (!visualPostProcessingEnabled || usePreviewAnchorFastCleanup || state.finalProcessedSpatialScore > 0.3 || state.finalProcessedGradientScore < outlineRefinementThreshold) {
+            return null;
+          }
+          const originalNearBlackRatio = resolveNearBlackRatio({
+            calculateNearBlackRatio: calculateNearBlackRatio2,
+            imageData: state.finalImageData,
+            position: state.position
+          });
+          const baselineShift = templateWarp ?? { dx: 0, dy: 0, scale: 1 };
+          return typeof refineSubpixelOutline2 === "function" ? refineSubpixelOutline2({
+            sourceImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            alphaGain: state.alphaGain,
+            originalNearBlackRatio,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore,
+            baselineShift,
+            minGain: outlineRefinementMinGain,
+            shiftCandidates: subpixelRefineShifts,
+            scaleCandidates: subpixelRefineScales,
+            minGradientImprovement,
+            maxSpatialDrift
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+subpixel`,
+        suppressionGain: null
+      }
+    ];
+  }
+  function createLocatedAggressiveStageSpec({
+    readState,
+    originalImageData,
+    originalSpatialScore,
+    originalGradientScore,
+    smallFixedLocalRelocated,
+    locatedAggressiveRemovalEnabled = true,
+    assessWatermarkResidualVisibility: assessWatermarkResidualVisibility2,
+    shouldSkipLocatedAggressiveForCleanCanonical96: shouldSkipLocatedAggressiveForCleanCanonical962,
+    recordAlphaTrialEvent,
+    acceptLocatedAggressiveResult,
+    currentPassState,
+    refiners = {}
+  } = {}) {
+    const {
+      refineLocatedAggressiveRemoval: refineLocatedAggressiveRemoval2
+    } = refiners;
+    const state = readPipelineAlphaState(readState);
+    const locatedAggressiveResidualVisibility = typeof assessWatermarkResidualVisibility2 === "function" ? assessWatermarkResidualVisibility2({
+      imageData: state.finalImageData,
+      position: state.position,
+      alphaMap: state.alphaMap
+    }) : null;
+    const baseShouldRun = locatedAggressiveRemovalEnabled !== false && smallFixedLocalRelocated?.residualVisibility?.visible !== false && locatedAggressiveResidualVisibility?.visible !== false;
+    const skipCleanCanonical96 = baseShouldRun && typeof shouldSkipLocatedAggressiveForCleanCanonical962 === "function" ? shouldSkipLocatedAggressiveForCleanCanonical962({
+      config: state.config,
+      alphaGain: state.alphaGain,
+      originalSpatialScore,
+      originalGradientScore,
+      currentSpatialScore: state.finalProcessedSpatialScore,
+      currentGradientScore: state.finalProcessedGradientScore
+    }) : false;
+    return {
+      shouldRun: baseShouldRun && !skipCleanCanonical96,
+      createStage: ({ onRejected } = {}) => {
+        const current = readPipelineAlphaState(readState);
+        return typeof refineLocatedAggressiveRemoval2 === "function" ? refineLocatedAggressiveRemoval2({
+          originalImageData,
+          currentImageData: current.finalImageData,
+          alphaMap: current.alphaMap,
+          position: current.position,
+          currentSpatialScore: current.finalProcessedSpatialScore,
+          currentGradientScore: current.finalProcessedGradientScore,
+          currentAlphaGain: current.alphaGain,
+          onRejected
+        }) : null;
+      },
+      recordAlphaTrialEvent,
+      acceptLocatedAggressiveResult,
+      currentPassState,
+      source: () => {
+        const currentSource = readPipelineAlphaState(readState).source;
+        return currentSource.includes("+located-aggressive") ? currentSource : `${currentSource}+located-aggressive`;
+      },
+      fromAlphaGain: state.alphaGain,
+      beforeSpatialScore: state.finalProcessedSpatialScore,
+      beforeGradientScore: state.finalProcessedGradientScore,
+      originalSpatialScore
+    };
+  }
+  function markAlphaRescueTimingAnchors({
+    timingAnchors,
+    nowMs: nowMs4,
+    resolveVariantAlphaMap
+  }) {
+    if (!timingAnchors) {
+      return typeof resolveVariantAlphaMap === "function" ? resolveVariantAlphaMap() : null;
+    }
+    timingAnchors.newMargin96VariantRescueStartedAt = nowMs4();
+    const variantAlphaMap = typeof resolveVariantAlphaMap === "function" ? resolveVariantAlphaMap() : null;
+    timingAnchors.known48AntiTemplateRescueStartedAt = nowMs4();
+    timingAnchors.powerProfileRescueStartedAt = nowMs4();
+    timingAnchors.positiveResidualRebalanceStartedAt = nowMs4();
+    return variantAlphaMap;
+  }
+  function createAlphaRescueStageSequenceSpecs({
+    nowMs: nowMs4 = Date.now,
+    timingAnchors = {},
+    readState,
+    originalImageData,
+    originalSpatialScore,
+    originalGradientScore,
+    resolveVariantAlphaMap,
+    acceptCurrentAlphaStageResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refineNewMargin96VariantResidual: refineNewMargin96VariantResidual2,
+      refineKnown48AntiTemplateResidual: refineKnown48AntiTemplateResidual2,
+      refineKnown48PowerProfileResidual: refineKnown48PowerProfileResidual2,
+      refineKnown48PositiveResidualRebalance: refineKnown48PositiveResidualRebalance2
+    } = refiners;
+    const variantAlphaMap = markAlphaRescueTimingAnchors({
+      timingAnchors,
+      nowMs: nowMs4,
+      resolveVariantAlphaMap
+    });
+    return [
+      {
+        stage: "new-margin-96-variant-rescue",
+        strategy: "new-margin-96-variant",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof refineNewMargin96VariantResidual2 === "function" ? refineNewMargin96VariantResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            originalSpatialScore,
+            originalGradientScore,
+            variantAlphaMap
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+new-margin-variant`,
+        stageExtras: (result) => ({
+          profileExponent: result.profileExponent
+        })
+      },
+      {
+        stage: "known-48-anti-template-rescue",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof refineKnown48AntiTemplateResidual2 === "function" ? refineKnown48AntiTemplateResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+anti-template-rescue`,
+        stageExtras: {
+          allowSameAlphaGain: true
+        }
+      },
+      {
+        stage: "known-48-power-profile-rescue",
+        strategy: "known-48-power-profile",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof refineKnown48PowerProfileResidual2 === "function" ? refineKnown48PowerProfileResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+power-profile-rescue`,
+        stageExtras: (result) => ({
+          profileExponent: result.profileExponent,
+          allowSameAlphaGain: true
+        })
+      },
+      {
+        stage: "known-48-positive-residual-rebalance",
+        strategy: "known-48-positive-residual-rebalance",
+        createStage: () => {
+          const state = readPipelineAlphaState(readState);
+          return typeof refineKnown48PositiveResidualRebalance2 === "function" ? refineKnown48PositiveResidualRebalance2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentAlphaStageResult,
+        source: () => `${readPipelineAlphaState(readState).source}+residual-rebalance`,
+        stageExtras: (result) => ({
+          profileExponent: result.profileExponent,
+          allowSameAlphaGain: true
+        })
+      }
+    ];
+  }
+
+  // src/core/pipelineState.js
+  function finiteOrFallback(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  }
+  function createAcceptedPipelineState({
+    initialSelection = null
+  } = {}) {
+    const selectedTrial = initialSelection?.selectedTrial ?? null;
+    if (!selectedTrial) return null;
+    return {
+      config: initialSelection.config,
+      position: initialSelection.position,
+      alphaMap: initialSelection.alphaMap,
+      source: initialSelection.source,
+      adaptiveConfidence: initialSelection.adaptiveConfidence ?? null,
+      templateWarp: initialSelection.templateWarp ?? null,
+      alphaGain: finiteOrFallback(initialSelection.alphaGain, 1),
+      decisionTier: initialSelection.decisionTier ?? null,
+      subpixelShift: null,
+      alphaMapSource: null,
+      finalImageData: selectedTrial.imageData,
+      originalSpatialScore: selectedTrial.originalSpatialScore,
+      originalGradientScore: selectedTrial.originalGradientScore
+    };
+  }
+  function createPipelineStateCommit({
+    current,
+    result,
+    source
+  } = {}) {
+    const finalProcessedSpatialScore = finiteOrFallback(
+      result?.spatialScore,
+      finiteOrFallback(result?.processedSpatialScore, current?.finalProcessedSpatialScore)
+    );
+    const finalProcessedGradientScore = finiteOrFallback(
+      result?.gradientScore,
+      finiteOrFallback(result?.processedGradientScore, current?.finalProcessedGradientScore)
+    );
+    const originalSpatialScore = finiteOrFallback(
+      result?.originalSpatialScore,
+      current?.originalSpatialScore
+    );
+    const suppressionGain = finiteOrFallback(
+      result?.suppressionGain,
+      originalSpatialScore - finalProcessedSpatialScore
+    );
+    return {
+      finalImageData: result?.imageData ?? current?.finalImageData,
+      alphaMap: result?.alphaMap ?? current?.alphaMap,
+      position: result?.position ?? current?.position,
+      config: result?.config ?? current?.config,
+      alphaGain: finiteOrFallback(result?.alphaGain, current?.alphaGain),
+      alphaMapSource: result?.alphaMapSource ?? current?.alphaMapSource,
+      originalSpatialScore,
+      originalGradientScore: finiteOrFallback(
+        result?.originalGradientScore,
+        current?.originalGradientScore
+      ),
+      finalProcessedSpatialScore,
+      finalProcessedGradientScore,
+      suppressionGain,
+      source: source ?? current?.source
+    };
+  }
+  function createInitialPipelineRuntimeState({
+    acceptedState = null,
+    processedMetrics = null
+  } = {}) {
+    const finalProcessedSpatialScore = processedMetrics?.spatialScore;
+    const finalProcessedGradientScore = processedMetrics?.gradientScore;
+    const originalSpatialScore = acceptedState?.originalSpatialScore;
+    return {
+      finalImageData: acceptedState?.finalImageData,
+      alphaMap: acceptedState?.alphaMap,
+      position: acceptedState?.position,
+      config: acceptedState?.config,
+      alphaGain: acceptedState?.alphaGain,
+      alphaMapSource: acceptedState?.alphaMapSource,
+      originalSpatialScore,
+      originalGradientScore: acceptedState?.originalGradientScore,
+      finalProcessedSpatialScore,
+      finalProcessedGradientScore,
+      suppressionGain: originalSpatialScore - finalProcessedSpatialScore,
+      source: acceptedState?.source
+    };
+  }
+  function createPipelineStateAccessors({
+    get,
+    set
+  } = {}) {
+    const safeGet = typeof get === "function" ? get : () => ({});
+    const safeSet = typeof set === "function" ? set : () => {
+    };
+    return {
+      readPipelineState() {
+        const state = safeGet();
+        return {
+          finalImageData: state.finalImageData,
+          alphaMap: state.alphaMap,
+          position: state.position,
+          config: state.config,
+          alphaGain: state.alphaGain,
+          alphaMapSource: state.alphaMapSource,
+          originalSpatialScore: state.originalSpatialScore,
+          originalGradientScore: state.originalGradientScore,
+          finalProcessedSpatialScore: state.finalProcessedSpatialScore,
+          finalProcessedGradientScore: state.finalProcessedGradientScore,
+          suppressionGain: state.suppressionGain,
+          source: state.source
+        };
+      },
+      applyPipelineState(state = {}) {
+        safeSet({
+          finalImageData: state.finalImageData,
+          alphaMap: state.alphaMap,
+          position: state.position,
+          config: state.config,
+          alphaGain: state.alphaGain,
+          alphaMapSource: state.alphaMapSource,
+          originalSpatialScore: state.originalSpatialScore,
+          originalGradientScore: state.originalGradientScore,
+          finalProcessedSpatialScore: state.finalProcessedSpatialScore,
+          finalProcessedGradientScore: state.finalProcessedGradientScore,
+          suppressionGain: state.suppressionGain,
+          source: state.source
+        });
+      }
+    };
+  }
+
+  // src/core/pipelinePassState.js
+  function finiteOrFallback2(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  }
+  function createFirstPassPipelinePassState({
+    firstPassMetrics = null
+  } = {}) {
+    return {
+      passCount: 1,
+      attemptedPassCount: 1,
+      passStopReason: firstPassMetrics?.passStopReason ?? null,
+      passes: [firstPassMetrics?.passRecord]
+    };
+  }
+  function applyPipelinePassOutcome({
+    current,
+    outcome
+  } = {}) {
+    const passIncrement = Math.max(0, finiteOrFallback2(outcome?.passIncrement, 0));
+    return {
+      passCount: finiteOrFallback2(current?.passCount, 0) + passIncrement,
+      attemptedPassCount: finiteOrFallback2(current?.attemptedPassCount, 0) + passIncrement,
+      passStopReason: outcome?.passStopReason ?? current?.passStopReason ?? null,
+      passes: current?.passes ?? null
+    };
+  }
+
+  // src/core/pipelineTimings.js
+  function createTailDebugTimings({
+    nowMs: nowMs4,
+    totalStartedAt,
+    previewEdgeCleanupElapsedMs = 0,
+    smallPreviewRefinementStartedAt,
+    locatedAggressiveStartedAt,
+    smoothPriorStartedAt,
+    newMargin96VariantRescueStartedAt,
+    known48AntiTemplateRescueStartedAt,
+    powerProfileRescueStartedAt,
+    positiveResidualRebalanceStartedAt,
+    smallMarginPriorRepairStartedAt,
+    smallLocatedPriorRepairStartedAt,
+    boundaryRepairRescueStartedAt,
+    darkHaloRescueStartedAt,
+    quantizedBodyCorrectionStartedAt,
+    midCoreBiasStartedAt
+  } = {}) {
+    return {
+      previewEdgeCleanupMs: previewEdgeCleanupElapsedMs,
+      smallPreviewRefinementMs: nowMs4() - smallPreviewRefinementStartedAt,
+      locatedAggressiveRemovalMs: nowMs4() - locatedAggressiveStartedAt,
+      smoothPriorCleanupMs: nowMs4() - smoothPriorStartedAt,
+      newMargin96VariantRescueMs: known48AntiTemplateRescueStartedAt - newMargin96VariantRescueStartedAt,
+      known48AntiTemplateRescueMs: powerProfileRescueStartedAt - known48AntiTemplateRescueStartedAt,
+      powerProfileRescueMs: positiveResidualRebalanceStartedAt - powerProfileRescueStartedAt,
+      positiveResidualRebalanceMs: smallMarginPriorRepairStartedAt - positiveResidualRebalanceStartedAt,
+      smallMarginPriorRepairMs: smallLocatedPriorRepairStartedAt - smallMarginPriorRepairStartedAt,
+      smallLocatedPriorRepairMs: boundaryRepairRescueStartedAt - smallLocatedPriorRepairStartedAt,
+      boundaryRepairRescueMs: darkHaloRescueStartedAt - boundaryRepairRescueStartedAt,
+      darkHaloRescueMs: quantizedBodyCorrectionStartedAt - darkHaloRescueStartedAt,
+      quantizedBodyCorrectionMs: midCoreBiasStartedAt - quantizedBodyCorrectionStartedAt,
+      midCoreBiasCorrectionMs: nowMs4() - midCoreBiasStartedAt,
+      totalMs: nowMs4() - totalStartedAt
+    };
+  }
+
+  // src/core/pipelineRuntime.js
+  function runCurrentAlphaTrialStage({
+    stage,
+    strategy,
+    createTrial,
+    acceptCurrentAlphaTrialResult,
+    source,
+    stageExtras,
+    eventExtras,
+    debugTimings = null,
+    timingKey = null,
+    nowMs: nowMs4 = Date.now
+  } = {}) {
+    const startedAt = nowMs4();
+    const result = typeof createTrial === "function" ? createTrial() : null;
+    if (result && typeof acceptCurrentAlphaTrialResult === "function") {
+      const acceptedTrial = {
+        stage,
+        strategy,
+        result,
+        source: typeof source === "function" ? source(result) : source
+      };
+      if (stageExtras !== void 0) {
+        acceptedTrial.stageExtras = resolveStageValue(stageExtras, result) ?? {};
+      }
+      if (eventExtras !== void 0) {
+        acceptedTrial.eventExtras = resolveStageValue(eventExtras, result) ?? {};
+      }
+      acceptCurrentAlphaTrialResult(acceptedTrial);
+    }
+    if (debugTimings && timingKey) {
+      debugTimings[timingKey] = nowMs4() - startedAt;
+    }
+    return result;
+  }
+  function runCurrentAlphaTrialSequence({
+    stages = []
+  } = {}) {
+    const results = [];
+    for (const stage of stages) {
+      results.push(runCurrentAlphaTrialStage(stage));
+    }
+    return results;
+  }
+  function runCurrentAlphaTrialSpecPhase({
+    createSpecs
+  } = {}) {
+    return runCurrentAlphaTrialSequence({
+      stages: typeof createSpecs === "function" ? createSpecs() : []
+    });
+  }
+  function resolveStageValue(value, result) {
+    return typeof value === "function" ? value(result) : value;
+  }
+  function runCurrentAlphaStage({
+    stage,
+    strategy = null,
+    createStage,
+    acceptCurrentAlphaStageResult,
+    source,
+    suppressionGain,
+    stageExtras
+  } = {}) {
+    const result = typeof createStage === "function" ? createStage() : null;
+    if (result && typeof acceptCurrentAlphaStageResult === "function") {
+      acceptCurrentAlphaStageResult({
+        stage,
+        strategy,
+        result,
+        source: resolveStageValue(source, result),
+        suppressionGain: resolveStageValue(suppressionGain, result),
+        stageExtras: resolveStageValue(stageExtras, result)
+      });
+    }
+    return result;
+  }
+  function runCurrentAlphaStageSequence({
+    stages = []
+  } = {}) {
+    const results = [];
+    for (const stage of stages) {
+      results.push(runCurrentAlphaStage(stage));
+    }
+    return results;
+  }
+  function runCurrentAlphaStageSpecPhase({
+    createSpecs
+  } = {}) {
+    return runCurrentAlphaStageSequence({
+      stages: typeof createSpecs === "function" ? createSpecs() : []
+    });
+  }
+  function runCurrentRepairStage({
+    stage,
+    strategy,
+    createStage,
+    acceptCurrentRepairTrialResult,
+    source,
+    suppressionGain,
+    deriveSuppressionGainFromOriginalSpatial = false,
+    stageExtras
+  } = {}) {
+    const result = typeof createStage === "function" ? createStage() : null;
+    if (result && typeof acceptCurrentRepairTrialResult === "function") {
+      acceptCurrentRepairTrialResult({
+        stage,
+        strategy,
+        result,
+        source: resolveStageValue(source, result),
+        suppressionGain: resolveStageValue(suppressionGain, result),
+        deriveSuppressionGainFromOriginalSpatial,
+        stageExtras: resolveStageValue(stageExtras, result)
+      });
+    }
+    return result;
+  }
+  function runCurrentRepairStageSequence({
+    stages = []
+  } = {}) {
+    const results = [];
+    for (const stage of stages) {
+      if (typeof stage?.beforeStage === "function") {
+        stage.beforeStage(stage);
+      }
+      results.push(runCurrentRepairStage(stage));
+    }
+    return results;
+  }
+  function runCurrentRepairStageSpecPhase({
+    createSpecs
+  } = {}) {
+    return runCurrentRepairStageSequence({
+      stages: typeof createSpecs === "function" ? createSpecs() : []
+    });
+  }
+  function runRepairCleanupSpecPhase({
+    createSpecs
+  } = {}) {
+    const specs = typeof createSpecs === "function" ? createSpecs() : {};
+    let previewEdgeCleanupElapsedMs = 0;
+    if (specs.edgeCleanup) {
+      const outcome = runRepeatedCurrentRepairStage(specs.edgeCleanup);
+      previewEdgeCleanupElapsedMs = outcome.elapsedMs;
+    }
+    if (specs.known48FlatFill) {
+      runRepeatedCurrentRepairStage(specs.known48FlatFill);
+    }
+    if (specs.known48LumaEdge) {
+      runCurrentRepairStage(specs.known48LumaEdge);
+    }
+    if (specs.newMargin96FlatFill) {
+      runCurrentRepairStage(specs.newMargin96FlatFill);
+    }
+    return {
+      previewEdgeCleanupElapsedMs
+    };
+  }
+  function runRepeatedCurrentRepairStage({
+    maxPasses = 1,
+    createStage,
+    acceptCurrentRepairTrialResult,
+    stage,
+    strategy,
+    source,
+    suppressionGain,
+    deriveSuppressionGainFromOriginalSpatial = false,
+    stageExtras,
+    nowMs: nowMs4 = null
+  } = {}) {
+    let passCount = 0;
+    let elapsedMs = 0;
+    const shouldMeasure = typeof nowMs4 === "function";
+    while (passCount < maxPasses) {
+      const startedAt = shouldMeasure ? nowMs4() : 0;
+      const result = typeof createStage === "function" ? createStage(passCount) : null;
+      if (shouldMeasure) {
+        elapsedMs += nowMs4() - startedAt;
+      }
+      if (!result) {
+        break;
+      }
+      if (typeof acceptCurrentRepairTrialResult === "function") {
+        acceptCurrentRepairTrialResult({
+          stage: resolveStageValue(stage, result),
+          strategy: resolveStageValue(strategy, result),
+          result,
+          source: resolveStageValue(source, result),
+          suppressionGain: resolveStageValue(suppressionGain, result),
+          deriveSuppressionGainFromOriginalSpatial,
+          stageExtras: resolveStageValue(stageExtras, result)
+        });
+      }
+      passCount++;
+    }
+    return {
+      passCount,
+      elapsedMs
+    };
+  }
+  function runPreviewBackgroundCleanupStage({
+    createCleanup,
+    acceptPreviewBackgroundCleanupResult,
+    debugTimings = null,
+    timingKey = null,
+    nowMs: nowMs4 = Date.now
+  } = {}) {
+    const startedAt = nowMs4();
+    const cleanup = typeof createCleanup === "function" ? createCleanup() : null;
+    if (cleanup && typeof acceptPreviewBackgroundCleanupResult === "function") {
+      acceptPreviewBackgroundCleanupResult(cleanup);
+    }
+    if (debugTimings && timingKey) {
+      debugTimings[timingKey] = nowMs4() - startedAt;
+    }
+    return cleanup;
+  }
+  function runRecalibrationStage({
+    shouldRun = true,
+    createRecalibration,
+    computeGradientScore,
+    acceptRecalibrationStageResult,
+    debugTimings = null,
+    timingKey = null,
+    nowMs: nowMs4 = Date.now
+  } = {}) {
+    const startedAt = nowMs4();
+    const result = shouldRun && typeof createRecalibration === "function" ? createRecalibration() : null;
+    if (result && typeof acceptRecalibrationStageResult === "function") {
+      acceptRecalibrationStageResult({
+        result,
+        gradientScore: typeof computeGradientScore === "function" ? computeGradientScore(result) : void 0
+      });
+    }
+    if (debugTimings && timingKey) {
+      debugTimings[timingKey] = nowMs4() - startedAt;
+    }
+    return result;
+  }
+  function runLocatedAggressiveStage({
+    shouldRun = true,
+    createStage,
+    recordAlphaTrialEvent,
+    acceptLocatedAggressiveResult,
+    currentPassState,
+    source,
+    fromAlphaGain,
+    beforeSpatialScore,
+    beforeGradientScore,
+    originalSpatialScore
+  } = {}) {
+    if (!shouldRun) {
+      return {
+        result: null,
+        passState: currentPassState
+      };
+    }
+    const result = typeof createStage === "function" ? createStage({
+      onRejected: (event) => {
+        if (typeof recordAlphaTrialEvent === "function") {
+          recordAlphaTrialEvent({
+            ...event,
+            decision: "reject"
+          });
+        }
+      }
+    }) : null;
+    if (!result || typeof acceptLocatedAggressiveResult !== "function") {
+      return {
+        result,
+        passState: currentPassState
+      };
+    }
+    const aggressiveOutcome = acceptLocatedAggressiveResult({
+      result,
+      source: resolveStageValue(source, result),
+      fromAlphaGain,
+      beforeSpatialScore,
+      beforeGradientScore,
+      originalSpatialScore,
+      passes: currentPassState?.passes
+    });
+    return {
+      result,
+      outcome: aggressiveOutcome,
+      passState: applyPipelinePassOutcome({
+        current: currentPassState,
+        outcome: aggressiveOutcome
+      })
+    };
+  }
+  function createAlphaRepairPipelineRuntime({
+    traceRecorder,
+    readState,
+    applyState,
+    debugTimings = null
+  } = {}) {
+    const recordAlphaAdjustmentStage = traceRecorder?.recordAlphaAdjustmentStage;
+    const recordAlphaTrialEvent = traceRecorder?.recordAlphaTrialEvent;
+    const safeRecordAlphaAdjustmentStage = typeof recordAlphaAdjustmentStage === "function" ? recordAlphaAdjustmentStage : () => {
+    };
+    const safeRecordAlphaTrialEvent = typeof recordAlphaTrialEvent === "function" ? recordAlphaTrialEvent : () => {
+    };
+    const commitPipelineResult = ({ result, source } = {}) => {
+      const committedState = createPipelineStateCommit({
+        current: readState(),
+        result,
+        source
+      });
+      applyState(committedState);
+      return committedState;
+    };
+    return {
+      alphaAdjustmentStages: traceRecorder?.alphaAdjustmentStages ?? [],
+      alphaTrialEvents: traceRecorder?.alphaTrialEvents ?? [],
+      recordAlphaAdjustmentStage: safeRecordAlphaAdjustmentStage,
+      recordAlphaTrialEvent: safeRecordAlphaTrialEvent,
+      commitPipelineResult,
+      acceptCurrentAlphaStageResult({
+        stage,
+        strategy = null,
+        result,
+        source,
+        suppressionGain = result?.suppressionGain,
+        stageExtras = {}
+      } = {}) {
+        const current = readState();
+        safeRecordAlphaAdjustmentStage({
+          stage,
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain: result?.alphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: result?.spatialScore,
+          afterGradientScore: result?.gradientScore,
+          suppressionGain,
+          cost: result?.cost,
+          alphaStrategy: strategy,
+          ...stageExtras
+        });
+        return commitPipelineResult({ result, source });
+      },
+      acceptCurrentRepairTrialResult({
+        stage,
+        strategy,
+        result,
+        source,
+        suppressionGain = result?.suppressionGain,
+        deriveSuppressionGainFromOriginalSpatial = false,
+        stageExtras = {}
+      } = {}) {
+        const current = readState();
+        const resolvedSuppressionGain = deriveSuppressionGainFromOriginalSpatial ? current?.originalSpatialScore - result?.spatialScore : suppressionGain;
+        safeRecordAlphaAdjustmentStage({
+          stage,
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain: result?.alphaGain ?? current?.alphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: result?.spatialScore,
+          afterGradientScore: result?.gradientScore,
+          suppressionGain: resolvedSuppressionGain,
+          cost: result?.cost,
+          repairStrategy: strategy,
+          allowSameAlphaGain: true,
+          ...stageExtras
+        });
+        return commitPipelineResult({ result, source });
+      },
+      acceptRecalibrationStageResult({
+        result,
+        gradientScore
+      } = {}) {
+        const current = readState();
+        const committedResult = {
+          ...result,
+          gradientScore
+        };
+        safeRecordAlphaAdjustmentStage({
+          stage: "recalibration",
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain: result?.alphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: result?.processedSpatialScore,
+          afterGradientScore: gradientScore,
+          suppressionGain: result?.suppressionGain,
+          cost: result?.cost,
+          alphaStrategy: null
+        });
+        return commitPipelineResult({
+          result: committedResult,
+          source: current?.source === "adaptive" ? "adaptive+gain" : `${current?.source}+gain`
+        });
+      },
+      acceptCurrentAlphaTrialResult({
+        stage,
+        strategy,
+        result,
+        source,
+        suppressionGain = result?.suppressionGain,
+        stageExtras = {},
+        eventExtras = {}
+      } = {}) {
+        const current = readState();
+        const toAlphaGain = result?.alphaGain;
+        const alphaEvent = {
+          stage,
+          strategy,
+          decision: "accept",
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain,
+          alphaGain: toAlphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: result?.spatialScore,
+          afterGradientScore: result?.gradientScore,
+          suppressionGain,
+          cost: result?.cost,
+          ...eventExtras
+        };
+        const alphaStage = {
+          stage,
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: result?.spatialScore,
+          afterGradientScore: result?.gradientScore,
+          suppressionGain,
+          cost: result?.cost,
+          alphaStrategy: strategy,
+          ...stageExtras
+        };
+        safeRecordAlphaAdjustmentStage(alphaStage);
+        safeRecordAlphaTrialEvent(alphaEvent);
+        return commitPipelineResult({ result, source });
+      },
+      acceptAlphaTrialResult({
+        stage,
+        strategy,
+        result,
+        source,
+        fromAlphaGain,
+        beforeSpatialScore,
+        beforeGradientScore,
+        afterSpatialScore = result?.spatialScore,
+        afterGradientScore = result?.gradientScore,
+        suppressionGain = result?.suppressionGain,
+        cost = result?.cost,
+        stageExtras = {},
+        eventExtras = {}
+      } = {}) {
+        const toAlphaGain = result?.alphaGain;
+        const alphaEvent = {
+          stage,
+          strategy,
+          decision: "accept",
+          fromAlphaGain,
+          toAlphaGain,
+          alphaGain: toAlphaGain,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore,
+          afterGradientScore,
+          suppressionGain,
+          cost,
+          ...eventExtras
+        };
+        const alphaStage = {
+          stage,
+          fromAlphaGain,
+          toAlphaGain,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore,
+          afterGradientScore,
+          suppressionGain,
+          cost,
+          alphaStrategy: strategy,
+          ...stageExtras
+        };
+        safeRecordAlphaAdjustmentStage(alphaStage);
+        safeRecordAlphaTrialEvent(alphaEvent);
+        return commitPipelineResult({ result, source });
+      },
+      acceptAlphaStageResult({
+        stage,
+        strategy = null,
+        result,
+        source,
+        fromAlphaGain,
+        toAlphaGain = result?.alphaGain,
+        beforeSpatialScore,
+        beforeGradientScore,
+        afterSpatialScore = result?.spatialScore,
+        afterGradientScore = result?.gradientScore,
+        suppressionGain = result?.suppressionGain,
+        cost = result?.cost,
+        stageExtras = {}
+      } = {}) {
+        safeRecordAlphaAdjustmentStage({
+          stage,
+          fromAlphaGain,
+          toAlphaGain,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore,
+          afterGradientScore,
+          suppressionGain,
+          cost,
+          alphaStrategy: strategy,
+          ...stageExtras
+        });
+        return commitPipelineResult({ result, source });
+      },
+      acceptRepairTrialResult({
+        stage,
+        strategy,
+        result,
+        source,
+        fromAlphaGain,
+        toAlphaGain = result?.alphaGain ?? fromAlphaGain,
+        beforeSpatialScore,
+        beforeGradientScore,
+        afterSpatialScore = result?.spatialScore,
+        afterGradientScore = result?.gradientScore,
+        suppressionGain = result?.suppressionGain,
+        cost = result?.cost,
+        stageExtras = {}
+      } = {}) {
+        safeRecordAlphaAdjustmentStage({
+          stage,
+          fromAlphaGain,
+          toAlphaGain,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore,
+          afterGradientScore,
+          suppressionGain,
+          cost,
+          repairStrategy: strategy,
+          allowSameAlphaGain: true,
+          ...stageExtras
+        });
+        return commitPipelineResult({ result, source });
+      },
+      acceptLocatedAggressiveResult({
+        result,
+        source,
+        fromAlphaGain,
+        beforeSpatialScore,
+        beforeGradientScore,
+        originalSpatialScore,
+        passes
+      } = {}) {
+        const suppressionGain = originalSpatialScore - result.spatialScore;
+        safeRecordAlphaAdjustmentStage({
+          stage: "located-aggressive-removal",
+          fromAlphaGain,
+          toAlphaGain: result.alphaGain,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore: result.spatialScore,
+          afterGradientScore: result.gradientScore,
+          suppressionGain,
+          cost: result.cost,
+          alphaStrategy: "located-aggressive-alpha",
+          allowSameAlphaGain: true
+        });
+        safeRecordAlphaTrialEvent({
+          strategy: "located-aggressive-alpha",
+          decision: "accept",
+          blockedGate: null,
+          beforeSpatialScore,
+          beforeGradientScore,
+          afterSpatialScore: result.spatialScore,
+          afterGradientScore: result.gradientScore,
+          suppressionGain,
+          alphaGain: result.alphaGain,
+          repeatCount: result.repeatCount,
+          edgeCleanup: result.edgeCleanup === true,
+          cost: result.cost
+        });
+        if (Array.isArray(passes)) {
+          passes.push({
+            index: passes.length + 1,
+            beforeSpatialScore,
+            beforeGradientScore,
+            afterSpatialScore: result.spatialScore,
+            afterGradientScore: result.gradientScore,
+            improvement: Math.abs(beforeSpatialScore) - Math.abs(result.spatialScore),
+            gradientDelta: result.gradientScore - beforeGradientScore,
+            nearBlackRatio: result.nearBlackRatio
+          });
+        }
+        return {
+          committedState: commitPipelineResult({ result, source }),
+          passIncrement: Math.max(1, result.repeatCount || 1),
+          passStopReason: result.edgeCleanup ? "located-aggressive-edge-cleanup" : "located-aggressive-alpha"
+        };
+      },
+      acceptPreviewBackgroundCleanupResult({
+        cleanedImageData,
+        source,
+        cleanedSpatialScore,
+        cleanedGradientScore,
+        cleanedNearBlackRatio,
+        currentNearBlackRatio,
+        baselineSpatialScore,
+        maxNearBlackRatioIncrease
+      } = {}) {
+        const current = readState();
+        if (Math.abs(cleanedSpatialScore) > Math.abs(baselineSpatialScore) || cleanedNearBlackRatio > currentNearBlackRatio + maxNearBlackRatioIncrease) {
+          return null;
+        }
+        safeRecordAlphaAdjustmentStage({
+          stage: "preview-background-cleanup",
+          fromAlphaGain: current?.alphaGain,
+          toAlphaGain: current?.alphaGain,
+          beforeSpatialScore: current?.finalProcessedSpatialScore,
+          beforeGradientScore: current?.finalProcessedGradientScore,
+          afterSpatialScore: cleanedSpatialScore,
+          afterGradientScore: cleanedGradientScore,
+          repairStrategy: "preview-background-cleanup",
+          allowSameAlphaGain: true
+        });
+        return commitPipelineResult({
+          result: {
+            imageData: cleanedImageData,
+            spatialScore: cleanedSpatialScore,
+            gradientScore: cleanedGradientScore
+          },
+          source
+        });
+      },
+      assignTailDebugTimings(timingInput = {}) {
+        if (!debugTimings) return null;
+        Object.assign(debugTimings, createTailDebugTimings(timingInput));
+        return debugTimings;
+      }
+    };
+  }
+
+  // src/core/pipelineRepairStageSpecs.js
+  function readPipelineRepairState(readState) {
+    return typeof readState === "function" ? readState() : {};
+  }
+  function markTimingAnchor2({ timingAnchors, timingKey, nowMs: nowMs4 }) {
+    return () => {
+      if (timingAnchors && timingKey) {
+        timingAnchors[timingKey] = nowMs4();
+      }
+    };
+  }
+  function createPreviewBackgroundCleanupStageSpec({
+    nowMs: nowMs4 = Date.now,
+    readState,
+    visualPostProcessingEnabled = false,
+    maxNearBlackRatioIncrease,
+    measureOuterBorderLuminanceStd: measureOuterBorderLuminanceStd2,
+    shouldApplyPreviewSmoothBackgroundCleanup: shouldApplyPreviewSmoothBackgroundCleanup2,
+    applyPreviewSmoothBackgroundCleanup: applyPreviewSmoothBackgroundCleanup2,
+    createRegionCorrelationMetrics: createRegionCorrelationMetrics2,
+    calculateNearBlackRatio: calculateNearBlackRatio2,
+    acceptPreviewBackgroundCleanupResult,
+    debugTimings = null,
+    debugTimingsEnabled = false
+  } = {}) {
+    return {
+      createCleanup: () => {
+        const state = readPipelineRepairState(readState);
+        const previewBackgroundBorderStd = visualPostProcessingEnabled && typeof measureOuterBorderLuminanceStd2 === "function" ? measureOuterBorderLuminanceStd2(state.finalImageData, state.position) : 0;
+        const shouldApply = typeof shouldApplyPreviewSmoothBackgroundCleanup2 === "function" ? shouldApplyPreviewSmoothBackgroundCleanup2({
+          enabled: visualPostProcessingEnabled,
+          source: state.source,
+          position: state.position,
+          baselineSpatialScore: state.finalProcessedSpatialScore,
+          borderStd: previewBackgroundBorderStd
+        }) : false;
+        if (!shouldApply) {
+          return null;
+        }
+        const cleaned = typeof applyPreviewSmoothBackgroundCleanup2 === "function" ? applyPreviewSmoothBackgroundCleanup2({
+          imageData: state.finalImageData,
+          position: state.position
+        }) : null;
+        if (!cleaned) {
+          return null;
+        }
+        const cleanedMetrics = typeof createRegionCorrelationMetrics2 === "function" ? createRegionCorrelationMetrics2({
+          imageData: cleaned.imageData,
+          alphaMap: state.alphaMap,
+          position: state.position,
+          includeNearBlackRatio: true
+        }) : {};
+        return {
+          cleanedImageData: cleaned.imageData,
+          source: `${state.source}+background-cleanup`,
+          cleanedSpatialScore: cleanedMetrics.spatialScore,
+          cleanedGradientScore: cleanedMetrics.gradientScore,
+          cleanedNearBlackRatio: cleanedMetrics.nearBlackRatio,
+          currentNearBlackRatio: typeof calculateNearBlackRatio2 === "function" ? calculateNearBlackRatio2(state.finalImageData, state.position) : void 0,
+          baselineSpatialScore: state.finalProcessedSpatialScore,
+          maxNearBlackRatioIncrease
+        };
+      },
+      acceptPreviewBackgroundCleanupResult,
+      debugTimings,
+      timingKey: debugTimingsEnabled ? "previewBackgroundCleanupMs" : null,
+      nowMs: nowMs4
+    };
+  }
+  function createRepairCleanupPhaseSpecs({
+    nowMs: nowMs4 = Date.now,
+    readState,
+    shouldRunEdgeCleanup = false,
+    useKnown48EdgeCleanup = false,
+    useStrongUndersizedAdaptiveCleanup = false,
+    useV2SmallEdgeCleanup = false,
+    usePreviewAnchorFastCleanup = false,
+    cleanupConfig = {},
+    acceptCurrentRepairTrialResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refinePreviewResidualEdge: refinePreviewResidualEdge2,
+      refineKnown48FlatBackgroundResidual: refineKnown48FlatBackgroundResidual2,
+      refineKnown48LumaEdgeResidual: refineKnown48LumaEdgeResidual2,
+      refineNewMargin96FlatBackgroundResidual: refineNewMargin96FlatBackgroundResidual2
+    } = refiners;
+    const {
+      previewEdgeCleanupMaxAppliedPasses = 1,
+      previewEdgeCleanupMinGradientImprovement,
+      previewEdgeCleanupMaxSpatialDrift,
+      known48EdgeCleanupMinGradientImprovement,
+      known48EdgeCleanupMaxSpatialDrift,
+      v2SmallEdgeCleanupMinGradientImprovement,
+      v2SmallEdgeCleanupMaxSpatialDrift,
+      known48FlatFillMaxAppliedPasses = 1,
+      known48FlatFillMinGradient = 0.28,
+      strongUndersizedFlatFillMinGradient = 0.27,
+      known48FlatFillMinGradientImprovement,
+      known48FlatFillSecondPassMinGradientImprovement
+    } = cleanupConfig;
+    return {
+      edgeCleanup: shouldRunEdgeCleanup ? {
+        maxPasses: previewEdgeCleanupMaxAppliedPasses,
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refinePreviewResidualEdge2 === "function" ? refinePreviewResidualEdge2({
+            sourceImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            source: state.source,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore,
+            minGradientImprovement: useKnown48EdgeCleanup ? known48EdgeCleanupMinGradientImprovement : useV2SmallEdgeCleanup ? v2SmallEdgeCleanupMinGradientImprovement : previewEdgeCleanupMinGradientImprovement,
+            maxSpatialDrift: useKnown48EdgeCleanup ? known48EdgeCleanupMaxSpatialDrift : useV2SmallEdgeCleanup ? v2SmallEdgeCleanupMaxSpatialDrift : previewEdgeCleanupMaxSpatialDrift,
+            allowAggressivePresets: usePreviewAnchorFastCleanup,
+            mode: useKnown48EdgeCleanup ? "known-48" : useV2SmallEdgeCleanup ? "v2-small" : "preview"
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        stage: () => useV2SmallEdgeCleanup ? "v2-small-edge-cleanup" : useKnown48EdgeCleanup ? "known-48-edge-cleanup" : "preview-edge-cleanup",
+        strategy: "edge-cleanup",
+        source: () => {
+          const source = readPipelineRepairState(readState).source;
+          return `${source}+${useV2SmallEdgeCleanup ? "v2-small-edge-cleanup" : "edge-cleanup"}`;
+        },
+        deriveSuppressionGainFromOriginalSpatial: true,
+        nowMs: nowMs4
+      } : null,
+      known48FlatFill: useKnown48EdgeCleanup ? {
+        maxPasses: known48FlatFillMaxAppliedPasses,
+        createStage: (passIndex) => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineKnown48FlatBackgroundResidual2 === "function" ? refineKnown48FlatBackgroundResidual2({
+            sourceImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore,
+            minBaselineGradient: useStrongUndersizedAdaptiveCleanup ? strongUndersizedFlatFillMinGradient : known48FlatFillMinGradient,
+            minGradientImprovement: passIndex === 0 ? known48FlatFillMinGradientImprovement : known48FlatFillSecondPassMinGradientImprovement
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        stage: "known-48-flat-background-fill",
+        strategy: "known-48-flat-fill",
+        source: () => `${readPipelineRepairState(readState).source}+flat-fill`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      } : null,
+      known48LumaEdge: useKnown48EdgeCleanup ? {
+        stage: "known-48-luma-edge-correction",
+        strategy: "luma-edge",
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineKnown48LumaEdgeResidual2 === "function" ? refineKnown48LumaEdgeResidual2({
+            sourceImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+luma-edge`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      } : null,
+      newMargin96FlatFill: {
+        stage: "new-margin-96-flat-background-fill",
+        strategy: "new-margin-96-flat-fill",
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineNewMargin96FlatBackgroundResidual2 === "function" ? refineNewMargin96FlatBackgroundResidual2({
+            sourceImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            config: state.config,
+            alphaGain: state.alphaGain,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+flat-fill`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      }
+    };
+  }
+  function createPostLocatedRepairStageSequenceSpecs({
+    nowMs: nowMs4 = Date.now,
+    timingAnchors = {},
+    readState,
+    originalImageData,
+    originalSpatialScore,
+    originalGradientScore,
+    acceptCurrentRepairTrialResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refineCanonical96PositiveHaloResidual: refineCanonical96PositiveHaloResidual2,
+      refineSmoothLocatedResidualWithEstimatedPrior: refineSmoothLocatedResidualWithEstimatedPrior2,
+      refineNewMargin96SmoothEdgeResidual: refineNewMargin96SmoothEdgeResidual2
+    } = refiners;
+    return [
+      {
+        stage: "canonical-96-positive-halo-rescue",
+        strategy: "canonical-96-positive-halo-repair",
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineCanonical96PositiveHaloResidual2 === "function" ? refineCanonical96PositiveHaloResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+canonical-96-positive-halo-rescue`,
+        suppressionGain: (result) => result.suppressionGain
+      },
+      {
+        stage: "smooth-located-estimated-prior",
+        strategy: "smooth-located-prior",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "smoothPriorStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineSmoothLocatedResidualWithEstimatedPrior2 === "function" ? refineSmoothLocatedResidualWithEstimatedPrior2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            source: state.source,
+            alphaGain: state.alphaGain,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+smooth-prior`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      },
+      {
+        stage: "new-margin-96-smooth-edge-repair",
+        strategy: "new-margin-96-smooth-edge",
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineNewMargin96SmoothEdgeResidual2 === "function" ? refineNewMargin96SmoothEdgeResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSource: state.source,
+            currentAlphaGain: state.alphaGain,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+smooth-edge`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      }
+    ];
+  }
+  function createTailRepairStageSequenceSpecs({
+    nowMs: nowMs4 = Date.now,
+    timingAnchors = {},
+    readState,
+    originalImageData,
+    originalSpatialScore,
+    originalGradientScore,
+    alpha96,
+    getAlphaMap,
+    acceptCurrentRepairTrialResult,
+    refiners = {}
+  } = {}) {
+    const {
+      refineKnown48SmallMarginPriorRepairResidual: refineKnown48SmallMarginPriorRepairResidual2,
+      refineSmallLocatedPriorRepairResidual: refineSmallLocatedPriorRepairResidual2,
+      refineKnown48BoundaryRepairResidual: refineKnown48BoundaryRepairResidual2,
+      refineDarkHaloResidual: refineDarkHaloResidual2,
+      refineQuantizedNegativeBodyResidual: refineQuantizedNegativeBodyResidual2,
+      refineKnown48MidCoreBiasResidual: refineKnown48MidCoreBiasResidual2
+    } = refiners;
+    return [
+      {
+        stage: "known-48-small-margin-prior-repair",
+        strategy: "small-margin-prior",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "smallMarginPriorRepairStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineKnown48SmallMarginPriorRepairResidual2 === "function" ? refineKnown48SmallMarginPriorRepairResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore,
+            source: state.source
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+small-margin-prior`,
+        suppressionGain: (result) => result.suppressionGain
+      },
+      {
+        stage: "small-located-prior-repair",
+        strategy: "small-located-prior",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "smallLocatedPriorRepairStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineSmallLocatedPriorRepairResidual2 === "function" ? refineSmallLocatedPriorRepairResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore,
+            source: state.source
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+small-located-prior`,
+        suppressionGain: (result) => result.suppressionGain,
+        stageExtras: (result) => ({
+          darkBackgroundSupportConvergence: result.darkBackgroundSupportConvergence ?? null
+        })
+      },
+      {
+        stage: "known-48-boundary-repair-rescue",
+        strategy: "boundary-repair",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "boundaryRepairRescueStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineKnown48BoundaryRepairResidual2 === "function" ? refineKnown48BoundaryRepairResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            originalSpatialScore,
+            originalGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+boundary-repair-rescue`,
+        suppressionGain: (result) => result.suppressionGain
+      },
+      {
+        stage: "dark-halo-low-logo-rescue",
+        strategy: "dark-halo-repair",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "darkHaloRescueStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineDarkHaloResidual2 === "function" ? refineDarkHaloResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain,
+            alpha96,
+            getAlphaMap
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+dark-halo-rescue`,
+        suppressionGain: (result) => result.suppressionGain
+      },
+      {
+        stage: "quantized-body-correction",
+        strategy: "quantized-body-correction",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "quantizedBodyCorrectionStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineQuantizedNegativeBodyResidual2 === "function" ? refineQuantizedNegativeBodyResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            currentAlphaMap: state.alphaMap,
+            currentPosition: state.position,
+            currentConfig: state.config,
+            currentSpatialScore: state.finalProcessedSpatialScore,
+            currentGradientScore: state.finalProcessedGradientScore,
+            currentAlphaGain: state.alphaGain
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+quantized-body-correction`,
+        suppressionGain: (result) => result.suppressionGain
+      },
+      {
+        stage: "known-48-mid-core-bias-correction",
+        strategy: "mid-core-bias-correction",
+        beforeStage: markTimingAnchor2({
+          timingAnchors,
+          timingKey: "midCoreBiasStartedAt",
+          nowMs: nowMs4
+        }),
+        createStage: () => {
+          const state = readPipelineRepairState(readState);
+          return typeof refineKnown48MidCoreBiasResidual2 === "function" ? refineKnown48MidCoreBiasResidual2({
+            originalImageData,
+            currentImageData: state.finalImageData,
+            alphaMap: state.alphaMap,
+            position: state.position,
+            source: state.source,
+            alphaGain: state.alphaGain,
+            baselineSpatialScore: state.finalProcessedSpatialScore,
+            baselineGradientScore: state.finalProcessedGradientScore
+          }) : null;
+        },
+        acceptCurrentRepairTrialResult,
+        source: () => `${readPipelineRepairState(readState).source}+mid-core-bias`,
+        deriveSuppressionGainFromOriginalSpatial: true
+      }
+    ];
+  }
+
+  // src/core/pipelineAcceptedExecutor.js
+  var FROZEN_SELECTED_TRIAL_SKIPPED_TIMING_KEYS = Object.freeze([
+    "recalibrationMs",
+    "localAlphaSearchMs",
+    "overSubtractionRecalibrationMs",
+    "darkCatalogFineTuneMs",
+    "weakAlphaFineTuneMs",
+    "previewBackgroundCleanupMs",
+    "subpixelRefinementMs",
+    "previewEdgeCleanupMs",
+    "smallPreviewRefinementMs",
+    "locatedAggressiveRemovalMs",
+    "smoothPriorCleanupMs",
+    "newMargin96VariantRescueMs",
+    "known48AntiTemplateRescueMs",
+    "powerProfileRescueMs",
+    "positiveResidualRebalanceMs",
+    "smallMarginPriorRepairMs",
+    "smallLocatedPriorRepairMs",
+    "boundaryRepairRescueMs",
+    "darkHaloRescueMs",
+    "quantizedBodyCorrectionMs",
+    "midCoreBiasCorrectionMs"
+  ]);
+  function assignFrozenSelectedTrialDebugTimings({
+    nowMs: nowMs4,
+    totalStartedAt,
+    debugTimings,
+    debugTimingsEnabled
+  }) {
+    if (!debugTimingsEnabled || !debugTimings) return;
+    for (const key of FROZEN_SELECTED_TRIAL_SKIPPED_TIMING_KEYS) {
+      debugTimings[key] = 0;
+    }
+    debugTimings.totalMs = totalStartedAt === null ? 0 : Math.max(0, nowMs4() - totalStartedAt);
+  }
+  function runAcceptedAlphaRepairPipeline({
+    nowMs: nowMs4 = Date.now,
+    totalStartedAt = null,
+    runtimeBootstrap,
+    pipelineTraceRecorder,
+    originalImageData,
+    alpha96,
+    getAlphaMap,
+    alpha96Variants = null,
+    locatedAggressiveRemoval,
+    debugTimings = null,
+    debugTimingsEnabled = false,
+    visualPostProcessingEnabled = false,
+    templateWarp = null,
+    passState,
+    subpixelShift = null,
+    freezeSelectedTrial = false,
+    metrics = {},
+    gates = {},
+    config = {},
+    refiners = {}
+  } = {}) {
+    const {
+      readPipelineState,
+      applyPipelineState,
+      cleanupFlags
+    } = runtimeBootstrap;
+    const {
+      usePreviewAnchorFastCleanup,
+      useKnown48EdgeCleanup,
+      useStrongUndersizedAdaptiveCleanup,
+      useV2SmallEdgeCleanup
+    } = cleanupFlags;
+    const {
+      recordAlphaTrialEvent,
+      acceptCurrentAlphaTrialResult,
+      acceptCurrentAlphaStageResult,
+      acceptCurrentRepairTrialResult,
+      acceptRecalibrationStageResult,
+      acceptLocatedAggressiveResult,
+      acceptPreviewBackgroundCleanupResult,
+      assignTailDebugTimings
+    } = createAlphaRepairPipelineRuntime({
+      traceRecorder: pipelineTraceRecorder,
+      readState: readPipelineState,
+      applyState: applyPipelineState,
+      debugTimings
+    });
+    if (freezeSelectedTrial) {
+      assignFrozenSelectedTrialDebugTimings({
+        nowMs: nowMs4,
+        totalStartedAt,
+        debugTimings,
+        debugTimingsEnabled
+      });
+      return {
+        passState,
+        subpixelShift,
+        readPipelineState
+      };
+    }
+    runRecalibrationStage(createRecalibrationStageSpec({
+      nowMs: nowMs4,
+      readState: readPipelineState,
+      shouldRecalibrateAlphaStrength: gates.shouldRecalibrateAlphaStrength,
+      calculateNearBlackRatio: metrics.calculateNearBlackRatio,
+      computeRegionGradientCorrelation: metrics.computeRegionGradientCorrelation,
+      acceptRecalibrationStageResult,
+      debugTimings,
+      debugTimingsEnabled,
+      refiners: {
+        recalibrateAlphaStrength: refiners.recalibrateAlphaStrength
+      }
+    }));
+    runCurrentAlphaTrialSpecPhase({
+      createSpecs: () => {
+        const current = readPipelineState();
+        return createFineAlphaTrialSequenceSpecs({
+          nowMs: nowMs4,
+          readState: readPipelineState,
+          originalImageData,
+          originalSpatialScore: current.originalSpatialScore,
+          originalGradientScore: current.originalGradientScore,
+          calculateNearBlackRatio: metrics.calculateNearBlackRatio,
+          acceptCurrentAlphaTrialResult,
+          debugTimings,
+          debugTimingsEnabled,
+          refiners: {
+            refineLargeMargin48ProfileAlphaRescue: refiners.refineLargeMargin48ProfileAlphaRescue,
+            fineTuneEvidenceGatedLocalAlpha: refiners.fineTuneEvidenceGatedLocalAlpha,
+            recalibrateOverSubtractedAlpha: refiners.recalibrateOverSubtractedAlpha,
+            fineTuneDarkCatalogAlpha: refiners.fineTuneDarkCatalogAlpha,
+            fineTuneWeakPositiveResidualAlpha: refiners.fineTuneWeakPositiveResidualAlpha
+          }
+        });
+      }
+    });
+    runPreviewBackgroundCleanupStage(createPreviewBackgroundCleanupStageSpec({
+      nowMs: nowMs4,
+      readState: readPipelineState,
+      visualPostProcessingEnabled,
+      maxNearBlackRatioIncrease: config.maxNearBlackRatioIncrease,
+      measureOuterBorderLuminanceStd: metrics.measureOuterBorderLuminanceStd,
+      shouldApplyPreviewSmoothBackgroundCleanup: gates.shouldApplyPreviewSmoothBackgroundCleanup,
+      applyPreviewSmoothBackgroundCleanup: refiners.applyPreviewSmoothBackgroundCleanup,
+      createRegionCorrelationMetrics: metrics.createRegionCorrelationMetrics,
+      calculateNearBlackRatio: metrics.calculateNearBlackRatio,
+      acceptPreviewBackgroundCleanupResult,
+      debugTimings,
+      debugTimingsEnabled
+    }));
+    const subpixelStartedAt = nowMs4();
+    const subpixelAlphaStageResults = runCurrentAlphaStageSpecPhase({
+      createSpecs: () => createSubpixelOutlineAlphaStageSpecs({
+        readState: readPipelineState,
+        calculateNearBlackRatio: metrics.calculateNearBlackRatio,
+        templateWarp,
+        visualPostProcessingEnabled,
+        usePreviewAnchorFastCleanup,
+        outlineConfig: config.outlineConfig,
+        acceptCurrentAlphaStageResult,
+        refiners: {
+          refineSubpixelOutline: refiners.refineSubpixelOutline
+        }
+      })
+    });
+    const subpixelRefined = subpixelAlphaStageResults[0];
+    if (subpixelRefined) {
+      subpixelShift = subpixelRefined.shift;
+    }
+    if (debugTimingsEnabled && debugTimings) {
+      debugTimings.subpixelRefinementMs = nowMs4() - subpixelStartedAt;
+    }
+    const shouldRunEdgeCleanup = visualPostProcessingEnabled || useKnown48EdgeCleanup || useV2SmallEdgeCleanup || usePreviewAnchorFastCleanup;
+    const {
+      previewEdgeCleanupElapsedMs
+    } = runRepairCleanupSpecPhase({
+      createSpecs: () => createRepairCleanupPhaseSpecs({
+        nowMs: nowMs4,
+        readState: readPipelineState,
+        shouldRunEdgeCleanup,
+        useKnown48EdgeCleanup,
+        useStrongUndersizedAdaptiveCleanup,
+        useV2SmallEdgeCleanup,
+        usePreviewAnchorFastCleanup,
+        cleanupConfig: config.repairCleanupConfig,
+        acceptCurrentRepairTrialResult,
+        refiners: {
+          refinePreviewResidualEdge: refiners.refinePreviewResidualEdge,
+          refineKnown48FlatBackgroundResidual: refiners.refineKnown48FlatBackgroundResidual,
+          refineKnown48LumaEdgeResidual: refiners.refineKnown48LumaEdgeResidual,
+          refineNewMargin96FlatBackgroundResidual: refiners.refineNewMargin96FlatBackgroundResidual
+        }
+      })
+    });
+    const smallAnchorTimingAnchors = {};
+    const smallAnchorAlphaStageResults = runCurrentAlphaStageSpecPhase({
+      createSpecs: () => createSmallAnchorAlphaStageSequenceSpecs({
+        nowMs: nowMs4,
+        timingAnchors: smallAnchorTimingAnchors,
+        readState: readPipelineState,
+        originalImageData,
+        originalGradientScore: readPipelineState().originalGradientScore,
+        alpha96,
+        getAlphaMap,
+        visualPostProcessingEnabled,
+        assessWatermarkResidualVisibility: metrics.assessWatermarkResidualVisibility,
+        acceptCurrentAlphaStageResult,
+        refiners: {
+          refineSmallPreviewAnchorCandidate: refiners.refineSmallPreviewAnchorCandidate,
+          refineSmallFixedLocalAnchorGeometry: refiners.refineSmallFixedLocalAnchorGeometry
+        }
+      })
+    });
+    const smallFixedLocalRelocated = smallAnchorAlphaStageResults[1];
+    const locatedAggressiveStartedAt = nowMs4();
+    const locatedAggressiveRun = runLocatedAggressiveStage(createLocatedAggressiveStageSpec({
+      readState: readPipelineState,
+      originalImageData,
+      originalSpatialScore: readPipelineState().originalSpatialScore,
+      originalGradientScore: readPipelineState().originalGradientScore,
+      smallFixedLocalRelocated,
+      locatedAggressiveRemovalEnabled: locatedAggressiveRemoval,
+      assessWatermarkResidualVisibility: metrics.assessWatermarkResidualVisibility,
+      shouldSkipLocatedAggressiveForCleanCanonical96: gates.shouldSkipLocatedAggressiveForCleanCanonical96,
+      recordAlphaTrialEvent,
+      acceptLocatedAggressiveResult,
+      currentPassState: passState,
+      refiners: {
+        refineLocatedAggressiveRemoval: refiners.refineLocatedAggressiveRemoval
+      }
+    }));
+    passState = locatedAggressiveRun.passState;
+    const postLocatedRepairTimingAnchors = {};
+    runCurrentRepairStageSpecPhase({
+      createSpecs: () => {
+        const current = readPipelineState();
+        return createPostLocatedRepairStageSequenceSpecs({
+          nowMs: nowMs4,
+          timingAnchors: postLocatedRepairTimingAnchors,
+          readState: readPipelineState,
+          originalImageData,
+          originalSpatialScore: current.originalSpatialScore,
+          originalGradientScore: current.originalGradientScore,
+          acceptCurrentRepairTrialResult,
+          refiners: {
+            refineCanonical96PositiveHaloResidual: refiners.refineCanonical96PositiveHaloResidual,
+            refineSmoothLocatedResidualWithEstimatedPrior: refiners.refineSmoothLocatedResidualWithEstimatedPrior,
+            refineNewMargin96SmoothEdgeResidual: refiners.refineNewMargin96SmoothEdgeResidual
+          }
+        });
+      }
+    });
+    const alphaRescueTimingAnchors = {};
+    runCurrentAlphaStageSpecPhase({
+      createSpecs: () => {
+        const current = readPipelineState();
+        return createAlphaRescueStageSequenceSpecs({
+          nowMs: nowMs4,
+          timingAnchors: alphaRescueTimingAnchors,
+          readState: readPipelineState,
+          originalImageData,
+          originalSpatialScore: current.originalSpatialScore,
+          originalGradientScore: current.originalGradientScore,
+          resolveVariantAlphaMap: () => alpha96Variants?.["20260520"] ?? (typeof getAlphaMap === "function" ? getAlphaMap("96-20260520") : null),
+          acceptCurrentAlphaStageResult,
+          refiners: {
+            refineNewMargin96VariantResidual: refiners.refineNewMargin96VariantResidual,
+            refineKnown48AntiTemplateResidual: refiners.refineKnown48AntiTemplateResidual,
+            refineKnown48PowerProfileResidual: refiners.refineKnown48PowerProfileResidual,
+            refineKnown48PositiveResidualRebalance: refiners.refineKnown48PositiveResidualRebalance
+          }
+        });
+      }
+    });
+    const tailRepairTimingAnchors = {};
+    runCurrentRepairStageSpecPhase({
+      createSpecs: () => {
+        const current = readPipelineState();
+        return createTailRepairStageSequenceSpecs({
+          nowMs: nowMs4,
+          timingAnchors: tailRepairTimingAnchors,
+          readState: readPipelineState,
+          originalImageData,
+          originalSpatialScore: current.originalSpatialScore,
+          originalGradientScore: current.originalGradientScore,
+          alpha96,
+          getAlphaMap,
+          acceptCurrentRepairTrialResult,
+          refiners: {
+            refineKnown48SmallMarginPriorRepairResidual: refiners.refineKnown48SmallMarginPriorRepairResidual,
+            refineSmallLocatedPriorRepairResidual: refiners.refineSmallLocatedPriorRepairResidual,
+            refineKnown48BoundaryRepairResidual: refiners.refineKnown48BoundaryRepairResidual,
+            refineDarkHaloResidual: refiners.refineDarkHaloResidual,
+            refineQuantizedNegativeBodyResidual: refiners.refineQuantizedNegativeBodyResidual,
+            refineKnown48MidCoreBiasResidual: refiners.refineKnown48MidCoreBiasResidual
+          }
+        });
+      }
+    });
+    if (debugTimingsEnabled && debugTimings) {
+      assignTailDebugTimings({
+        nowMs: nowMs4,
+        totalStartedAt,
+        previewEdgeCleanupElapsedMs,
+        ...smallAnchorTimingAnchors,
+        locatedAggressiveStartedAt,
+        ...postLocatedRepairTimingAnchors,
+        ...alphaRescueTimingAnchors,
+        ...tailRepairTimingAnchors
+      });
+    }
+    return {
+      passState,
+      subpixelShift,
+      readPipelineState
+    };
+  }
+
+  // src/core/pipelineAcceptedExecutorRequest.js
+  function createAcceptedPipelineExecutorRequest({
+    nowMs: nowMs4,
+    options = {},
+    totalStartedAt,
+    runtimeBootstrap,
+    pipelineTraceRecorder,
+    originalImageData,
+    alpha96,
+    debugTimings,
+    debugTimingsEnabled,
+    visualPostProcessingEnabled,
+    templateWarp,
+    subpixelShift,
+    freezeSelectedTrial = false,
+    acceptedPipelineDependencies
+  } = {}) {
+    const {
+      metrics,
+      gates,
+      config: executorConfig,
+      refiners
+    } = acceptedPipelineDependencies;
+    return {
+      nowMs: nowMs4,
+      totalStartedAt,
+      runtimeBootstrap,
+      pipelineTraceRecorder,
+      originalImageData,
+      alpha96,
+      getAlphaMap: options.getAlphaMap,
+      alpha96Variants: options.alpha96Variants ?? null,
+      locatedAggressiveRemoval: options.locatedAggressiveRemoval,
+      debugTimings,
+      debugTimingsEnabled,
+      visualPostProcessingEnabled,
+      templateWarp,
+      passState: runtimeBootstrap.passState,
+      subpixelShift,
+      freezeSelectedTrial,
+      metrics,
+      gates,
+      config: executorConfig,
+      refiners
+    };
+  }
+
+  // src/core/pipelineAcceptedFinalizationRequest.js
+  function createAcceptedPipelineFinalizationRequest({
+    acceptedPipelineRun,
+    pipelineTraceRecorder = {},
+    resultContext = {},
+    originalImageData = null,
+    initialSelection = null,
+    resolvedConfig = null
+  } = {}) {
+    return {
+      pipelineState: acceptedPipelineRun.readPipelineState(),
+      passState: acceptedPipelineRun.passState,
+      traceState: {
+        alphaAdjustmentStages: pipelineTraceRecorder.alphaAdjustmentStages,
+        alphaTrialEvents: pipelineTraceRecorder.alphaTrialEvents
+      },
+      resultContext,
+      originalImageData,
+      initialSelection,
+      resolvedConfig
+    };
+  }
+
+  // src/core/selectionDebug.js
+  function normalizeConfig3(config) {
+    if (!config || typeof config !== "object") return null;
+    const { logoSize, marginRight, marginBottom } = config;
+    if (![logoSize, marginRight, marginBottom].every(Number.isFinite)) {
+      return null;
+    }
+    return { logoSize, marginRight, marginBottom };
+  }
+  function normalizePosition3(position) {
+    if (!position || typeof position !== "object") return null;
+    const { x, y, width, height } = position;
+    if (![x, y, width, height].every(Number.isFinite)) {
+      return null;
+    }
+    return { x, y, width, height };
+  }
+  function normalizeNumber(value) {
+    return Number.isFinite(value) ? value : null;
+  }
+  function normalizeResidual(residual) {
+    if (!residual || typeof residual !== "object") return null;
+    return {
+      cleared: residual.cleared === true,
+      spatialResidual: normalizeNumber(residual.spatialResidual),
+      gradientResidual: normalizeNumber(residual.gradientResidual),
+      suppressionGain: normalizeNumber(residual.suppressionGain),
+      artifactCost: normalizeNumber(residual.artifactCost),
+      score: normalizeNumber(residual.score)
+    };
+  }
+  function normalizeDamage(damage) {
+    if (!damage || typeof damage !== "object") return null;
+    return {
+      safe: damage.safe === true,
+      penalty: normalizeNumber(damage.penalty),
+      reason: typeof damage.reason === "string" ? damage.reason : null,
+      nearBlackIncrease: normalizeNumber(damage.nearBlackIncrease),
+      texturePenalty: normalizeNumber(damage.texturePenalty),
+      newlyClippedRatio: normalizeNumber(damage.newlyClippedRatio),
+      halo: damage.halo ?? null
+    };
+  }
+  function normalizeOriginalEvidence(originalEvidence) {
+    if (!originalEvidence || typeof originalEvidence !== "object") return null;
+    return {
+      tier: typeof originalEvidence.tier === "string" ? originalEvidence.tier : "none",
+      spatial: normalizeNumber(originalEvidence.spatial),
+      gradient: normalizeNumber(originalEvidence.gradient),
+      score: normalizeNumber(originalEvidence.score)
+    };
+  }
+  function createSelectionDebugSummary({
+    selectedTrial,
+    selectionSource = null,
+    initialConfig = null,
+    initialPosition = null
+  } = {}) {
+    if (!selectedTrial) return null;
+    const candidateSource = typeof selectionSource === "string" && selectionSource ? selectionSource : typeof selectedTrial.source === "string" ? selectedTrial.source : null;
+    return {
+      candidateSource,
+      initialConfig: normalizeConfig3(initialConfig),
+      initialPosition: normalizePosition3(initialPosition),
+      finalConfig: normalizeConfig3(selectedTrial.config),
+      finalPosition: normalizePosition3(selectedTrial.position),
+      sourcePriority: normalizeNumber(selectedTrial.sourcePriority),
+      alphaPriorityIndex: normalizeNumber(selectedTrial.alphaPriorityIndex),
+      rankingKey: Array.isArray(selectedTrial.rankingKey) ? [...selectedTrial.rankingKey] : null,
+      earlyAccept: selectedTrial.earlyAccept === true,
+      originalEvidence: normalizeOriginalEvidence(selectedTrial.originalEvidence),
+      residual: normalizeResidual(selectedTrial.residual),
+      damage: normalizeDamage(selectedTrial.damage),
+      texturePenalty: Number.isFinite(selectedTrial.texturePenalty) ? selectedTrial.texturePenalty : null,
+      tooDark: selectedTrial.tooDark === true,
+      tooFlat: selectedTrial.tooFlat === true,
+      hardReject: selectedTrial.hardReject === true,
+      usedCatalogVariant: selectedTrial.provenance?.catalogVariant === true,
+      usedSizeJitter: selectedTrial.provenance?.sizeJitter === true,
+      usedLocalShift: selectedTrial.provenance?.localShift === true,
+      usedAdaptive: selectedTrial.provenance?.adaptive === true,
+      usedPreviewAnchor: selectedTrial.provenance?.previewAnchor === true
+    };
+  }
+
+  // src/core/pipelineMeta.js
+  function normalizeMetaPosition(position) {
+    if (!position) return null;
+    const { x, y, width, height } = position;
+    if (![x, y, width, height].every((value) => Number.isFinite(value))) {
+      return null;
+    }
+    return { x, y, width, height };
+  }
+  function normalizeMetaConfig(config) {
+    if (!config) return null;
+    const { logoSize, marginRight, marginBottom } = config;
+    if (![logoSize, marginRight, marginBottom].every((value) => Number.isFinite(value))) {
+      return null;
+    }
+    return {
+      logoSize,
+      marginRight,
+      marginBottom,
+      ...typeof config.alphaVariant === "string" && config.alphaVariant.length > 0 ? { alphaVariant: config.alphaVariant } : {}
+    };
+  }
+  var QUALITY_STATUSES = /* @__PURE__ */ new Set([
+    "clean",
+    "visible-residual",
+    "possible-content-damage",
+    "mixed"
+  ]);
+  function normalizeQualityStatus(status) {
+    return QUALITY_STATUSES.has(status) ? status : null;
+  }
+  function normalizeSelectionConfidence(value) {
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : null;
+  }
+  function normalizeSelectedCandidate(candidate) {
+    if (!candidate || typeof candidate !== "object") return null;
+    return {
+      id: candidate.id ?? null,
+      family: candidate.family ?? null,
+      rank: Number.isFinite(candidate.rank) ? candidate.rank : null,
+      source: candidate.source ?? null,
+      config: normalizeMetaConfig(candidate.config),
+      position: normalizeMetaPosition(candidate.position),
+      alphaProfile: candidate.alphaProfile ?? null,
+      polarity: candidate.polarity ?? null
+    };
+  }
+  function normalizeCandidateSummary(summary) {
+    if (!summary || typeof summary !== "object") return null;
+    return {
+      id: summary.id ?? null,
+      family: summary.family ?? null,
+      rank: Number.isFinite(summary.rank) ? summary.rank : null,
+      valid: summary.valid === true,
+      finalScore: Number.isFinite(summary.finalScore) ? summary.finalScore : null,
+      qualityStatus: normalizeQualityStatus(summary.qualityStatus),
+      qualitySignals: summary.qualitySignals ?? null,
+      error: typeof summary.error === "string" ? summary.error : null
+    };
+  }
+  function reconcileDecisionPathQuality(decisionPath, qualitySignals) {
+    if (!decisionPath?.alphaTrial) {
+      return decisionPath;
+    }
+    const alphaTrial = reconcileAlphaTrialWithFinalQualitySignals(
+      decisionPath.alphaTrial,
+      qualitySignals
+    );
+    if (alphaTrial === decisionPath.alphaTrial) return decisionPath;
+    return {
+      ...decisionPath,
+      alphaTrial
+    };
+  }
+  function createWatermarkMeta({
+    position = null,
+    config = null,
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null,
+    templateWarp = null,
+    alphaGain = 1,
+    passCount = 0,
+    attemptedPassCount = 0,
+    passStopReason = null,
+    passes = null,
+    source = "standard",
+    decisionTier = null,
+    applied = true,
+    skipReason = null,
+    subpixelShift = null,
+    selectionDebug = null,
+    alphaAdjustmentStages = null,
+    alphaMapSource = null,
+    decisionPath = null,
+    bestEffort = false,
+    retryRecommended = null,
+    qualityStatus = null,
+    selectionConfidence = null,
+    selectedCandidate = null,
+    qualitySignals = null,
+    candidateSummaries = null
+  } = {}) {
+    const normalizedPosition = normalizeMetaPosition(position);
+    return {
+      applied,
+      skipReason: applied ? null : skipReason,
+      size: normalizedPosition ? normalizedPosition.width : null,
+      position: normalizedPosition,
+      config: normalizeMetaConfig(config),
+      detection: {
+        adaptiveConfidence,
+        originalSpatialScore,
+        originalGradientScore,
+        processedSpatialScore,
+        processedGradientScore,
+        suppressionGain,
+        residualVisibility
+      },
+      templateWarp: templateWarp ?? null,
+      alphaGain,
+      passCount,
+      attemptedPassCount,
+      passStopReason,
+      passes: Array.isArray(passes) ? passes : null,
+      // decisionTier is the normalized contract used by UI and attribution.
+      // source remains as a verbose execution trace for debugging/tests.
+      source,
+      decisionTier,
+      subpixelShift: subpixelShift ?? null,
+      selectionDebug,
+      alphaAdjustmentStages: Array.isArray(alphaAdjustmentStages) ? alphaAdjustmentStages : null,
+      alphaMapSource: alphaMapSource ?? null,
+      decisionPath: decisionPath ?? null,
+      bestEffort: bestEffort === true,
+      retryRecommended: typeof retryRecommended === "boolean" ? retryRecommended : null,
+      qualityStatus: normalizeQualityStatus(qualityStatus),
+      selectionConfidence: normalizeSelectionConfidence(selectionConfidence),
+      selectedCandidate: normalizeSelectedCandidate(selectedCandidate),
+      qualitySignals: qualitySignals ?? null,
+      candidateSummaries: Array.isArray(candidateSummaries) ? candidateSummaries.map(normalizeCandidateSummary).filter(Boolean) : null
+    };
+  }
+  function createAcceptedWatermarkMeta({
+    selectedTrial = null,
+    selectionSource = null,
+    position = null,
+    config = null,
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null,
+    templateWarp = null,
+    alphaGain = 1,
+    passCount = 0,
+    attemptedPassCount = 0,
+    passStopReason = null,
+    passes = null,
+    source = "standard",
+    decisionTier = null,
+    subpixelShift = null,
+    selectionDebug = null,
+    alphaAdjustmentStages = null,
+    alphaTrialEvents = null,
+    alphaMapSource = null,
+    bestEffort = false,
+    retryRecommended = null,
+    qualityStatus = null,
+    selectionConfidence = null,
+    selectedCandidate = null,
+    qualitySignals = null,
+    candidateSummaries = null
+  } = {}) {
+    const initialDecisionPath = createAcceptedDecisionPath({
+      selectedTrial,
+      selectionSource,
+      source,
+      decisionTier,
+      config,
+      position,
+      adaptiveConfidence,
+      alphaGain,
+      alphaMapSource,
+      templateWarp,
+      alphaAdjustmentStages,
+      alphaTrialEvents,
+      originalSpatialScore,
+      originalGradientScore,
+      processedSpatialScore,
+      processedGradientScore,
+      suppressionGain,
+      residualVisibility
+    });
+    const decisionPath = reconcileDecisionPathQuality(
+      initialDecisionPath,
+      qualitySignals
+    );
+    return createWatermarkMeta({
+      position,
+      config,
+      adaptiveConfidence,
+      originalSpatialScore,
+      originalGradientScore,
+      processedSpatialScore,
+      processedGradientScore,
+      suppressionGain,
+      residualVisibility,
+      templateWarp,
+      alphaGain,
+      passCount,
+      attemptedPassCount,
+      passStopReason,
+      passes,
+      source,
+      decisionTier,
+      applied: true,
+      subpixelShift,
+      alphaAdjustmentStages,
+      alphaMapSource,
+      selectionDebug,
+      decisionPath,
+      bestEffort,
+      retryRecommended,
+      qualityStatus,
+      selectionConfidence,
+      selectedCandidate,
+      qualitySignals,
+      candidateSummaries
+    });
+  }
+  function attachTopNSelectionMeta(meta, {
+    qualityStatus,
+    selectionConfidence,
+    selectedCandidate,
+    qualitySignals,
+    candidateSummaries
+  } = {}) {
+    const normalized = createWatermarkMeta({
+      applied: true,
+      bestEffort: true,
+      retryRecommended: false,
+      qualityStatus,
+      selectionConfidence,
+      selectedCandidate,
+      qualitySignals,
+      candidateSummaries
+    });
+    const decisionPath = reconcileDecisionPathQuality(
+      meta?.decisionPath,
+      normalized.qualitySignals
+    );
+    return {
+      ...meta,
+      applied: true,
+      skipReason: null,
+      bestEffort: normalized.bestEffort,
+      retryRecommended: normalized.retryRecommended,
+      qualityStatus: normalized.qualityStatus,
+      selectionConfidence: normalized.selectionConfidence,
+      selectedCandidate: normalized.selectedCandidate,
+      qualitySignals: normalized.qualitySignals,
+      candidateSummaries: normalized.candidateSummaries,
+      decisionPath
+    };
+  }
+  function createRejectedWatermarkMeta({
+    reason = "no-watermark-detected",
+    source = "skipped",
+    decisionTier = "insufficient",
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    selectionDebug = null
+  } = {}) {
+    return createWatermarkMeta({
+      adaptiveConfidence,
+      originalSpatialScore,
+      originalGradientScore,
+      processedSpatialScore: originalSpatialScore,
+      processedGradientScore: originalGradientScore,
+      suppressionGain: 0,
+      alphaGain: 1,
+      source,
+      decisionTier,
+      applied: false,
+      skipReason: reason,
+      selectionDebug,
+      decisionPath: createRejectedDecisionPath({
+        reason,
+        source,
+        decisionTier,
+        originalSpatialScore,
+        originalGradientScore,
+        adaptiveConfidence
+      })
+    });
+  }
+  function createFailClosedWatermarkMeta({
+    selectedTrial = null,
+    reason = "visible-residual-unsafe-damage",
+    evidenceClass = "unsafe-visible-residual",
+    position = null,
+    config = null,
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    processedSpatialScore = null,
+    processedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null,
+    templateWarp = null,
+    alphaGain = 1,
+    passCount = 0,
+    attemptedPassCount = 0,
+    passStopReason = null,
+    passes = null,
+    source = "standard",
+    decisionTier = null,
+    subpixelShift = null,
+    selectionDebug = null,
+    alphaAdjustmentStages = null,
+    alphaMapSource = null
+  } = {}) {
+    const resolvedPosition = position ?? selectedTrial?.position ?? null;
+    const resolvedConfig = config ?? selectedTrial?.config ?? null;
+    const detectionCandidate = createDetectionCandidateFromSelectedTrial({
+      selectedTrial,
+      source,
+      config: resolvedConfig,
+      position: resolvedPosition,
+      adaptiveConfidence,
+      decisionTier
+    });
+    const decisionPath = {
+      version: 1,
+      decision: "reject",
+      detectionSource: detectionCandidate.source,
+      alphaSource: null,
+      repairSource: null,
+      evaluationDecision: "rejected",
+      blockedGate: reason,
+      riskFlags: [],
+      detectionCandidate,
+      alphaTrial: null,
+      repairTrial: null,
+      evaluation: {
+        pathId: `${detectionCandidate.id}->reject`,
+        detectionId: detectionCandidate.id,
+        alphaTrialId: null,
+        repairTrialId: null,
+        eligible: false,
+        decision: "reject",
+        blockedGate: reason,
+        riskFlags: [],
+        evidenceClass,
+        explanation: reason
+      }
+    };
+    return createWatermarkMeta({
+      position: resolvedPosition,
+      config: resolvedConfig,
+      adaptiveConfidence,
+      originalSpatialScore,
+      originalGradientScore,
+      processedSpatialScore,
+      processedGradientScore,
+      suppressionGain,
+      residualVisibility,
+      templateWarp,
+      alphaGain,
+      passCount,
+      attemptedPassCount,
+      passStopReason,
+      passes,
+      source,
+      decisionTier,
+      applied: false,
+      skipReason: reason,
+      subpixelShift,
+      alphaAdjustmentStages,
+      alphaMapSource,
+      selectionDebug,
+      decisionPath
+    });
+  }
+
+  // src/core/pipelineResult.js
+  function createRejectedPipelineResult({
+    imageData,
+    debugTimings = {},
+    reason = "no-watermark-detected",
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    source = "skipped",
+    decisionTier = "insufficient",
+    selectionDebug = null
+  } = {}) {
+    return {
+      imageData,
+      meta: createRejectedWatermarkMeta({
+        reason,
+        adaptiveConfidence,
+        originalSpatialScore,
+        originalGradientScore,
+        source,
+        decisionTier,
+        selectionDebug
+      }),
+      debugTimings
+    };
+  }
+  function createAcceptedPipelineResult({
+    finalImageData,
+    debugTimings = {},
+    selectedTrial = null,
+    selectionSource = null,
+    position = null,
+    config = null,
+    adaptiveConfidence = null,
+    originalSpatialScore = null,
+    originalGradientScore = null,
+    finalProcessedSpatialScore = null,
+    finalProcessedGradientScore = null,
+    suppressionGain = null,
+    residualVisibility = null,
+    templateWarp = null,
+    alphaGain = 1,
+    passCount = 0,
+    attemptedPassCount = 0,
+    passStopReason = null,
+    passes = null,
+    source = "standard",
+    decisionTier = null,
+    subpixelShift = null,
+    alphaAdjustmentStages = null,
+    alphaTrialEvents = null,
+    alphaMapSource = null,
+    selectionDebug = null,
+    bestEffort = false,
+    retryRecommended = null,
+    qualityStatus = null,
+    selectionConfidence = null,
+    selectedCandidate = null,
+    qualitySignals = null,
+    candidateSummaries = null
+  } = {}) {
+    return {
+      imageData: finalImageData,
+      meta: createAcceptedWatermarkMeta({
+        selectedTrial,
+        selectionSource,
+        position,
+        config,
+        adaptiveConfidence,
+        originalSpatialScore,
+        originalGradientScore,
+        processedSpatialScore: finalProcessedSpatialScore,
+        processedGradientScore: finalProcessedGradientScore,
+        suppressionGain,
+        residualVisibility,
+        templateWarp,
+        alphaGain,
+        passCount,
+        attemptedPassCount,
+        passStopReason,
+        passes,
+        source,
+        decisionTier,
+        subpixelShift,
+        alphaAdjustmentStages,
+        alphaTrialEvents,
+        alphaMapSource,
+        selectionDebug,
+        bestEffort,
+        retryRecommended,
+        qualityStatus,
+        selectionConfidence,
+        selectedCandidate,
+        qualitySignals,
+        candidateSummaries
+      }),
+      debugTimings
+    };
+  }
+  function createAcceptedPipelineResultFromState({
+    pipelineState = {},
+    passState = {},
+    traceState = {},
+    resultContext = {},
+    residualVisibility = null,
+    selectionDebug = null
+  } = {}) {
+    return createAcceptedPipelineResult({
+      finalImageData: pipelineState.finalImageData,
+      debugTimings: resultContext.debugTimings,
+      selectedTrial: resultContext.selectedTrial,
+      selectionSource: resultContext.selectionSource,
+      position: pipelineState.position,
+      config: pipelineState.config,
+      adaptiveConfidence: resultContext.adaptiveConfidence,
+      originalSpatialScore: pipelineState.originalSpatialScore,
+      originalGradientScore: pipelineState.originalGradientScore,
+      finalProcessedSpatialScore: pipelineState.finalProcessedSpatialScore,
+      finalProcessedGradientScore: pipelineState.finalProcessedGradientScore,
+      suppressionGain: pipelineState.suppressionGain,
+      residualVisibility,
+      templateWarp: resultContext.templateWarp,
+      alphaGain: pipelineState.alphaGain,
+      passCount: passState.passCount,
+      attemptedPassCount: passState.attemptedPassCount,
+      passStopReason: passState.passStopReason,
+      passes: passState.passes,
+      source: pipelineState.source,
+      decisionTier: resultContext.decisionTier,
+      subpixelShift: resultContext.subpixelShift,
+      alphaAdjustmentStages: traceState.alphaAdjustmentStages,
+      alphaTrialEvents: traceState.alphaTrialEvents,
+      alphaMapSource: pipelineState.alphaMapSource,
+      selectionDebug,
+      bestEffort: resultContext.bestEffort,
+      retryRecommended: resultContext.retryRecommended,
+      qualityStatus: resultContext.qualityStatus,
+      selectionConfidence: resultContext.selectionConfidence,
+      selectedCandidate: resultContext.selectedCandidate,
+      qualitySignals: resultContext.qualitySignals,
+      candidateSummaries: resultContext.candidateSummaries
+    });
+  }
+  function createFailClosedPipelineResultFromState({
+    originalImageData = null,
+    pipelineState = {},
+    passState = {},
+    traceState = {},
+    resultContext = {},
+    residualVisibility = null,
+    selectionDebug = null,
+    reason = "visible-residual-unsafe-damage",
+    evidenceClass = "unsafe-visible-residual"
+  } = {}) {
+    return {
+      imageData: originalImageData ?? pipelineState.finalImageData,
+      meta: createFailClosedWatermarkMeta({
+        selectedTrial: resultContext.selectedTrial,
+        reason,
+        evidenceClass,
+        position: pipelineState.position,
+        config: pipelineState.config,
+        adaptiveConfidence: resultContext.adaptiveConfidence,
+        originalSpatialScore: pipelineState.originalSpatialScore,
+        originalGradientScore: pipelineState.originalGradientScore,
+        processedSpatialScore: pipelineState.finalProcessedSpatialScore,
+        processedGradientScore: pipelineState.finalProcessedGradientScore,
+        suppressionGain: pipelineState.suppressionGain,
+        residualVisibility,
+        templateWarp: resultContext.templateWarp,
+        alphaGain: pipelineState.alphaGain,
+        passCount: passState.passCount,
+        attemptedPassCount: passState.attemptedPassCount,
+        passStopReason: passState.passStopReason,
+        passes: passState.passes,
+        source: pipelineState.source,
+        decisionTier: resultContext.decisionTier,
+        subpixelShift: resultContext.subpixelShift,
+        alphaAdjustmentStages: traceState.alphaAdjustmentStages,
+        alphaMapSource: pipelineState.alphaMapSource,
+        selectionDebug
+      }),
+      debugTimings: resultContext.debugTimings
+    };
+  }
+
+  // src/core/pipelineFinalization.js
+  function createAcceptedPipelineFinalResult({
+    pipelineState = {},
+    passState = {},
+    traceState = {},
+    resultContext = {},
+    originalImageData = null,
+    initialSelection = null,
+    resolvedConfig = null,
+    allowFailClosed = true
+  } = {}) {
+    const residualVisibility = assessCalibratedWatermarkResidualVisibility({
+      imageData: pipelineState.finalImageData,
+      originalImageData,
+      position: pipelineState.position,
+      alphaMap: pipelineState.alphaMap,
+      alphaGain: pipelineState.alphaGain
+    });
+    const safetyResidualVisibility = residualVisibility ? {
+      ...residualVisibility,
+      visible: residualVisibility.rawVisible ?? residualVisibility.visible
+    } : null;
+    const selectionSource = resultContext.selectionSource ?? initialSelection?.source ?? null;
+    const initialPosition = originalImageData && resolvedConfig ? calculateWatermarkPosition(
+      originalImageData.width,
+      originalImageData.height,
+      resolvedConfig
+    ) : null;
+    const selectionDebug = createSelectionDebugSummary({
+      selectedTrial: resultContext.selectedTrial,
+      selectionSource,
+      initialConfig: resolvedConfig,
+      initialPosition
+    });
+    if (allowFailClosed && shouldFailClosedForVisibleResidualUnsafeDamage({
+      selectedTrial: resultContext.selectedTrial,
+      residualVisibility: safetyResidualVisibility
+    })) {
+      return createFailClosedPipelineResultFromState({
+        originalImageData,
+        pipelineState,
+        passState,
+        traceState,
+        resultContext: {
+          ...resultContext,
+          selectionSource
+        },
+        residualVisibility,
+        selectionDebug
+      });
+    }
+    if (allowFailClosed && shouldFailClosedForUnsafeWeakShiftedCandidate({
+      selectedTrial: resultContext.selectedTrial
+    })) {
+      return createFailClosedPipelineResultFromState({
+        originalImageData,
+        pipelineState,
+        passState,
+        traceState,
+        resultContext: {
+          ...resultContext,
+          selectionSource
+        },
+        residualVisibility,
+        selectionDebug,
+        reason: "unsafe-weak-shifted-candidate",
+        evidenceClass: "unsafe-weak-shifted-candidate"
+      });
+    }
+    return createAcceptedPipelineResultFromState({
+      pipelineState,
+      passState,
+      traceState,
+      resultContext: {
+        ...resultContext,
+        selectionSource
+      },
+      residualVisibility,
+      selectionDebug
+    });
+  }
+
+  // src/core/pipelineMetrics.js
+  var FIRST_PASS_SIGN_FLIP_GRADIENT_THRESHOLD = 0.08;
+  var FIRST_PASS_SIGN_FLIP_MIN_GRADIENT_DROP = 0.2;
+  function shouldStopAfterFirstPass({
+    originalSpatialScore,
+    originalGradientScore,
+    firstPassSpatialScore,
+    firstPassGradientScore
+  }) {
+    if (Math.abs(firstPassSpatialScore) <= 0.25) {
+      return true;
+    }
+    return originalSpatialScore >= 0 && firstPassSpatialScore < 0 && firstPassGradientScore <= FIRST_PASS_SIGN_FLIP_GRADIENT_THRESHOLD && originalGradientScore - firstPassGradientScore >= FIRST_PASS_SIGN_FLIP_MIN_GRADIENT_DROP;
+  }
+  function createRegionCorrelationMetrics({
+    imageData,
+    alphaMap,
+    position,
+    includeNearBlackRatio = false
+  } = {}) {
+    const region = { x: position.x, y: position.y, size: position.width };
+    const metrics = {
+      spatialScore: computeRegionSpatialCorrelation({
+        imageData,
+        alphaMap,
+        region
+      }),
+      gradientScore: computeRegionGradientCorrelation({
+        imageData,
+        alphaMap,
+        region
+      })
+    };
+    if (includeNearBlackRatio) {
+      metrics.nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    }
+    return metrics;
+  }
+  function createFirstPassMetrics({
+    imageData,
+    alphaMap,
+    position,
+    originalSpatialScore,
+    originalGradientScore
+  } = {}) {
+    const firstPassMetrics = createRegionCorrelationMetrics({
+      imageData,
+      alphaMap,
+      position,
+      includeNearBlackRatio: true
+    });
+    const clearedResidual = shouldStopAfterFirstPass({
+      originalSpatialScore,
+      originalGradientScore,
+      firstPassSpatialScore: firstPassMetrics.spatialScore,
+      firstPassGradientScore: firstPassMetrics.gradientScore
+    });
+    return {
+      spatialScore: firstPassMetrics.spatialScore,
+      gradientScore: firstPassMetrics.gradientScore,
+      nearBlackRatio: firstPassMetrics.nearBlackRatio,
+      clearedResidual,
+      passStopReason: clearedResidual ? "residual-low" : "single-pass",
+      passRecord: {
+        index: 1,
+        beforeSpatialScore: originalSpatialScore,
+        beforeGradientScore: originalGradientScore,
+        afterSpatialScore: firstPassMetrics.spatialScore,
+        afterGradientScore: firstPassMetrics.gradientScore,
+        improvement: Math.abs(originalSpatialScore) - Math.abs(firstPassMetrics.spatialScore),
+        gradientDelta: firstPassMetrics.gradientScore - originalGradientScore,
+        nearBlackRatio: firstPassMetrics.nearBlackRatio
+      }
+    };
+  }
+
+  // src/core/pipelineRepairGates.js
+  var DEFAULT_PREVIEW_EDGE_CLEANUP_MAX_SIZE = 32;
+  var DEFAULT_KNOWN_48_EDGE_CLEANUP_MIN_SIZE = 40;
+  var DEFAULT_KNOWN_48_EDGE_CLEANUP_MAX_SIZE = 56;
+  var DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE = 36;
+  var DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE = 2;
+  function shouldUsePreviewAnchorFastCleanup(selectedTrial, position, { previewEdgeCleanupMaxSize = DEFAULT_PREVIEW_EDGE_CLEANUP_MAX_SIZE } = {}) {
+    return selectedTrial?.provenance?.previewAnchor === true && position?.width >= 24 && position?.width <= previewEdgeCleanupMaxSize;
+  }
+  function isKnown48AnchorConfig(config, {
+    known48EdgeCleanupMinSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MIN_SIZE,
+    known48EdgeCleanupMaxSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MAX_SIZE
+  } = {}) {
+    if (!config || config.logoSize < known48EdgeCleanupMinSize || config.logoSize > known48EdgeCleanupMaxSize) {
+      return false;
+    }
+    const marginRight = Number(config.marginRight);
+    const marginBottom = Number(config.marginBottom);
+    if (!Number.isFinite(marginRight) || !Number.isFinite(marginBottom)) return false;
+    const isCurrentLargeMargin = Math.abs(marginRight - 96) <= 2 && Math.abs(marginBottom - 96) <= 2;
+    const isCurrentStandardMargin = marginRight >= 28 && marginRight <= 36 && marginBottom >= 28 && marginBottom <= 36;
+    return isCurrentLargeMargin || isCurrentStandardMargin;
+  }
+  function shouldUseKnown48EdgeCleanup({
+    selectedTrial,
+    position,
+    source,
+    known48EdgeCleanupMinSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MIN_SIZE,
+    known48EdgeCleanupMaxSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MAX_SIZE
+  } = {}) {
+    if (selectedTrial?.provenance?.previewAnchor === true) return false;
+    const sourceText = String(source || "");
+    const isStrongUndersizedAdaptive = shouldUseStrongUndersizedAdaptiveCleanup({
+      selectedTrial,
+      position,
+      source
+    });
+    if (!isStrongUndersizedAdaptive && (position?.width < known48EdgeCleanupMinSize || position?.width > known48EdgeCleanupMaxSize)) return false;
+    if (!isStrongUndersizedAdaptive && !isKnown48AnchorConfig(selectedTrial?.config, {
+      known48EdgeCleanupMinSize,
+      known48EdgeCleanupMaxSize
+    })) return false;
+    if (isStrongUndersizedAdaptive) return true;
+    return sourceText === "standard" || sourceText.startsWith("standard+gain") || sourceText.includes("catalog") || sourceText.includes("fixed-local");
+  }
+  function shouldUseStrongUndersizedAdaptiveCleanup({
+    selectedTrial,
+    position,
+    source
+  } = {}) {
+    if (selectedTrial?.provenance?.previewAnchor === true) return false;
+    const sourceText = String(source || "");
+    return selectedTrial?.provenance?.adaptive === true && selectedTrial?.provenance?.strongUndersizedMatch === true && position?.width >= 38 && position?.width <= 42 && sourceText.startsWith("adaptive");
+  }
+  function isV2SmallAnchorConfig(config, { v2SmallEdgeCleanupSize = DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE } = {}) {
+    if (!config || config.logoSize !== v2SmallEdgeCleanupSize || config.alphaVariant !== "v2") {
+      return false;
+    }
+    const marginRight = Number(config.marginRight);
+    const marginBottom = Number(config.marginBottom);
+    return Number.isFinite(marginRight) && Number.isFinite(marginBottom) && marginRight >= 48 && marginBottom >= 48;
+  }
+  function shouldUseV2SmallEdgeCleanup({
+    selectedTrial,
+    position,
+    source,
+    v2SmallEdgeCleanupSize = DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE,
+    v2SmallEdgeCleanupSizeTolerance = DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE
+  } = {}) {
+    if (selectedTrial?.provenance?.previewAnchor === true) return false;
+    if (position?.width < v2SmallEdgeCleanupSize - v2SmallEdgeCleanupSizeTolerance || position?.width > v2SmallEdgeCleanupSize + v2SmallEdgeCleanupSizeTolerance) {
+      return false;
+    }
+    if (!isV2SmallAnchorConfig(selectedTrial?.config, { v2SmallEdgeCleanupSize })) return false;
+    if (selectedTrial?.provenance?.catalogFamily !== "gemini-v2-small") return false;
+    const sourceText = String(source || "");
+    return sourceText.includes("catalog");
+  }
+  function createRepairCleanupFlags({
+    selectedTrial,
+    position,
+    source,
+    previewEdgeCleanupMaxSize = DEFAULT_PREVIEW_EDGE_CLEANUP_MAX_SIZE,
+    known48EdgeCleanupMinSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MIN_SIZE,
+    known48EdgeCleanupMaxSize = DEFAULT_KNOWN_48_EDGE_CLEANUP_MAX_SIZE,
+    v2SmallEdgeCleanupSize = DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE,
+    v2SmallEdgeCleanupSizeTolerance = DEFAULT_V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE
+  } = {}) {
+    return {
+      usePreviewAnchorFastCleanup: shouldUsePreviewAnchorFastCleanup(selectedTrial, position, {
+        previewEdgeCleanupMaxSize
+      }),
+      useKnown48EdgeCleanup: shouldUseKnown48EdgeCleanup({
+        selectedTrial,
+        position,
+        source,
+        known48EdgeCleanupMinSize,
+        known48EdgeCleanupMaxSize
+      }),
+      useStrongUndersizedAdaptiveCleanup: shouldUseStrongUndersizedAdaptiveCleanup({
+        selectedTrial,
+        position,
+        source
+      }),
+      useV2SmallEdgeCleanup: shouldUseV2SmallEdgeCleanup({
+        selectedTrial,
+        position,
+        source,
+        v2SmallEdgeCleanupSize,
+        v2SmallEdgeCleanupSizeTolerance
+      })
+    };
+  }
+
+  // src/core/pipelineRuntimeBootstrap.js
+  function createAcceptedPipelineRuntimeBootstrap({
+    nowMs: nowMs4 = Date.now,
+    acceptedPipelineState,
+    selectedTrial,
+    debugTimings = null,
+    debugTimingsEnabled = false,
+    cleanupConfig = {}
+  } = {}) {
+    const cleanupFlags = createRepairCleanupFlags({
+      selectedTrial,
+      position: acceptedPipelineState.position,
+      source: acceptedPipelineState.source,
+      previewEdgeCleanupMaxSize: cleanupConfig.previewEdgeCleanupMaxSize,
+      known48EdgeCleanupMinSize: cleanupConfig.known48EdgeCleanupMinSize,
+      known48EdgeCleanupMaxSize: cleanupConfig.known48EdgeCleanupMaxSize,
+      v2SmallEdgeCleanupSize: cleanupConfig.v2SmallEdgeCleanupSize,
+      v2SmallEdgeCleanupSizeTolerance: cleanupConfig.v2SmallEdgeCleanupSizeTolerance
+    });
+    const firstPassMetricsStartedAt = nowMs4();
+    const firstPassMetrics = createFirstPassMetrics({
+      imageData: acceptedPipelineState.finalImageData,
+      alphaMap: acceptedPipelineState.alphaMap,
+      position: acceptedPipelineState.position,
+      originalSpatialScore: acceptedPipelineState.originalSpatialScore,
+      originalGradientScore: acceptedPipelineState.originalGradientScore
+    });
+    if (debugTimingsEnabled && debugTimings) {
+      debugTimings.firstPassMetricsMs = nowMs4() - firstPassMetricsStartedAt;
+      debugTimings.extraPassMs = 0;
+    }
+    const passState = createFirstPassPipelinePassState({ firstPassMetrics });
+    const finalMetricsStartedAt = nowMs4();
+    const processedMetrics = createRegionCorrelationMetrics({
+      imageData: acceptedPipelineState.finalImageData,
+      alphaMap: acceptedPipelineState.alphaMap,
+      position: acceptedPipelineState.position
+    });
+    if (debugTimingsEnabled && debugTimings) {
+      debugTimings.finalMetricsMs = nowMs4() - finalMetricsStartedAt;
+    }
+    let pipelineState = createInitialPipelineRuntimeState({
+      acceptedState: acceptedPipelineState,
+      processedMetrics
+    });
+    const {
+      readPipelineState,
+      applyPipelineState
+    } = createPipelineStateAccessors({
+      get: () => pipelineState,
+      set: (state) => {
+        pipelineState = state;
+      }
+    });
+    return {
+      cleanupFlags,
+      firstPassMetrics,
+      processedMetrics,
+      passState,
+      readPipelineState,
+      applyPipelineState
+    };
+  }
+
+  // src/core/pipelineAlphaTraceContract.js
+  function finiteOrNull5(value) {
+    return Number.isFinite(value) ? value : null;
+  }
+  function normalizeAlphaTrialEventForTrace(event) {
+    return event && typeof event === "object" ? event : null;
+  }
+  function normalizeAlphaAdjustmentStageForTrace(stagePayload = {}) {
+    if (!stagePayload || typeof stagePayload !== "object") return null;
+    const {
+      stage,
+      fromAlphaGain,
+      toAlphaGain,
+      beforeSpatialScore,
+      beforeGradientScore,
+      afterSpatialScore,
+      afterGradientScore,
+      suppressionGain: stageSuppressionGain = null,
+      cost = null,
+      profileExponent = null,
+      alphaStrategy = null,
+      repairStrategy = null,
+      allowSameAlphaGain = false,
+      ...stageExtras
+    } = stagePayload;
+    if (!stage || !Number.isFinite(fromAlphaGain) || !Number.isFinite(toAlphaGain)) return null;
+    if (!allowSameAlphaGain && Math.abs(fromAlphaGain - toAlphaGain) < 1e-4) return null;
+    return {
+      ...stageExtras,
+      stage,
+      fromAlphaGain,
+      toAlphaGain,
+      beforeSpatialScore: finiteOrNull5(beforeSpatialScore),
+      beforeGradientScore: finiteOrNull5(beforeGradientScore),
+      afterSpatialScore: finiteOrNull5(afterSpatialScore),
+      afterGradientScore: finiteOrNull5(afterGradientScore),
+      suppressionGain: finiteOrNull5(stageSuppressionGain),
+      cost: finiteOrNull5(cost),
+      profileExponent: finiteOrNull5(profileExponent),
+      alphaStrategy: typeof alphaStrategy === "string" && alphaStrategy.length > 0 ? alphaStrategy : null,
+      repairStrategy: typeof repairStrategy === "string" && repairStrategy.length > 0 ? repairStrategy : null
+    };
+  }
+
+  // src/core/pipelineTrace.js
+  function createPipelineTraceRecorder() {
+    const alphaAdjustmentStages = [];
+    const alphaTrialEvents = [];
+    const recordAlphaTrialEvent = (event) => {
+      const normalizedEvent = normalizeAlphaTrialEventForTrace(event);
+      if (!normalizedEvent) return;
+      alphaTrialEvents.push(normalizedEvent);
+    };
+    const recordAlphaAdjustmentStage = (stagePayload) => {
+      const normalizedStage = normalizeAlphaAdjustmentStageForTrace(stagePayload);
+      if (!normalizedStage) return;
+      alphaAdjustmentStages.push(normalizedStage);
+    };
+    return {
+      alphaAdjustmentStages,
+      alphaTrialEvents,
+      recordAlphaAdjustmentStage,
+      recordAlphaTrialEvent
+    };
+  }
+
+  // src/core/pipelineCandidateRunner.js
+  function runCandidateHypothesis({
+    hypothesis,
+    originalImageData,
+    resolvedConfig,
+    options = {},
+    nowMs: nowMs4 = Date.now,
+    alpha96 = null,
+    debugTimingsEnabled = false,
+    visualPostProcessingEnabled = false,
+    cleanupConfig = {},
+    createAcceptedPipelineDependencies: createAcceptedPipelineDependencies2,
+    materializeCandidate = materializeCandidateTrial,
+    runAcceptedPipeline = runAcceptedAlphaRepairPipeline,
+    createAcceptedFinalResult = createAcceptedPipelineFinalResult
+  } = {}) {
+    if (!hypothesis?.trial) {
+      throw new Error("Candidate hypothesis is missing its trial");
+    }
+    if (typeof createAcceptedPipelineDependencies2 !== "function") {
+      throw new Error("Candidate runner requires accepted pipeline dependencies");
+    }
+    const startedAt = nowMs4();
+    const selectedTrial = materializeCandidate(hypothesis.trial, originalImageData);
+    if (!selectedTrial?.imageData) {
+      throw new Error(`Candidate ${hypothesis.id ?? "unknown"} could not materialize pixels`);
+    }
+    const debugTimings = debugTimingsEnabled ? {} : null;
+    const initialSelection = {
+      selectedTrial,
+      source: selectedTrial.source ?? hypothesis.trial.source ?? "best-effort",
+      alphaMap: selectedTrial.alphaMap,
+      position: selectedTrial.position,
+      config: selectedTrial.config,
+      adaptiveConfidence: selectedTrial.adaptiveConfidence ?? null,
+      templateWarp: selectedTrial.templateWarp ?? null,
+      alphaGain: selectedTrial.alphaGain ?? 1,
+      decisionTier: selectedTrial.decisionTier ?? "validated-match"
+    };
+    const acceptedPipelineState = createAcceptedPipelineState({ initialSelection });
+    if (!acceptedPipelineState) {
+      throw new Error(`Candidate ${hypothesis.id ?? "unknown"} could not initialize pipeline state`);
+    }
+    const runtimeBootstrap = createAcceptedPipelineRuntimeBootstrap({
+      nowMs: nowMs4,
+      acceptedPipelineState,
+      selectedTrial,
+      debugTimings,
+      debugTimingsEnabled,
+      cleanupConfig
+    });
+    const pipelineTraceRecorder = createPipelineTraceRecorder();
+    const acceptedPipelineDependencies = createAcceptedPipelineDependencies2();
+    const acceptedPipelineRun = runAcceptedPipeline(createAcceptedPipelineExecutorRequest({
+      nowMs: nowMs4,
+      options,
+      totalStartedAt: startedAt,
+      runtimeBootstrap,
+      pipelineTraceRecorder,
+      originalImageData,
+      alpha96,
+      debugTimings,
+      debugTimingsEnabled,
+      visualPostProcessingEnabled,
+      templateWarp: acceptedPipelineState.templateWarp,
+      subpixelShift: acceptedPipelineState.subpixelShift,
+      freezeSelectedTrial: selectedTrial.provenance?.sourceWitnessRescue === true,
+      acceptedPipelineDependencies
+    }));
+    const finalizationRequest = createAcceptedPipelineFinalizationRequest({
+      acceptedPipelineRun,
+      pipelineTraceRecorder,
+      resultContext: {
+        debugTimings,
+        selectedTrial,
+        selectionSource: initialSelection.source,
+        adaptiveConfidence: acceptedPipelineState.adaptiveConfidence,
+        templateWarp: acceptedPipelineState.templateWarp,
+        decisionTier: acceptedPipelineState.decisionTier,
+        subpixelShift: acceptedPipelineRun.subpixelShift
+      },
+      originalImageData,
+      initialSelection,
+      resolvedConfig
+    });
+    const result = createAcceptedFinalResult({
+      ...finalizationRequest,
+      allowFailClosed: false
+    });
+    return {
+      hypothesis,
+      result,
+      pipelineState: finalizationRequest.pipelineState,
+      passState: finalizationRequest.passState,
+      traceState: finalizationRequest.traceState,
+      elapsedMs: nowMs4() - startedAt
+    };
+  }
+
+  // src/core/pipelineCandidateQuality.js
+  var FINAL_EVIDENCE_WEIGHT = 0.35;
+  var FINAL_RESIDUAL_WEIGHT = 0.4;
+  var FINAL_DAMAGE_WEIGHT = 0.25;
+  var FINAL_DAMAGE_WARNING_PENALTY = 0.08;
+  var DISCOVERY_ROLE_PENALTIES = {
+    "fixed-selected": 0,
+    "automatic-selected": 0.03,
+    "aggressive-fallback-alternative": 0.015,
+    "conservative-derived": 0.15,
+    "discovered-alternative": 0.25
+  };
+  var IMPERFECTION_POSITIVE_HALO_LUM_THRESHOLD = 6;
+  var IMPERFECTION_GRADIENT_THRESHOLD = 0.22;
+  var IMPERFECTION_SPATIAL_THRESHOLD = 0.18;
+  var IMPERFECTION_WARNING_RATIO = 0.5;
+  var DARK_SUPPORT_RESOLUTION_MAX_ABS_SPATIAL = 0.18;
+  var DARK_SUPPORT_RESOLUTION_MAX_GRADIENT = 0.18;
+  var DARK_SUPPORT_RESOLUTION_MAX_NEWLY_CLIPPED_RATIO = 0.25;
+  var SEVERE_DARK_FLAT_TEXTURE_WARNING_THRESHOLD = 1.5;
+  var INDEPENDENT_DARK_SUPPORT_SIZE = 96;
+  var INDEPENDENT_DARK_SUPPORT_SCRATCH_PAD = 12;
+  var INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_SPATIAL = 0.95;
+  var INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_GRADIENT = 0.9;
+  var INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_NEAR_BLACK = 0.1;
+  var INDEPENDENT_DARK_SUPPORT_MIN_CANDIDATE_NEAR_BLACK = 0.25;
+  var INDEPENDENT_DARK_SUPPORT_MAX_OPPOSITE_HALO_LUMINANCE = 1;
+  var INDEPENDENT_DARK_SUPPORT_MAX_OUTSIDE_ALPHA_CLIP_RATIO = 0.03;
+  var INDEPENDENT_DARK_SUPPORT_MIN_STRONG_ALPHA_CLIP_RATIO = 0.8;
+  var INDEPENDENT_DARK_SUPPORT_ALPHA_MIN = 0.05;
+  var INDEPENDENT_DARK_SUPPORT_ALPHA_STRONG_MIN = 0.2;
+  var INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE = 8;
+  var INDEPENDENT_DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE = 8;
+  var INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA = 1.5;
+  var INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MAE = 2.25;
+  var INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE = 3.5;
+  var INDEPENDENT_DARK_SUPPORT_MAX_BOUNDARY_SCORE = 0.35;
+  var INDEPENDENT_DARK_SUPPORT_PRIOR_RADII = Object.freeze([4, 12]);
+  var INDEPENDENT_DARK_SUPPORT_RELAXATION_PASSES = 0;
+  function clamp012(value) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(1, value));
+  }
+  function haveEqualAlphaValues(left, right) {
+    if (!left || !right || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) return false;
+    }
+    return true;
+  }
+  function resolveReferenceAlphaMap(hypothesis, explicitReferenceAlphaMap, selectedAlphaMap) {
+    const config = hypothesis?.config ?? hypothesis?.trial?.config;
+    const logoSize = config?.logoSize;
+    const alphaVariant = config?.alphaVariant;
+    const catalogKey = Number.isFinite(logoSize) ? typeof alphaVariant === "string" && alphaVariant.length > 0 ? `${logoSize}-${alphaVariant}` : logoSize : null;
+    const referenceAlphaMap = explicitReferenceAlphaMap ?? (catalogKey === null ? null : getEmbeddedAlphaMap(catalogKey));
+    return haveEqualAlphaValues(referenceAlphaMap, selectedAlphaMap) ? null : referenceAlphaMap;
+  }
+  function extractCandidateQualityScratch(imageData, position) {
+    const x = Math.max(0, position.x - INDEPENDENT_DARK_SUPPORT_SCRATCH_PAD);
+    const y = Math.max(0, position.y - INDEPENDENT_DARK_SUPPORT_SCRATCH_PAD);
+    const right = Math.min(
+      imageData.width,
+      position.x + position.width + INDEPENDENT_DARK_SUPPORT_SCRATCH_PAD
+    );
+    const bottom = Math.min(
+      imageData.height,
+      position.y + position.height + INDEPENDENT_DARK_SUPPORT_SCRATCH_PAD
+    );
+    const scratch = {
+      width: right - x,
+      height: bottom - y,
+      data: new Uint8ClampedArray((right - x) * (bottom - y) * 4)
+    };
+    for (let row = 0; row < scratch.height; row++) {
+      const sourceStart = ((y + row) * imageData.width + x) * 4;
+      const sourceEnd = sourceStart + scratch.width * 4;
+      scratch.data.set(
+        imageData.data.subarray(sourceStart, sourceEnd),
+        row * scratch.width * 4
+      );
+    }
+    return {
+      imageData: scratch,
+      position: {
+        x: position.x - x,
+        y: position.y - y,
+        width: position.width,
+        height: position.height
+      }
+    };
+  }
+  function measureIndependentDarkSupportClipping({
+    originalImageData,
+    candidateImageData,
+    alphaMap,
+    position
+  }) {
+    let newlyClippedCount = 0;
+    let outsideAlphaSupportCount = 0;
+    let strongAlphaSupportCount = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const pixelIndex = ((position.y + row) * originalImageData.width + position.x + col) * 4;
+        const newlyClipped = [0, 1, 2].some((channel) => candidateImageData.data[pixelIndex + channel] === 0 && originalImageData.data[pixelIndex + channel] > 5);
+        if (!newlyClipped) continue;
+        newlyClippedCount++;
+        const alpha = Math.abs(alphaMap[localIndex]);
+        if (alpha < INDEPENDENT_DARK_SUPPORT_ALPHA_MIN) {
+          outsideAlphaSupportCount++;
+        }
+        if (alpha >= INDEPENDENT_DARK_SUPPORT_ALPHA_STRONG_MIN) {
+          strongAlphaSupportCount++;
+        }
+      }
+    }
+    return {
+      outsideAlphaSupportRatio: newlyClippedCount > 0 ? outsideAlphaSupportCount / newlyClippedCount : 0,
+      strongAlphaSupportRatio: newlyClippedCount > 0 ? strongAlphaSupportCount / newlyClippedCount : 1
+    };
+  }
+  function measureIndependentDarkSupportPrior({
+    candidateImageData,
+    priorImageData,
+    alphaMap,
+    position
+  }) {
+    let absoluteDelta = 0;
+    let weightedAbsoluteDelta = 0;
+    let alphaWeight = 0;
+    let candidateLuminance = 0;
+    let priorLuminance = 0;
+    let channelCount = 0;
+    let pixelCount = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = Math.abs(alphaMap[localIndex]);
+        const pixelIndex = ((position.y + row) * candidateImageData.width + position.x + col) * 4;
+        for (let channel = 0; channel < 3; channel++) {
+          const delta = Math.abs(
+            candidateImageData.data[pixelIndex + channel] - priorImageData.data[pixelIndex + channel]
+          );
+          absoluteDelta += delta;
+          weightedAbsoluteDelta += delta * alpha;
+          channelCount++;
+        }
+        candidateLuminance += 0.2126 * candidateImageData.data[pixelIndex] + 0.7152 * candidateImageData.data[pixelIndex + 1] + 0.0722 * candidateImageData.data[pixelIndex + 2];
+        priorLuminance += 0.2126 * priorImageData.data[pixelIndex] + 0.7152 * priorImageData.data[pixelIndex + 1] + 0.0722 * priorImageData.data[pixelIndex + 2];
+        alphaWeight += alpha;
+        pixelCount++;
+      }
+    }
+    const candidateMeanLuminance = candidateLuminance / Math.max(1, pixelCount);
+    const priorMeanLuminance = priorLuminance / Math.max(1, pixelCount);
+    return {
+      meanAbsoluteDelta: absoluteDelta / Math.max(1, channelCount),
+      weightedMeanAbsoluteDelta: weightedAbsoluteDelta / Math.max(1e-8, alphaWeight * 3),
+      candidateMeanLuminance,
+      priorMeanLuminance,
+      meanLuminanceDelta: Math.abs(candidateMeanLuminance - priorMeanLuminance)
+    };
+  }
+  function assessIndependentDarkBackgroundSupportConvergence({
+    originalImageData,
+    candidateImageData,
+    hypothesis,
+    position,
+    alphaMap,
+    alphaGain,
+    original,
+    final,
+    visibility,
+    artifacts,
+    originalNearBlackRatio,
+    candidateNearBlackRatio,
+    rawDamageWarning
+  }) {
+    const trial = hypothesis?.trial;
+    const source = trial?.source;
+    const catalogAlphaMap = getEmbeddedAlphaMap("96-20260520");
+    if (rawDamageWarning !== true || source !== "standard" || position.width !== INDEPENDENT_DARK_SUPPORT_SIZE || position.height !== INDEPENDENT_DARK_SUPPORT_SIZE || alphaGain !== 1 || !haveEqualAlphaValues(alphaMap, catalogAlphaMap) || original.spatialScore < INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_SPATIAL || original.gradientScore < INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_GRADIENT || visibility?.visible !== false || Math.abs(final.spatialScore) > DARK_SUPPORT_RESOLUTION_MAX_ABS_SPATIAL || final.gradientScore > DARK_SUPPORT_RESOLUTION_MAX_GRADIENT || originalNearBlackRatio < INDEPENDENT_DARK_SUPPORT_MIN_ORIGINAL_NEAR_BLACK || candidateNearBlackRatio < INDEPENDENT_DARK_SUPPORT_MIN_CANDIDATE_NEAR_BLACK || Number(artifacts?.newlyClippedRatio ?? Infinity) > DARK_SUPPORT_RESOLUTION_MAX_NEWLY_CLIPPED_RATIO || Number(artifacts?.oppositeDirectionHaloLum ?? Infinity) > INDEPENDENT_DARK_SUPPORT_MAX_OPPOSITE_HALO_LUMINANCE) {
+      return null;
+    }
+    const originalScratch = extractCandidateQualityScratch(
+      originalImageData,
+      position
+    );
+    const candidateScratch = extractCandidateQualityScratch(
+      candidateImageData,
+      position
+    );
+    const priorMetrics = INDEPENDENT_DARK_SUPPORT_PRIOR_RADII.map((radius) => {
+      const priorImageData = buildPreviewNeighborhoodPrior({
+        previewImageData: originalScratch.imageData,
+        position: originalScratch.position,
+        radius,
+        relaxationPasses: INDEPENDENT_DARK_SUPPORT_RELAXATION_PASSES
+      });
+      return {
+        radius,
+        ...measureIndependentDarkSupportPrior({
+          candidateImageData: candidateScratch.imageData,
+          priorImageData,
+          alphaMap,
+          position: candidateScratch.position
+        })
+      };
+    });
+    const clipping = measureIndependentDarkSupportClipping({
+      originalImageData: originalScratch.imageData,
+      candidateImageData: candidateScratch.imageData,
+      alphaMap,
+      position: originalScratch.position
+    });
+    const boundary = measurePreviewBoundaryMetrics(
+      candidateScratch.imageData,
+      originalScratch.imageData,
+      originalScratch.position
+    );
+    const maximumPriorMeanLuminance = Math.max(
+      ...priorMetrics.map((item) => item.priorMeanLuminance)
+    );
+    const maximumCandidateMeanLuminance = Math.max(
+      ...priorMetrics.map((item) => item.candidateMeanLuminance)
+    );
+    const maximumPriorMeanDelta = Math.max(
+      ...priorMetrics.map((item) => item.meanLuminanceDelta)
+    );
+    const maximumPriorMae = Math.max(
+      ...priorMetrics.map((item) => item.meanAbsoluteDelta)
+    );
+    const maximumPriorWeightedMae = Math.max(
+      ...priorMetrics.map((item) => item.weightedMeanAbsoluteDelta)
+    );
+    const accepted = Boolean(
+      clipping.outsideAlphaSupportRatio <= INDEPENDENT_DARK_SUPPORT_MAX_OUTSIDE_ALPHA_CLIP_RATIO && clipping.strongAlphaSupportRatio >= INDEPENDENT_DARK_SUPPORT_MIN_STRONG_ALPHA_CLIP_RATIO && maximumPriorMeanLuminance <= INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE && maximumCandidateMeanLuminance <= INDEPENDENT_DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE && maximumPriorMeanDelta <= INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA && maximumPriorMae <= INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_MAE && maximumPriorWeightedMae <= INDEPENDENT_DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE && boundary.normalizedScore <= INDEPENDENT_DARK_SUPPORT_MAX_BOUNDARY_SCORE
+    );
+    return {
+      accepted,
+      source: "independent-standard-96-neighborhood-prior",
+      textureHardRejectResolved: accepted,
+      priorRadii: [...INDEPENDENT_DARK_SUPPORT_PRIOR_RADII],
+      maximumPriorMeanLuminance,
+      maximumCandidateMeanLuminance,
+      maximumPriorMeanDelta,
+      maximumPriorMae,
+      maximumPriorWeightedMae,
+      boundaryScore: boundary.normalizedScore,
+      clipping
+    };
+  }
+  function classifyCandidateQuality({
+    residualVisible = false,
+    damageWarning = false
+  } = {}) {
+    if (residualVisible && damageWarning) return "mixed";
+    if (residualVisible) return "visible-residual";
+    if (damageWarning) return "possible-content-damage";
+    return "clean";
+  }
+  function createCandidateImperfectionSignals(visibility = {}) {
+    const darkPolarityHaloThreshold = Number.isFinite(visibility.darkPolarityHaloThreshold) ? visibility.darkPolarityHaloThreshold : IMPERFECTION_POSITIVE_HALO_LUM_THRESHOLD;
+    const definitions = [
+      ["spatial-residual", visibility.spatialResidual, IMPERFECTION_SPATIAL_THRESHOLD],
+      ["gradient-residual", visibility.gradientResidual, IMPERFECTION_GRADIENT_THRESHOLD],
+      ["positive-halo", visibility.positiveHaloLum, IMPERFECTION_POSITIVE_HALO_LUM_THRESHOLD],
+      ["dark-polarity-halo", visibility.darkPolarityHaloLum, darkPolarityHaloThreshold]
+    ];
+    const components = Object.fromEntries(definitions.map(([type, rawValue, threshold]) => {
+      const value = Number.isFinite(rawValue) ? Math.max(0, rawValue) : 0;
+      return [type, {
+        value,
+        threshold,
+        ratio: value / threshold
+      }];
+    }));
+    const score = Math.max(0, ...Object.values(components).map((component) => component.ratio));
+    const severity = score >= 1 ? "high" : score >= IMPERFECTION_WARNING_RATIO ? "moderate" : score > 0 ? "low" : "none";
+    const types = definitions.map(([type]) => type).filter((type) => components[type].ratio >= IMPERFECTION_WARNING_RATIO);
+    return {
+      detected: score >= IMPERFECTION_WARNING_RATIO,
+      severity,
+      score,
+      types,
+      components
+    };
+  }
+  function createCandidateQualitySignals({
+    originalImageData,
+    candidateImageData,
+    hypothesis,
+    finalCandidate = null,
+    referenceAlphaMap = null
+  } = {}) {
+    const trial = hypothesis?.trial;
+    const position = finalCandidate?.position ?? trial?.position ?? hypothesis?.position;
+    const alphaMap = finalCandidate?.alphaMap ?? trial?.alphaMap;
+    const alphaGain = finalCandidate?.alphaGain ?? trial?.alphaGain ?? 1;
+    if (!originalImageData || !candidateImageData || !position || !alphaMap) {
+      throw new Error("Candidate quality measurement requires original pixels, candidate pixels, position, and alpha map");
+    }
+    const original = scoreRegion(originalImageData, alphaMap, position);
+    const final = scoreRegion(candidateImageData, alphaMap, position);
+    const visibility = assessCalibratedWatermarkResidualVisibility({
+      imageData: candidateImageData,
+      originalImageData,
+      position,
+      alphaMap,
+      alphaGain
+    });
+    const resolvedReferenceAlphaMap = resolveReferenceAlphaMap(
+      hypothesis,
+      referenceAlphaMap,
+      alphaMap
+    );
+    const referenceVisibility = resolvedReferenceAlphaMap ? assessCalibratedWatermarkResidualVisibility({
+      imageData: candidateImageData,
+      originalImageData,
+      position,
+      alphaMap: resolvedReferenceAlphaMap,
+      alphaGain
+    }) : null;
+    const imperfections = createCandidateImperfectionSignals(visibility);
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const texture = assessReferenceTextureAlignment({
+      originalImageData,
+      referenceImageData: originalImageData,
+      candidateImageData,
+      position
+    });
+    const originalNearBlackRatio = calculateNearBlackRatio(originalImageData, position);
+    const candidateNearBlackRatio = calculateNearBlackRatio(candidateImageData, position);
+    const originalNearWhiteRatio = calculateNearWhiteRatio(originalImageData, position);
+    const candidateNearWhiteRatio = calculateNearWhiteRatio(candidateImageData, position);
+    const nearBlackIncrease = candidateNearBlackRatio - originalNearBlackRatio;
+    const nearWhiteIncrease = candidateNearWhiteRatio - originalNearWhiteRatio;
+    const evidence = clamp012((Math.max(0, original.spatialScore) + Math.max(0, original.gradientScore)) / 2);
+    const residualComponents = {
+      spatial: clamp012(Math.abs(final.spatialScore) / 0.4),
+      gradient: clamp012(Math.max(0, final.gradientScore) / 0.35),
+      halo: clamp012(Math.max(
+        visibility?.positiveHaloLum ?? 0,
+        visibility?.darkPolarityHaloLum ?? 0
+      ) / 8)
+    };
+    const residualLoss = residualComponents.spatial * 0.45 + residualComponents.gradient * 0.35 + residualComponents.halo * 0.2;
+    const damageComponents = {
+      nearBlack: clamp012(Math.max(0, nearBlackIncrease) / 0.05),
+      nearWhite: clamp012(Math.max(0, nearWhiteIncrease) / 0.05),
+      texture: clamp012((texture?.texturePenalty ?? 0) / 1),
+      clipped: clamp012((artifacts?.newlyClippedRatio ?? 0) / 0.02)
+    };
+    const rawDamageLoss = damageComponents.nearBlack * 0.25 + damageComponents.nearWhite * 0.25 + damageComponents.texture * 0.25 + damageComponents.clipped * 0.25;
+    const residualVisible = visibility?.visible === true || referenceVisibility?.visible === true;
+    const textureWarningCorroborated = (texture?.visibleDarkHole === true || texture?.hardReject === true) && (damageComponents.nearBlack >= 0.4 || damageComponents.nearWhite >= 0.4 || damageComponents.clipped >= 0.4);
+    const severeDarkFlatTextureWarning = texture?.tooDark === true && texture?.tooFlat === true && Number(texture?.texturePenalty ?? 0) >= SEVERE_DARK_FLAT_TEXTURE_WARNING_THRESHOLD;
+    const rawDamageWarning = damageComponents.nearBlack >= 1 || damageComponents.nearWhite >= 1 || damageComponents.clipped >= 1 || textureWarningCorroborated || severeDarkFlatTextureWarning;
+    const explicitDarkBackgroundSupportConvergence = finalCandidate?.darkBackgroundSupportConvergence?.accepted === true ? finalCandidate.darkBackgroundSupportConvergence : null;
+    const independentDarkBackgroundSupportConvergence = explicitDarkBackgroundSupportConvergence ? null : assessIndependentDarkBackgroundSupportConvergence({
+      originalImageData,
+      candidateImageData,
+      hypothesis,
+      position,
+      alphaMap,
+      alphaGain,
+      original,
+      final,
+      visibility,
+      artifacts,
+      originalNearBlackRatio,
+      candidateNearBlackRatio,
+      rawDamageWarning
+    });
+    const darkBackgroundSupportConvergence = explicitDarkBackgroundSupportConvergence ?? independentDarkBackgroundSupportConvergence;
+    const textureHardRejectResolved = darkBackgroundSupportConvergence?.textureHardRejectResolved === true;
+    const darkBackgroundSupportResolved = Boolean(
+      rawDamageWarning && darkBackgroundSupportConvergence && !residualVisible && (texture?.hardReject !== true || textureHardRejectResolved) && Math.abs(final.spatialScore) <= DARK_SUPPORT_RESOLUTION_MAX_ABS_SPATIAL && final.gradientScore <= DARK_SUPPORT_RESOLUTION_MAX_GRADIENT && Number(artifacts?.newlyClippedRatio ?? Infinity) <= DARK_SUPPORT_RESOLUTION_MAX_NEWLY_CLIPPED_RATIO
+    );
+    const damageWarning = rawDamageWarning && !darkBackgroundSupportResolved;
+    const damageLoss = darkBackgroundSupportResolved ? 0 : rawDamageLoss;
+    const damageRiskResolution = darkBackgroundSupportResolved ? "dark-background-support-converged" : null;
+    const qualityStatus = classifyCandidateQuality({
+      residualVisible,
+      damageWarning
+    });
+    return {
+      evidenceLoss: 1 - evidence,
+      residualLoss,
+      damageLoss,
+      rawDamageLoss,
+      residualVisible,
+      damageWarning,
+      rawDamageWarning,
+      damageRiskResolution,
+      darkBackgroundSupportConvergence,
+      qualityStatus,
+      imperfections,
+      original,
+      final,
+      visibility,
+      referenceVisibility,
+      artifacts,
+      texture,
+      originalNearBlackRatio,
+      candidateNearBlackRatio,
+      nearBlackIncrease,
+      originalNearWhiteRatio,
+      candidateNearWhiteRatio,
+      nearWhiteIncrease,
+      residualComponents,
+      damageComponents
+    };
+  }
+  function getFinalScore(signals = {}) {
+    const weightedLoss = (signals.evidenceLoss ?? 1) * FINAL_EVIDENCE_WEIGHT + (signals.residualLoss ?? 1) * FINAL_RESIDUAL_WEIGHT + (signals.damageLoss ?? 1) * FINAL_DAMAGE_WEIGHT;
+    return weightedLoss + (signals.damageWarning === true ? FINAL_DAMAGE_WARNING_PENALTY : 0);
+  }
+  function getDiscoveryPenalty(hypothesis = {}) {
+    return DISCOVERY_ROLE_PENALTIES[hypothesis.discoveryRole] ?? 0;
+  }
+  function dominates(left, right) {
+    const keys = ["evidenceLoss", "residualLoss", "damageLoss"];
+    const noWorse = keys.every((key) => (left.qualitySignals?.[key] ?? Infinity) <= (right.qualitySignals?.[key] ?? Infinity)) && left.discoveryPenalty <= right.discoveryPenalty;
+    const strictlyBetter = keys.some((key) => (left.qualitySignals?.[key] ?? Infinity) < (right.qualitySignals?.[key] ?? Infinity)) || left.discoveryPenalty < right.discoveryPenalty;
+    return noWorse && strictlyBetter;
+  }
+  function hasCatastrophicBlock(signals = {}) {
+    if (signals.damageWarning === false && signals.darkBackgroundSupportConvergence?.accepted === true) {
+      return false;
+    }
+    const damage = signals.damageComponents ?? {};
+    return signals.texture?.hardReject === true && damage.clipped >= 1 && (damage.nearBlack >= 1 || damage.nearWhite >= 1);
+  }
+  function getCandidatePosition(candidate = {}) {
+    return candidate.hypothesis?.trial?.position ?? candidate.hypothesis?.position ?? null;
+  }
+  function hasSameCandidateAnchor(left, right) {
+    const leftPosition = getCandidatePosition(left);
+    const rightPosition = getCandidatePosition(right);
+    if (!leftPosition || !rightPosition) return false;
+    return leftPosition.x === rightPosition.x && leftPosition.y === rightPosition.y && leftPosition.width === rightPosition.width && leftPosition.height === rightPosition.height;
+  }
+  var SAME_ANCHOR_96_SIZE = 96;
+  var SAME_ANCHOR_96_IMPERFECTION_IMPROVEMENT = 0.15;
+  var SAME_ANCHOR_96_EVIDENCE_TOLERANCE = 0.05;
+  var SAME_ANCHOR_96_DAMAGE_TOLERANCE = 0.05;
+  function finiteOr(value, fallback = Infinity) {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  function isEligibleSameAnchor96Alternative(incumbent, alternative) {
+    const incumbentSignals = incumbent?.qualitySignals ?? {};
+    const alternativeSignals = alternative?.qualitySignals ?? {};
+    const incumbentScore = incumbentSignals.imperfections?.score;
+    const alternativeScore = alternativeSignals.imperfections?.score;
+    return hasSameCandidateAnchor(incumbent, alternative) && !hasCatastrophicBlock(alternativeSignals) && Number.isFinite(alternativeScore) && alternativeScore <= incumbentScore - SAME_ANCHOR_96_IMPERFECTION_IMPROVEMENT && Number.isFinite(alternativeSignals.evidenceLoss) && alternativeSignals.evidenceLoss <= incumbentSignals.evidenceLoss + SAME_ANCHOR_96_EVIDENCE_TOLERANCE && Number.isFinite(alternativeSignals.damageLoss) && alternativeSignals.damageLoss <= incumbentSignals.damageLoss + SAME_ANCHOR_96_DAMAGE_TOLERANCE;
+  }
+  function applySameAnchor96ImperfectionPreference(baseRanked = []) {
+    const incumbent = baseRanked[0];
+    const position = getCandidatePosition(incumbent);
+    const signals = incumbent?.qualitySignals ?? {};
+    if (!position || position.width !== SAME_ANCHOR_96_SIZE || position.height !== SAME_ANCHOR_96_SIZE || signals.imperfections?.severity !== "high" || !Number.isFinite(signals.imperfections?.score) || !Number.isFinite(signals.evidenceLoss) || !Number.isFinite(signals.damageLoss)) {
+      return baseRanked;
+    }
+    const eligible = baseRanked.slice(1).map((candidate, offset) => ({ candidate, baseIndex: offset + 1 })).filter(
+      ({ candidate }) => isEligibleSameAnchor96Alternative(incumbent, candidate)
+    ).sort(
+      (left, right) => left.candidate.qualitySignals.imperfections.score - right.candidate.qualitySignals.imperfections.score || finiteOr(left.candidate.qualitySignals.residualLoss) - finiteOr(right.candidate.qualitySignals.residualLoss) || left.baseIndex - right.baseIndex || String(left.candidate.hypothesis?.id ?? "").localeCompare(
+        String(right.candidate.hypothesis?.id ?? "")
+      )
+    );
+    if (eligible.length === 0) return baseRanked;
+    const promoted = eligible[0].candidate;
+    return [promoted, ...baseRanked.filter((candidate) => candidate !== promoted)];
+  }
+  function applyFullStrengthNewMarginPreference(baseRanked = []) {
+    const incumbent = baseRanked[0];
+    if (!incumbent) return baseRanked;
+    const getFinalTrialView = (candidate) => {
+      const trial = candidate?.hypothesis?.trial ?? {};
+      const meta = candidate?.result?.meta ?? {};
+      const detection = meta.detection ?? {};
+      return {
+        ...trial,
+        alphaGain: Number.isFinite(Number(meta.alphaGain)) ? Number(meta.alphaGain) : trial.alphaGain,
+        config: meta.config ?? trial.config,
+        position: meta.position ?? trial.position,
+        originalSpatialScore: detection.originalSpatialScore ?? trial.originalSpatialScore,
+        originalGradientScore: detection.originalGradientScore ?? trial.originalGradientScore,
+        processedGradientScore: detection.processedGradientScore ?? trial.processedGradientScore
+      };
+    };
+    const incumbentTrial = getFinalTrialView(incumbent);
+    const promoted = baseRanked.slice(1).find((candidate) => !hasCatastrophicBlock(candidate.qualitySignals) && shouldPreferFullStrengthNewMarginVariant(
+      getFinalTrialView(candidate),
+      incumbentTrial
+    ));
+    if (!promoted) return baseRanked;
+    return [promoted, ...baseRanked.filter((candidate) => candidate !== promoted)];
+  }
+  function strictlyDominatesQuality(leftSignals = {}, rightSignals = {}) {
+    const keys = ["evidenceLoss", "residualLoss", "damageLoss"];
+    const noWorse = keys.every((key) => (leftSignals[key] ?? Infinity) <= (rightSignals[key] ?? Infinity));
+    const strictlyBetter = keys.some((key) => (leftSignals[key] ?? Infinity) < (rightSignals[key] ?? Infinity));
+    return noWorse && strictlyBetter;
+  }
+  function shouldPreferSameAnchorCleanCandidate(left, right) {
+    return left.qualitySignals?.qualityStatus === "clean" && right.qualitySignals?.qualityStatus !== "clean" && hasSameCandidateAnchor(left, right) && strictlyDominatesQuality(left.qualitySignals, right.qualitySignals);
+  }
+  function compareRankedCandidates(left, right) {
+    const leftCatastrophic = hasCatastrophicBlock(left.qualitySignals);
+    const rightCatastrophic = hasCatastrophicBlock(right.qualitySignals);
+    if (leftCatastrophic !== rightCatastrophic) return leftCatastrophic ? 1 : -1;
+    const leftCleanDominates = shouldPreferSameAnchorCleanCandidate(left, right);
+    const rightCleanDominates = shouldPreferSameAnchorCleanCandidate(right, left);
+    if (leftCleanDominates !== rightCleanDominates) return leftCleanDominates ? -1 : 1;
+    if (left.dominated !== right.dominated) return left.dominated ? 1 : -1;
+    if (left.finalScore !== right.finalScore) return left.finalScore - right.finalScore;
+    const rankingComparison = compareRankingKey(
+      left.hypothesis?.rankingKey,
+      right.hypothesis?.rankingKey
+    );
+    if (rankingComparison !== 0) return rankingComparison;
+    return String(left.hypothesis?.id ?? "").localeCompare(String(right.hypothesis?.id ?? ""));
+  }
+  function rankCompletedCandidates(completed = []) {
+    const scored = completed.map((item) => ({
+      ...item,
+      discoveryPenalty: getDiscoveryPenalty(item.hypothesis),
+      finalScore: getFinalScore(item.qualitySignals) + getDiscoveryPenalty(item.hypothesis)
+    }));
+    for (const candidate of scored) {
+      candidate.dominated = scored.some((other) => other !== candidate && dominates(other, candidate));
+    }
+    scored.sort(compareRankedCandidates);
+    const imperfectionPreferred = applySameAnchor96ImperfectionPreference(scored);
+    let preferred = applyFullStrengthNewMarginPreference(imperfectionPreferred);
+    const incumbent = preferred[0];
+    const rowSupported = preferred.find((candidate) => {
+      const trial = candidate.hypothesis?.trial;
+      if (candidate === incumbent || !supportsRowAlphaGain(trial?.provenance?.rowAlphaEvidence) || candidate.result?.meta?.alphaGain !== 0.6 || !hasSameCandidateAnchor(candidate, incumbent)) return false;
+      const before = measureRowAlphaEvidence(incumbent.result?.imageData, trial.position, trial.alphaMap);
+      const after = measureRowAlphaEvidence(candidate.result?.imageData, trial.position, trial.alphaMap);
+      return before?.gain > 0.15 && before.quadrants.every((value) => value > 0.1) && supportsRowAlphaGain(after, 0);
+    });
+    if (rowSupported) preferred = [rowSupported, ...preferred.filter((candidate) => candidate !== rowSupported)];
+    const first = preferred[0];
+    const second = preferred[1];
+    const selectionConfidence = !first ? 0 : !second ? 1 : clamp012((second.finalScore - first.finalScore) / Math.max(0.05, second.finalScore));
+    return preferred.map((item, index) => ({
+      ...item,
+      rank: index + 1,
+      selectionConfidence: index === 0 ? selectionConfidence : 0
+    }));
+  }
+  function createCandidateSummaries(ranked = [], failures = []) {
+    const valid = ranked.map((item) => ({
+      id: item.hypothesis?.id ?? null,
+      family: item.hypothesis?.family ?? null,
+      rank: item.rank,
+      valid: true,
+      finalScore: item.finalScore,
+      qualityStatus: item.qualitySignals?.qualityStatus ?? null,
+      qualitySignals: item.qualitySignals ?? null,
+      error: null
+    }));
+    const invalid = failures.map((item) => ({
+      id: item.hypothesis?.id ?? null,
+      family: item.hypothesis?.family ?? null,
+      rank: null,
+      valid: false,
+      finalScore: null,
+      qualityStatus: null,
+      qualitySignals: null,
+      error: item.error instanceof Error ? item.error.message : String(item.error ?? "Candidate execution failed")
+    }));
+    return [...valid, ...invalid];
+  }
+
+  // src/core/imageWatermarkPipeline.js
+  function createSelectedCandidate(best) {
+    const hypothesis = best?.hypothesis ?? {};
+    const trial = hypothesis.trial ?? {};
+    const meta = best?.result?.meta ?? {};
+    return {
+      id: hypothesis.id ?? null,
+      family: hypothesis.family ?? null,
+      rank: best?.rank ?? 1,
+      source: meta.source ?? trial.source ?? null,
+      config: meta.config ?? hypothesis.config ?? trial.config ?? null,
+      position: meta.position ?? hypothesis.position ?? trial.position ?? null,
+      alphaProfile: hypothesis.alphaProfile ?? null,
+      polarity: hypothesis.polarity ?? null
+    };
+  }
+  function findDarkBackgroundSupportConvergence(meta = {}) {
+    const stages = Array.isArray(meta.alphaAdjustmentStages) ? meta.alphaAdjustmentStages : [];
+    const convergence = stages.at(-1)?.darkBackgroundSupportConvergence;
+    return convergence?.accepted === true ? convergence : null;
+  }
+  function createRuntimeFailureResult({
+    createRejectedResult,
+    originalImageData,
+    debugTimings
+  }) {
+    return createRejectedResult({
+      imageData: originalImageData,
+      debugTimings,
+      reason: "candidate-execution-failed",
+      source: "top-n-runtime-failure",
+      decisionTier: "runtime-failure",
+      selectionDebug: null
+    });
+  }
+  function createNoWatermarkResult({
+    createRejectedResult,
+    originalImageData,
+    collection,
+    debugTimings
+  }) {
+    const selection = collection?.automaticSelection ?? collection?.fixedSelection ?? {};
+    return createRejectedResult({
+      imageData: originalImageData,
+      debugTimings,
+      reason: "no-watermark-detected",
+      adaptiveConfidence: selection.adaptiveConfidence ?? null,
+      originalSpatialScore: selection.standardSpatialScore ?? null,
+      originalGradientScore: selection.standardGradientScore ?? null,
+      source: "skipped",
+      decisionTier: selection.decisionTier ?? "insufficient",
+      selectionDebug: null
+    });
+  }
+  function notifyCandidateCompleted({ options, candidate, debugTimings }) {
+    if (typeof options?.onCandidateCompleted !== "function") return;
+    try {
+      options.onCandidateCompleted(candidate);
+    } catch {
+      if (debugTimings) {
+        debugTimings.candidateDiagnosticErrorCount = (debugTimings.candidateDiagnosticErrorCount ?? 0) + 1;
+      }
+    }
+  }
+  function appendUniqueRiskFlag(flags, flag) {
+    const normalized = Array.isArray(flags) ? flags : [];
+    return normalized.includes(flag) ? normalized : [...normalized, flag];
+  }
+  function attachPresenceBestEffortMeta(meta, collection) {
+    if (collection?.bestEffortFallback !== true) return meta;
+    const riskFlag = "unconfirmed-watermark-presence";
+    const decisionPath = meta?.decisionPath && typeof meta.decisionPath === "object" ? {
+      ...meta.decisionPath,
+      riskFlags: appendUniqueRiskFlag(meta.decisionPath.riskFlags, riskFlag),
+      evaluation: meta.decisionPath.evaluation && typeof meta.decisionPath.evaluation === "object" ? {
+        ...meta.decisionPath.evaluation,
+        riskFlags: appendUniqueRiskFlag(
+          meta.decisionPath.evaluation.riskFlags,
+          riskFlag
+        )
+      } : meta.decisionPath.evaluation
+    } : meta?.decisionPath;
+    return {
+      ...meta,
+      presenceConfirmed: false,
+      bestEffortReason: collection.bestEffortReason ?? "presence-witness-unconfirmed",
+      decisionPath
+    };
+  }
+  function runImageWatermarkPipeline({
+    imageData,
+    options = {},
+    nowMs: nowMs4,
+    cloneImageData: cloneImageData4,
+    alphaGainCandidates,
+    alphaPriorityGains,
+    createAcceptedPipelineDependencies: createAcceptedPipelineDependencies2,
+    cleanupConfig,
+    visualPostProcessingEnabled = false,
+    selectCandidate,
+    collectCandidates = collectInitialWatermarkCandidates,
+    runCandidate = runCandidateHypothesis,
+    measureCandidate = createCandidateQualitySignals,
+    rankCandidates = rankCompletedCandidates,
+    createSummaries = createCandidateSummaries,
+    attachSelectionMeta = attachTopNSelectionMeta,
+    runAcceptedPipeline = runAcceptedAlphaRepairPipeline,
+    createRejectedResult = createRejectedPipelineResult,
+    createAcceptedFinalResult = createAcceptedPipelineFinalResult
+  } = {}) {
+    const totalStartedAt = nowMs4();
+    const debugTimingsEnabled = options.debugTimings === true;
+    const debugTimings = debugTimingsEnabled ? {} : null;
+    const {
+      originalImageData,
+      alpha48,
+      alpha96,
+      alphaGainCandidates: resolvedAlphaGainCandidates,
+      alphaPriorityGains: resolvedAlphaPriorityGains,
+      allowAdaptiveSearch,
+      defaultConfig,
+      resolvedConfig,
+      position
+    } = createInitialPipelineContext({
+      imageData,
+      options,
+      cloneImageData: cloneImageData4,
+      alphaGainCandidates,
+      alphaPriorityGains
+    });
+    const discoveryStartedAt = nowMs4();
+    const collection = collectCandidates({
+      originalImageData,
+      config: resolvedConfig,
+      catalogPriorConfig: defaultConfig,
+      position,
+      alpha48,
+      alpha96,
+      alpha96Variants: options.alpha96Variants ?? null,
+      getAlphaMap: options.getAlphaMap,
+      allowAdaptiveSearch,
+      alphaGainCandidates: resolvedAlphaGainCandidates,
+      alphaPriorityGains: resolvedAlphaPriorityGains,
+      selectCandidate
+    });
+    const hypotheses = Array.isArray(collection?.hypotheses) ? collection.hypotheses.slice(0, collection.hasSupplementalSourceWitness ? 6 : 5) : [];
+    if (debugTimingsEnabled) {
+      debugTimings.candidateDiscoveryMs = nowMs4() - discoveryStartedAt;
+      debugTimings.initialSelectionMs = debugTimings.candidateDiscoveryMs;
+      debugTimings.generatedCandidateCount = hypotheses.length;
+      debugTimings.earlyExitReason = null;
+    }
+    if (collection?.presenceConfirmed === false && collection?.bestEffortFallback !== true) {
+      if (debugTimingsEnabled) {
+        debugTimings.candidateExecutionMs = 0;
+        debugTimings.executedCandidateCount = 0;
+        debugTimings.completedCandidateCount = 0;
+        debugTimings.failedCandidateCount = 0;
+        debugTimings.candidateRankingMs = 0;
+        debugTimings.earlyExitReason = "no-watermark-detected";
+        debugTimings.totalMs = nowMs4() - totalStartedAt;
+      }
+      return createNoWatermarkResult({
+        createRejectedResult,
+        originalImageData,
+        collection,
+        debugTimings
+      });
+    }
+    const completed = [];
+    const failures = [];
+    const executionStartedAt = nowMs4();
+    for (const hypothesis of hypotheses) {
+      try {
+        const completedCandidate = runCandidate({
+          hypothesis,
+          originalImageData,
+          resolvedConfig,
+          options,
+          nowMs: nowMs4,
+          alpha96,
+          debugTimingsEnabled,
+          visualPostProcessingEnabled,
+          cleanupConfig,
+          createAcceptedPipelineDependencies: () => createAcceptedPipelineDependencies2(hypothesis),
+          runAcceptedPipeline,
+          createAcceptedFinalResult
+        });
+        if (!completedCandidate?.result?.imageData) {
+          throw new Error(`Candidate ${hypothesis.id ?? "unknown"} returned no pixels`);
+        }
+        const candidate = {
+          ...completedCandidate,
+          hypothesis,
+          qualitySignals: measureCandidate({
+            originalImageData,
+            candidateImageData: completedCandidate.result.imageData,
+            hypothesis,
+            finalCandidate: {
+              position: completedCandidate.pipelineState?.position,
+              alphaMap: completedCandidate.pipelineState?.alphaMap,
+              alphaGain: completedCandidate.pipelineState?.alphaGain,
+              darkBackgroundSupportConvergence: findDarkBackgroundSupportConvergence(
+                completedCandidate.result.meta
+              )
+            }
+          })
+        };
+        completed.push(candidate);
+        notifyCandidateCompleted({ options, candidate, debugTimings });
+      } catch (error) {
+        failures.push({ hypothesis, error });
+      }
+    }
+    if (debugTimingsEnabled) {
+      debugTimings.candidateExecutionMs = nowMs4() - executionStartedAt;
+      debugTimings.executedCandidateCount = hypotheses.length;
+      debugTimings.completedCandidateCount = completed.length;
+      debugTimings.failedCandidateCount = failures.length;
+    }
+    if (completed.length === 0) {
+      if (debugTimingsEnabled) {
+        debugTimings.candidateRankingMs = 0;
+        debugTimings.totalMs = nowMs4() - totalStartedAt;
+      }
+      const result = createRuntimeFailureResult({
+        createRejectedResult,
+        originalImageData,
+        debugTimings
+      });
+      return {
+        ...result,
+        meta: attachPresenceBestEffortMeta(result.meta, collection)
+      };
+    }
+    const rankingStartedAt = nowMs4();
+    const ranked = rankCandidates(completed);
+    const best = ranked[0];
+    if (!best?.result?.imageData) {
+      failures.push({
+        hypothesis: null,
+        error: new Error("Candidate ranking returned no valid result")
+      });
+      if (debugTimingsEnabled) {
+        debugTimings.candidateRankingMs = nowMs4() - rankingStartedAt;
+        debugTimings.failedCandidateCount = failures.length;
+        debugTimings.totalMs = nowMs4() - totalStartedAt;
+      }
+      const result = createRuntimeFailureResult({
+        createRejectedResult,
+        originalImageData,
+        debugTimings
+      });
+      return {
+        ...result,
+        meta: attachPresenceBestEffortMeta(result.meta, collection)
+      };
+    }
+    const candidateSummaries = createSummaries(ranked, failures);
+    const selectionMeta = attachSelectionMeta(best.result.meta, {
+      qualityStatus: best.qualitySignals?.qualityStatus,
+      selectionConfidence: best.selectionConfidence,
+      selectedCandidate: createSelectedCandidate(best),
+      qualitySignals: best.qualitySignals,
+      candidateSummaries
+    });
+    const meta = attachPresenceBestEffortMeta(selectionMeta, collection);
+    if (debugTimingsEnabled) {
+      debugTimings.candidateRankingMs = nowMs4() - rankingStartedAt;
+      debugTimings.totalMs = nowMs4() - totalStartedAt;
+    }
+    const combinedDebugTimings = debugTimingsEnabled ? {
+      ...best.result.debugTimings ?? {},
+      ...debugTimings
+    } : best.result.debugTimings;
+    return {
+      ...best.result,
+      meta,
+      debugTimings: combinedDebugTimings
+    };
+  }
+
+  // src/core/imageWatermarkPipelineRequest.js
+  function createImageWatermarkPipelineCleanupConfig({
+    previewEdgeCleanupMaxSize,
+    known48EdgeCleanupMinSize,
+    known48EdgeCleanupMaxSize,
+    v2SmallEdgeCleanupSize,
+    v2SmallEdgeCleanupSizeTolerance
+  } = {}) {
+    return {
+      previewEdgeCleanupMaxSize,
+      known48EdgeCleanupMinSize,
+      known48EdgeCleanupMaxSize,
+      v2SmallEdgeCleanupSize,
+      v2SmallEdgeCleanupSizeTolerance
+    };
+  }
+  function createImageWatermarkPipelineRequest({
+    imageData,
+    options = {},
+    nowMs: nowMs4,
+    cloneImageData: cloneImageData4,
+    alphaGainCandidates,
+    alphaPriorityGains,
+    createAcceptedPipelineDependencies: createAcceptedPipelineDependencies2,
+    cleanupConfig,
+    visualPostProcessingEnabled = false
+  } = {}) {
+    return {
+      imageData,
+      options,
+      nowMs: nowMs4,
+      cloneImageData: cloneImageData4,
+      alphaGainCandidates,
+      alphaPriorityGains,
+      createAcceptedPipelineDependencies: createAcceptedPipelineDependencies2,
+      cleanupConfig,
+      visualPostProcessingEnabled
+    };
+  }
+
+  // src/core/watermarkProcessor.js
+  var RESIDUAL_RECALIBRATION_THRESHOLD = 0.5;
+  var MIN_SUPPRESSION_FOR_SKIP_RECALIBRATION = 0.18;
+  var MIN_RECALIBRATION_SCORE_DELTA = 0.18;
+  var MAX_NEAR_BLACK_RATIO_INCREASE2 = 0.05;
+  var OUTLINE_REFINEMENT_THRESHOLD = 0.42;
+  var OUTLINE_REFINEMENT_MIN_GAIN = 1.2;
+  var SUBPIXEL_REFINE_SHIFTS = [-0.25, 0, 0.25];
+  var SUBPIXEL_REFINE_SCALES = [0.99, 1, 1.01];
+  var ALPHA_PARAMETER_GROUPS = Object.freeze([
+    { name: "gemini-weak-alpha-202606", alphaGain: 0.6, standardPriority: true },
+    { name: "gemini-standard-alpha", alphaGain: 1, standardPriority: true },
+    { name: "gemini-balanced-strong-alpha-202606", alphaGain: 1.1 },
+    { name: "gemini-strong-alpha-202606", alphaGain: 1.15 },
+    { name: "gemini-strong-alpha-high-202606", alphaGain: 1.3 },
+    { name: "weak-alpha-extra-conservative", alphaGain: 0.45 },
+    { name: "weak-alpha-light", alphaGain: 0.7 },
+    { name: "weak-alpha-mid", alphaGain: 0.85 },
+    { name: "weak-alpha-conservative", alphaGain: 0.55 }
+  ]);
+  var ALPHA_GAIN_CANDIDATES = ALPHA_PARAMETER_GROUPS.map((group) => group.alphaGain);
+  var LOCATED_AGGRESSIVE_ALPHA_GAINS = Object.freeze([0.85, 1, 1.15, 1.3, 1.45, 1.7, 2, 2.4]);
+  var LOCATED_AGGRESSIVE_MIN_BALANCED_GAIN = 0.015;
+  var LOCATED_AGGRESSIVE_PASSABLE_SPATIAL_THRESHOLD = 0.22;
+  var LOCATED_AGGRESSIVE_MAX_PASSABLE_SPATIAL_DRIFT = 0.02;
+  var ENABLE_VISUAL_POST_PROCESSING = false;
+  var CATALOG_DARK_ALPHA_GAIN_CANDIDATES = Object.freeze([0.9, 0.85, 0.8, 0.95, 0.7, 0.6]);
+  var STANDARD_ALPHA_PRIORITY_GAINS = ALPHA_PARAMETER_GROUPS.filter((group) => group.standardPriority === true).map((group) => group.alphaGain);
+  var PREVIEW_EDGE_CLEANUP_MAX_SIZE = 32;
+  var KNOWN_48_EDGE_CLEANUP_MIN_SIZE = 40;
+  var KNOWN_48_EDGE_CLEANUP_MAX_SIZE = 56;
+  var KNOWN_48_EDGE_CLEANUP_MIN_GRADIENT = 0.22;
+  var KNOWN_48_EDGE_CLEANUP_MAX_ABS_SPATIAL = 0.55;
+  var KNOWN_48_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT = 0.015;
+  var KNOWN_48_EDGE_CLEANUP_MAX_SPATIAL_DRIFT = 0.06;
+  var V2_SMALL_EDGE_CLEANUP_SIZE = 36;
+  var V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE = 2;
+  var V2_SMALL_EDGE_CLEANUP_MIN_GRADIENT = 0.22;
+  var V2_SMALL_EDGE_CLEANUP_MAX_ABS_SPATIAL = 0.08;
+  var V2_SMALL_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT = 0.025;
+  var V2_SMALL_EDGE_CLEANUP_MAX_SPATIAL_DRIFT = 0.035;
+  var KNOWN_48_FLAT_FILL_MIN_GRADIENT = 0.28;
+  var STRONG_UNDERSIZED_FLAT_FILL_MIN_GRADIENT = 0.27;
+  var KNOWN_48_FLAT_FILL_MAX_BACKGROUND_STD = 6;
+  var KNOWN_48_FLAT_FILL_MIN_GRADIENT_IMPROVEMENT = 0.045;
+  var KNOWN_48_FLAT_FILL_SECOND_PASS_MIN_GRADIENT_IMPROVEMENT = 0.025;
+  var KNOWN_48_FLAT_FILL_MAX_APPLIED_PASSES = 2;
+  var KNOWN_48_FLAT_FILL_MAX_SPATIAL_DRIFT = 0.12;
+  var KNOWN_48_FLAT_FILL_MAX_ACCEPTED_ABS_SPATIAL = 0.38;
+  var KNOWN_48_FLAT_FILL_PAD = 10;
+  var KNOWN_48_FLAT_FILL_OUTSIDE_ALPHA_MAX = 0.012;
+  var KNOWN_48_FLAT_FILL_PRESETS = Object.freeze([
+    { name: "edge", minAlpha: 0.012, maxAlpha: 0.5, strength: 0.9 },
+    { name: "wide", minAlpha: 8e-3, maxAlpha: 0.99, strength: 0.92 },
+    { name: "hard", minAlpha: 4e-3, maxAlpha: 0.99, strength: 1 }
+  ]);
+  var NEW_MARGIN_96_FLAT_FILL_MIN_GRADIENT = 0.12;
+  var NEW_MARGIN_96_FLAT_FILL_MAX_BACKGROUND_STD = 7;
+  var NEW_MARGIN_96_FLAT_FILL_MIN_GRADIENT_IMPROVEMENT = 0.025;
+  var NEW_MARGIN_96_FLAT_FILL_MAX_SPATIAL_DRIFT = 0.08;
+  var NEW_MARGIN_96_FLAT_FILL_MAX_ACCEPTED_ABS_SPATIAL = 0.22;
+  var NEW_MARGIN_96_FLAT_FILL_PRESETS = Object.freeze([
+    { name: "edge", minAlpha: 6e-3, maxAlpha: 0.45, strength: 0.75 },
+    {
+      name: "expanded-edge",
+      minAlpha: 6e-3,
+      maxAlpha: 0.45,
+      strength: 1,
+      edgeMaskAlphaScale: 0.2,
+      minBaselineGradient: 0.6
+    }
+  ]);
+  var NEW_MARGIN_96_SMOOTH_EDGE_MIN_ALPHA_GAIN = 0.8;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_ALPHA_GAIN = 0.9;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_BACKGROUND_STD = 6;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_BASELINE_ABS_SPATIAL = 0.12;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MIN_BASELINE_GRADIENT = 0.45;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MIN_GRADIENT_IMPROVEMENT = 0.25;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_FINAL_ABS_SPATIAL = 0.18;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_FINAL_ABS_GRADIENT = 0.18;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_BOUNDARY_RAW_SCORE = 1.75;
+  var NEW_MARGIN_96_SMOOTH_EDGE_MAX_ARTIFACT_COST = 0.05;
+  var NEW_MARGIN_96_SMOOTH_EDGE_SCRATCH_PAD = 12;
+  var NEW_MARGIN_96_SMOOTH_EDGE_PRESETS = Object.freeze([
+    { maxAlpha: 0.3, strength: 0.6 },
+    { maxAlpha: 0.3, strength: 0.85 },
+    { maxAlpha: 0.3, strength: 1 },
+    { maxAlpha: 0.5, strength: 0.6 },
+    { maxAlpha: 0.5, strength: 0.85 },
+    { maxAlpha: 0.5, strength: 1 }
+  ]);
+  var NEW_MARGIN_96_VARIANT_RESCUE_PROFILES = Object.freeze([
+    { exponent: 1.06, alphaGain: 1.05 },
+    { exponent: 0.82, alphaGain: 0.9 }
+  ]);
+  var NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_SPATIAL = 0.7;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_GRADIENT = 0.7;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MIN_CURRENT_SPATIAL = 0.28;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MAX_CURRENT_GRADIENT = 0.18;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MAX_SPATIAL = 0.12;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MAX_GRADIENT = 0.2;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MAX_VISUAL_ARTIFACT = 0.24;
+  var NEW_MARGIN_96_VARIANT_RESCUE_MAX_CLIPPED = 0.012;
+  var KNOWN_48_LUMA_EDGE_MIN_GRADIENT = 0.2;
+  var KNOWN_48_LUMA_EDGE_MIN_GRADIENT_IMPROVEMENT = 0.02;
+  var KNOWN_48_LUMA_EDGE_MAX_SPATIAL_DRIFT = 0.04;
+  var KNOWN_48_LUMA_EDGE_MAX_ACCEPTED_ABS_SPATIAL = 0.38;
+  var KNOWN_48_LUMA_EDGE_PRESETS = Object.freeze([
+    { name: "soft", minAlpha: 0.012, maxAlpha: 0.7, referenceAlphaMax: 0.025, radius: 2, strength: 0.28, colorSigma: 34, maxDelta: 22 },
+    { name: "mid", minAlpha: 0.012, maxAlpha: 0.7, referenceAlphaMax: 0.04, radius: 3, strength: 0.42, colorSigma: 34, maxDelta: 32 },
+    { name: "wide", minAlpha: 0.012, maxAlpha: 0.7, referenceAlphaMax: 0.055, radius: 4, strength: 0.48, colorSigma: 34, maxDelta: 40 }
+  ]);
+  var KNOWN_48_MID_CORE_BIAS_STRENGTH = 0.25;
+  var KNOWN_48_MID_CORE_BIAS_MIN_HALO = 8;
+  var KNOWN_48_MID_CORE_BIAS_MIN_HALO_REDUCTION = 0.5;
+  var KNOWN_48_MID_CORE_BIAS_MAX_GRADIENT_DRIFT = 0.01;
+  var KNOWN_48_MID_CORE_BIAS_MAX_SPATIAL_DRIFT = 0.02;
+  var KNOWN_48_MID_CORE_BIAS_MAX_ARTIFACT_DRIFT = 1e-3;
+  var KNOWN_48_MID_CORE_BIAS_MAX_NEW_CLIP_DRIFT = 1e-3;
+  var PREVIEW_EDGE_CLEANUP_SPATIAL_THRESHOLD = 0.08;
+  var PREVIEW_EDGE_CLEANUP_GRADIENT_THRESHOLD = 0.1;
+  var SMALL_PREVIEW_EDGE_CLEANUP_MAX_SIZE = 32;
+  var SMALL_PREVIEW_EDGE_CLEANUP_GRADIENT_THRESHOLD = 0.05;
+  var PREVIEW_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT = 0.03;
+  var PREVIEW_EDGE_CLEANUP_MAX_SPATIAL_DRIFT = 0.04;
+  var PREVIEW_EDGE_CLEANUP_MAX_APPLIED_PASSES = 3;
+  var PREVIEW_EDGE_CLEANUP_FINE_GRADIENT_THRESHOLD = 0.16;
+  var PREVIEW_EDGE_CLEANUP_FINE_MIN_GRADIENT_IMPROVEMENT = 5e-3;
+  var PREVIEW_EDGE_CLEANUP_HALO_RELAXED_MIN_GRADIENT_IMPROVEMENT = 0.01;
+  var PREVIEW_EDGE_CLEANUP_HALO_WEIGHT = 0.02;
+  var PREVIEW_EDGE_CLEANUP_MIN_HALO_REDUCTION = 1.5;
+  var PREVIEW_EDGE_CLEANUP_STRONG_HALO_THRESHOLD = 4;
+  var PREVIEW_EDGE_CLEANUP_HALO_SPATIAL_THRESHOLD = 0.18;
+  var PREVIEW_EDGE_CLEANUP_PRESETS = Object.freeze([
+    { minAlpha: 0.02, maxAlpha: 0.45, radius: 2, strength: 0.7, outsideAlphaMax: 0.05 },
+    { minAlpha: 0.05, maxAlpha: 0.55, radius: 3, strength: 0.7, outsideAlphaMax: 0.08 },
+    { minAlpha: 0.1, maxAlpha: 0.7, radius: 3, strength: 0.8, outsideAlphaMax: 0.12 },
+    { minAlpha: 0.01, maxAlpha: 0.35, radius: 4, strength: 1.4, outsideAlphaMax: 0.05 }
+  ]);
+  var SMALL_PREVIEW_EDGE_CLEANUP_PRESETS = Object.freeze([
+    {
+      minAlpha: 0.01,
+      maxAlpha: 0.55,
+      radius: 2,
+      strength: 2.4,
+      outsideAlphaMax: 0.05,
+      minGradientImprovement: 0.04,
+      maxSpatialDrift: 0.12,
+      maxAcceptedSpatial: 0.12
+    }
+  ]);
+  var PREVIEW_EDGE_CLEANUP_STRONG_GRADIENT_THRESHOLD = 0.45;
+  var PREVIEW_EDGE_CLEANUP_AGGRESSIVE_PRESETS = Object.freeze([
+    {
+      minAlpha: 0.01,
+      maxAlpha: 0.55,
+      radius: 2,
+      strength: 1.3,
+      outsideAlphaMax: 0.05,
+      minGradientImprovement: 0.12,
+      maxSpatialDrift: 0.18,
+      maxAcceptedSpatial: 0.18
+    }
+  ]);
+  var SMALL_PREVIEW_FLAT_FILL_MIN_SAMPLE_LUM = 190;
+  var SMALL_PREVIEW_FLAT_FILL_MIN_BACKGROUND_MEAN = 230;
+  var SMALL_PREVIEW_FLAT_FILL_MAX_BACKGROUND_STD = 8;
+  var SMALL_PREVIEW_FLAT_FILL_MAX_GRADIENT = 0.02;
+  var SMALL_PREVIEW_FLAT_FILL_MAX_ABS_SPATIAL = 0.08;
+  var SMALL_PREVIEW_FLAT_FILL_PRESET = Object.freeze({
+    pad: 14,
+    outsideAlphaMax: 0.012,
+    minSampleLum: SMALL_PREVIEW_FLAT_FILL_MIN_SAMPLE_LUM,
+    minAlpha: 4e-3,
+    minTargetLum: 170,
+    strength: 1,
+    maxBackgroundStd: SMALL_PREVIEW_FLAT_FILL_MAX_BACKGROUND_STD
+  });
+  var LOCATED_AGGRESSIVE_EDGE_PRESETS = Object.freeze([
+    { minAlpha: 4e-3, maxAlpha: 0.99, radius: 2, strength: 0.85, outsideAlphaMax: 0.08 },
+    { minAlpha: 4e-3, maxAlpha: 0.99, radius: 3, strength: 1.15, outsideAlphaMax: 0.12 },
+    { minAlpha: 4e-3, maxAlpha: 0.99, radius: 5, strength: 1.45, outsideAlphaMax: 0.18 },
+    { minAlpha: 0.02, maxAlpha: 0.99, radius: 6, strength: 1.8, outsideAlphaMax: 0.25 }
+  ]);
+  var PREVIEW_BACKGROUND_CLEANUP_MAX_SIZE = 52;
+  var PREVIEW_BACKGROUND_CLEANUP_MIN_RESIDUAL = 0.3;
+  var PREVIEW_BACKGROUND_CLEANUP_MAX_BORDER_STD = 24;
+  var PREVIEW_BACKGROUND_CLEANUP_PAD = 8;
+  var PREVIEW_BACKGROUND_CLEANUP_PRIOR_RADIUS = 10;
+  var SMOOTH_PRIOR_LOCATED_MIN_SIZE = 80;
+  var SMOOTH_PRIOR_LOCATED_MAX_SIZE = 160;
+  var SMOOTH_PRIOR_LOCATED_MIN_BORDER_MEAN = 120;
+  var SMOOTH_PRIOR_LOCATED_MIN_SPATIAL = 0.25;
+  var SMOOTH_PRIOR_LOCATED_MAX_GRADIENT = 0.22;
+  var SMOOTH_PRIOR_LOCATED_MIN_SPATIAL_IMPROVEMENT = 0.16;
+  var SMOOTH_PRIOR_LOCATED_MAX_GRADIENT_DRIFT = 0.05;
+  var SMOOTH_PRIOR_LOCATED_MIN_ARTIFACT_IMPROVEMENT = 0.025;
+  var SMOOTH_PRIOR_LOCATED_MAX_ACCEPTED_GRADIENT = 0.18;
+  var SMOOTH_PRIOR_LOCATED_PRESETS = Object.freeze([
+    { radius: 24, threshold: 0, blurRadius: 0, strength: 0.75, gamma: 0.45 },
+    { radius: 36, threshold: 0, blurRadius: 0, strength: 0.75, gamma: 0.45 },
+    { radius: 24, threshold: 0.01, blurRadius: 0, strength: 0.75, gamma: 0.45 },
+    { radius: 36, threshold: 0.01, blurRadius: 0, strength: 0.75, gamma: 0.45 }
+  ]);
+  var OVER_SUBTRACTION_SPATIAL_THRESHOLD = -0.25;
+  var OVER_SUBTRACTION_GRADIENT_THRESHOLD = 0.35;
+  var OVER_SUBTRACTION_MIN_ABS_SPATIAL_IMPROVEMENT = 0.08;
+  var OVER_SUBTRACTION_MIN_GRADIENT_IMPROVEMENT = 0.08;
+  var OVER_SUBTRACTION_FINE_ALPHA_STEP = 0.02;
+  var OVER_SUBTRACTION_FINE_ALPHA_WINDOW = 0.04;
+  var LOCAL_ALPHA_SEARCH_MIN_ORIGINAL_SPATIAL = 0.25;
+  var LOCAL_ALPHA_SEARCH_MIN_ORIGINAL_GRADIENT = 0.2;
+  var LOCAL_ALPHA_SEARCH_DAMAGE_COARSE_STEP = 0.05;
+  var LOCAL_ALPHA_SEARCH_DAMAGE_MAX_DROP = 0.2;
+  var LOCAL_ALPHA_SEARCH_FINE_STEP = 2e-3;
+  var LOCAL_ALPHA_SEARCH_OVERSHOOT_WINDOW = 0.05;
+  var LOCAL_ALPHA_SEARCH_OVERSHOOT_STEP = 0.01;
+  var LOCAL_ALPHA_SEARCH_MAX_ABS_SPATIAL = 0.18;
+  var LOCAL_ALPHA_SEARCH_MAX_GRADIENT = 0.22;
+  var LOCAL_ALPHA_SEARCH_MAX_NEWLY_CLIPPED_RATIO = 0.02;
+  var LOCAL_ALPHA_SEARCH_DAMAGE_WEIGHT = 0.25;
+  var LOCAL_ALPHA_SEARCH_MIN_COST_IMPROVEMENT = 0.02;
+  var LOCAL_ALPHA_SEARCH_COST_TIE = 2e-3;
+  var LOCAL_ALPHA_SEARCH_SCRATCH_PAD = 4;
+  var DARK_SUPPORT_SEARCH_SCRATCH_PAD = 12;
+  var DARK_SUPPORT_SEARCH_MIN_ORIGINAL_SPATIAL = 0.95;
+  var DARK_SUPPORT_SEARCH_MIN_ORIGINAL_GRADIENT = 0.8;
+  var DARK_SUPPORT_SEARCH_MIN_ORIGINAL_NEAR_BLACK = 0.2;
+  var DARK_SUPPORT_SEARCH_MIN_GAIN = 0.58;
+  var DARK_SUPPORT_SEARCH_MAX_GAIN = 0.64;
+  var DARK_SUPPORT_SEARCH_GAIN_STEP = 2e-3;
+  var DARK_SUPPORT_MAX_ABS_SPATIAL = 0.18;
+  var DARK_SUPPORT_MAX_GRADIENT = 0.18;
+  var DARK_SUPPORT_MAX_NEWLY_CLIPPED_RATIO = 0.25;
+  var DARK_SUPPORT_MAX_OUTSIDE_ALPHA_CLIP_RATIO = 5e-3;
+  var DARK_SUPPORT_MIN_STRONG_ALPHA_CLIP_RATIO = 0.8;
+  var DARK_SUPPORT_ALPHA_MIN = 0.05;
+  var DARK_SUPPORT_ALPHA_STRONG_MIN = 0.2;
+  var DARK_SUPPORT_MAX_TEXTURE_PENALTY = 0.02;
+  var DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE = 8;
+  var DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE = 8;
+  var DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA = 1.5;
+  var DARK_SUPPORT_MAX_PRIOR_MAE = 2.25;
+  var DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE = 3.5;
+  var DARK_SUPPORT_MAX_BOUNDARY_SCORE = 0.3;
+  var DARK_SUPPORT_MAX_OPPOSITE_HALO_LUMINANCE = 1;
+  var DARK_SUPPORT_MIN_ABS_SPATIAL_IMPROVEMENT = 0.2;
+  var DARK_SUPPORT_MIN_GRADIENT_IMPROVEMENT = 0.2;
+  var DARK_SUPPORT_PRIOR_RELAXATION_PASSES = 32;
+  var DARK_SUPPORT_PRIOR_RADII = Object.freeze([4, 8, 12]);
+  var WEAK_ALPHA_FINE_TUNE_MIN_ORIGINAL_SPATIAL = 0.45;
+  var WEAK_ALPHA_FINE_TUNE_MIN_POSITIVE_RESIDUAL = 0.05;
+  var WEAK_ALPHA_FINE_TUNE_MIN_ABS_SPATIAL_IMPROVEMENT = 0.04;
+  var WEAK_ALPHA_FINE_TUNE_MAX_GRADIENT_INCREASE = 0.08;
+  var STRONG_POSITIVE_FINE_TUNE_MIN_ORIGINAL_SPATIAL = 0.75;
+  var STRONG_POSITIVE_FINE_TUNE_MIN_ORIGINAL_GRADIENT = 0.65;
+  var STRONG_POSITIVE_FINE_TUNE_MIN_CURRENT_SPATIAL = 0.3;
+  var STRONG_POSITIVE_FINE_TUNE_MID_GAINS = Object.freeze([0.7, 0.85]);
+  var STRONG_POSITIVE_FINE_TUNE_EXTRA_GAINS = Object.freeze([0.95, 1]);
+  var STRONG_POSITIVE_FINE_TUNE_MAX_ACCEPTED_SPATIAL = 0.12;
+  var STRONG_POSITIVE_FINE_TUNE_MAX_ACCEPTED_GRADIENT = 0.25;
+  var STRONG_POSITIVE_FINE_TUNE_MAX_POSITIVE_HALO_LUM = 4;
+  var CANONICAL_96_MODERATE_SIGNAL_MIN_ORIGINAL_SPATIAL = 0.4;
+  var CANONICAL_96_MODERATE_SIGNAL_MIN_ORIGINAL_GRADIENT = 0.1;
+  var CANONICAL_96_MODERATE_SIGNAL_MAX_CURRENT_SPATIAL = 0.26;
+  var CANONICAL_96_MODERATE_SIGNAL_MAX_CURRENT_GRADIENT = 0.04;
+  var FULL_STRENGTH_NEW_MARGIN_MIN_ORIGINAL_GRADIENT2 = 0.08;
+  var FULL_STRENGTH_NEW_MARGIN_MAX_CURRENT_GRADIENT = 0.1;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_ORIGINAL_SPATIAL = 0.4;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_ORIGINAL_GRADIENT = 0.3;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_ABS_CURRENT_SPATIAL = 0.12;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_CURRENT_GRADIENT = 0.08;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_HALO = 6;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_HALO_REDUCTION = 4;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_POSITIVE_HALO = 2.3;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_ALPHA_GAIN = 1;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_RADIUS = 56;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_MIN_ALPHA = 0.08;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_THRESHOLD = 3;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_STRENGTH = 1;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_GAMMA = 0.7;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_SPATIAL = 0.18;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_GRADIENT = 0.08;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_VISUAL_ARTIFACT = 0.07;
+  var CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_NEWLY_CLIPPED = 0.01;
+  var CATALOG_ALPHA_DARK_FINE_TUNE_MIN_ORIGINAL_SPATIAL = 0.6;
+  var CATALOG_ALPHA_DARK_FINE_TUNE_MIN_ORIGINAL_GRADIENT = 0.45;
+  var CATALOG_ALPHA_DARK_FINE_TUNE_MAX_NEGATIVE_RESIDUAL = -0.12;
+  var CATALOG_ALPHA_DARK_FINE_TUNE_MAX_GRADIENT_INCREASE = 0.12;
+  var SMALL_PREVIEW_REFINEMENT_MAX_REFINED_SIZE = 56;
+  var SMALL_PREVIEW_REFINEMENT_MIN_ABS_SPATIAL_IMPROVEMENT = 0.03;
+  var SMALL_PREVIEW_REFINEMENT_MIN_GRADIENT_IMPROVEMENT = 0.03;
+  var SMALL_PREVIEW_REFINEMENT_MAX_SOURCE_SIZE = 32;
+  var SMALL_PREVIEW_REFINEMENT_MAX_ORIGINAL_GRADIENT = 0.15;
+  var SMALL_PREVIEW_REFINEMENT_MIN_CURRENT_SPATIAL = 0.04;
+  var SMALL_PREVIEW_REFINEMENT_MAX_CURRENT_GRADIENT = 0.08;
+  var SMALL_ANCHOR_RELOCATION_MIN_SIZE = 40;
+  var SMALL_ANCHOR_RELOCATION_MAX_SIZE = 56;
+  var SMALL_ANCHOR_RELOCATION_SIZE_DELTA = 5;
+  var SMALL_ANCHOR_RELOCATION_MARGIN_DELTA = 10;
+  var SMALL_ANCHOR_RELOCATION_MIN_CURRENT_GRADIENT = 0.24;
+  var SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_SPATIAL = 0.14;
+  var SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_GRADIENT = 0.24;
+  var SMALL_ANCHOR_RELOCATION_MIN_ORIGINAL_SPATIAL = 0.32;
+  var SMALL_ANCHOR_RELOCATION_MIN_SUPPRESSION_GAIN = 0.22;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_SPATIAL = 0.4;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_GRADIENT = 0.45;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL = 0.25;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_GRADIENT = 0.4;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_CURRENT_SPATIAL = -0.16;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_CURRENT_GRADIENT = 0.18;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_BALANCED_GAIN = 0.035;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_SPATIAL = 0.12;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_GRADIENT = 0.2;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_DARK_HALO = 4;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_VISUAL_ARTIFACT = 0.2;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_GAINS = Object.freeze([0.45, 0.55, 0.6, 0.7, 0.85]);
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_SHARPEN_AMOUNT = 0.25;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_SHARPEN_ALPHA_GAIN = 0.55;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MIN_ALPHA = 0.24;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_ALPHA = 0.78;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_SCALE = 0.9;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_ALPHA_GAIN = 0.65;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_SPATIAL = 0.14;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_CURRENT_SPATIAL = -0.2;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_CURRENT_GRADIENT = -0.05;
+  var KNOWN_48_POWER_PROFILE_RESCUE_CANDIDATES = Object.freeze([
+    { exponent: 1.08, alphaGain: 0.6, maxSpatial: 0.14 },
+    { exponent: 0.88, alphaGain: 0.55, maxSpatial: 0.16 }
+  ]);
+  var LARGE_MARGIN_48_PROFILE_ALPHA_RESCUE = Object.freeze({
+    exponent: 0.9,
+    alphaGain: 0.85
+  });
+  var LARGE_MARGIN_48_PROFILE_MIN_ORIGINAL_SPATIAL = 0.65;
+  var LARGE_MARGIN_48_PROFILE_MIN_ORIGINAL_GRADIENT = 0.4;
+  var LARGE_MARGIN_48_PROFILE_MAX_ABS_CURRENT_SPATIAL = 0.1;
+  var LARGE_MARGIN_48_PROFILE_MAX_CURRENT_GRADIENT = 0.1;
+  var LARGE_MARGIN_48_PROFILE_MIN_CURRENT_POSITIVE_HALO = 12;
+  var LARGE_MARGIN_48_PROFILE_MIN_CURRENT_CLIPPED_RATIO = 0.05;
+  var LARGE_MARGIN_48_PROFILE_MAX_CURRENT_CLIPPED_RATIO = 0.11;
+  var LARGE_MARGIN_48_PROFILE_MAX_CURRENT_ARTIFACT = 0.13;
+  var LARGE_MARGIN_48_PROFILE_MAX_SPATIAL = 0.12;
+  var LARGE_MARGIN_48_PROFILE_MAX_GRADIENT = 0.1;
+  var LARGE_MARGIN_48_PROFILE_MAX_POSITIVE_HALO = 4;
+  var LARGE_MARGIN_48_PROFILE_MAX_CLIPPED_RATIO = 0.02;
+  var LARGE_MARGIN_48_PROFILE_MAX_ARTIFACT = 0.12;
+  var KNOWN_48_POWER_PROFILE_RESCUE_MIN_ORIGINAL_SPATIAL = 0.9;
+  var KNOWN_48_POWER_PROFILE_RESCUE_MIN_ORIGINAL_GRADIENT = 0.8;
+  var KNOWN_48_POWER_PROFILE_RESCUE_MIN_CURRENT_SPATIAL = 0.3;
+  var KNOWN_48_POWER_PROFILE_RESCUE_MAX_CURRENT_GRADIENT = 0.14;
+  var KNOWN_48_RESIDUAL_REBALANCE_GAINS = Object.freeze([0.62, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 1.05]);
+  var KNOWN_48_RESIDUAL_REBALANCE_POWER_PROFILES = Object.freeze([
+    { exponent: 1.08, gains: [0.65] },
+    { exponent: 1.2, gains: [0.7] },
+    { exponent: 0.75, gains: [0.51] }
+  ]);
+  var KNOWN_48_RESIDUAL_REBALANCE_MIN_ORIGINAL_SPATIAL = 0.45;
+  var KNOWN_48_RESIDUAL_REBALANCE_MIN_ORIGINAL_GRADIENT = 0.16;
+  var KNOWN_48_RESIDUAL_REBALANCE_MIN_CURRENT_SPATIAL = 0.22;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_CURRENT_GRADIENT = 0.05;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_ACCEPTED_SPATIAL = 0.22;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_ACCEPTED_GRADIENT = 0.32;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_VISUAL_ARTIFACT = 0.34;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_DARK_HALO = 0.2;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_CLIPPED_RATIO = 0.01;
+  var KNOWN_48_RESIDUAL_REBALANCE_MIN_POSITIVE_HALO_DROP = 0.5;
+  var KNOWN_48_RESIDUAL_REBALANCE_MAX_CLEARED_POSITIVE_HALO = 1.5;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_ORIGINAL_SPATIAL = 0.75;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_ORIGINAL_GRADIENT = 0.55;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_CURRENT_SPATIAL = 0.14;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_CURRENT_SPATIAL = 0.24;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_CURRENT_GRADIENT = 0.04;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_CURRENT_GRADIENT = 0.14;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_NEAR_BLACK_RATIO = 0.35;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_BALANCED_GAIN = 0.03;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_ARTIFACT_DELTA = 0.02;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_ARTIFACT = 0.16;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_SPATIAL = 0.13;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_GRADIENT = 0.13;
+  var KNOWN_48_BOUNDARY_REPAIR_RESCUE_PRESET = Object.freeze({
+    radius: 18,
+    minAlpha: 0.04,
+    maxAlpha: 0.75,
+    strength: 0.68,
+    gamma: 0.62
+  });
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_PRESETS = Object.freeze([
+    { radius: 72, minAlpha: 4e-3, maxAlpha: 0.7, strength: 1.3, gamma: 0.45 },
+    { radius: 72, minAlpha: 0.02, maxAlpha: 0.7, strength: 1, gamma: 0.45 },
+    { radius: 56, minAlpha: 4e-3, maxAlpha: 0.7, strength: 1.3, gamma: 0.45 }
+  ]);
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_ORIGINAL_SPATIAL = 0.9;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_ORIGINAL_GRADIENT = 0.9;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_CURRENT_SPATIAL = 0.22;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_CURRENT_GRADIENT = 0.12;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_SPATIAL_IMPROVEMENT = 0.07;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_SPATIAL = 0.16;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_GRADIENT = 0.24;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_ARTIFACT = 0.26;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_CLIPPED = 5e-3;
+  var KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_DARK_HALO = 0.2;
+  var SMALL_LOCATED_PRIOR_REPAIR_PRESETS = Object.freeze([
+    { radius: 16, minAlpha: 0.02, maxAlpha: 0.99, strength: 1, gamma: 0.45 },
+    { radius: 72, minAlpha: 4e-3, maxAlpha: 0.7, strength: 1.3, gamma: 0.45 },
+    { radius: 72, minAlpha: 0.02, maxAlpha: 0.7, strength: 1, gamma: 0.45 },
+    { radius: 8, minAlpha: 0.02, maxAlpha: 0.99, strength: 1, gamma: 0.45 }
+  ]);
+  var SMALL_LOCATED_PRIOR_REPAIR_MIN_SIZE = 36;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_SIZE = 56;
+  var SMALL_LOCATED_PRIOR_REPAIR_MIN_ORIGINAL_SPATIAL = 0.42;
+  var SMALL_LOCATED_PRIOR_REPAIR_MIN_ORIGINAL_GRADIENT = 0.16;
+  var SMALL_LOCATED_PRIOR_REPAIR_MIN_CURRENT_SPATIAL = 0.23;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_CURRENT_GRADIENT = 0.2;
+  var SMALL_LOCATED_PRIOR_REPAIR_MIN_SPATIAL_IMPROVEMENT = 0.08;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_SPATIAL = 0.16;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_GRADIENT = 0.24;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_ARTIFACT = 0.28;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_CLIPPED = 5e-3;
+  var SMALL_LOCATED_PRIOR_REPAIR_MAX_DARK_HALO = 3;
+  var PROJECTED_SMALL_DARK_SUPPORT_SIZE = 36;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_MARGIN = 64;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_MARGIN = 80;
+  var PROJECTED_SMALL_DARK_SUPPORT_EXPANSION = 3;
+  var PROJECTED_SMALL_DARK_SUPPORT_PRIOR_RADII = Object.freeze([2, 4, 8]);
+  var PROJECTED_SMALL_DARK_SUPPORT_PRESET = Object.freeze({
+    minAlpha: 2e-3,
+    maxAlpha: 0.99,
+    strength: 1.3,
+    gamma: 0.35
+  });
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_SPATIAL = 0.95;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_GRADIENT = 0.8;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_NEAR_BLACK = 0.5;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_CURRENT_SPATIAL = 0.35;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_CURRENT_GRADIENT = 0.35;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_CURRENT_GRADIENT = 0.5;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_POSITIVE_HALO = 12;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_ABS_SPATIAL = 0.18;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_GRADIENT = 0.18;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_ABS_SPATIAL_IMPROVEMENT = 0.2;
+  var PROJECTED_SMALL_DARK_SUPPORT_MIN_GRADIENT_IMPROVEMENT = 0.2;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_ARTIFACT = 0.42;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_CLIPPED = 5e-3;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_POSITIVE_HALO = 1;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE = 4;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE = 4;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA = 0.5;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MAE = 1;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE = 0.5;
+  var PROJECTED_SMALL_DARK_SUPPORT_MAX_BOUNDARY_SCORE = 0.35;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE = 46;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MARGIN = 97;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ALPHA = 0.12;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_ALPHA = 0.42;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SCALE = 1.24;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_ALPHA_GAIN = 0.45;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ORIGINAL_SPATIAL = 0.12;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ORIGINAL_GRADIENT = 0.4;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_SPATIAL = 0.14;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_VISUAL_ARTIFACT = 0.22;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_SPATIAL = -0.18;
+  var KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_GRADIENT = 0.05;
+  var QUANTIZED_BODY_CORRECTION_SIZE = 48;
+  var QUANTIZED_BODY_CORRECTION_MARGIN = 96;
+  var QUANTIZED_BODY_CORRECTION_MAX_CURRENT_SPATIAL = -0.16;
+  var QUANTIZED_BODY_CORRECTION_MAX_CURRENT_GRADIENT = 0.08;
+  var QUANTIZED_BODY_CORRECTION_LOW_ALPHA_MAX = 0.04;
+  var QUANTIZED_BODY_CORRECTION_LOW_ABS_MAX = 4;
+  var QUANTIZED_BODY_CORRECTION_BODY_MIN_ALPHA = 0.12;
+  var QUANTIZED_BODY_CORRECTION_BODY_MEAN_MAX = -0.5;
+  var QUANTIZED_BODY_CORRECTION_BODY_NEGATIVE_RATIO_MIN = 0.2;
+  var QUANTIZED_BODY_CORRECTION_RESIDUAL_THRESHOLD = -0.5;
+  var QUANTIZED_BODY_CORRECTION_PRIOR_RADIUS = 6;
+  var QUANTIZED_BODY_CORRECTION_MIN_BALANCED_GAIN = 0.03;
+  var QUANTIZED_BODY_CORRECTION_MAX_ARTIFACT_INCREASE = 0.05;
+  var DARK_HALO_RESCUE_MIN_DARK_HALO_LUM = 10;
+  var DARK_HALO_RESCUE_MAX_CURRENT_SPATIAL = -0.16;
+  var DARK_HALO_RESCUE_MAX_ABS_CURRENT_GRADIENT = 0.08;
+  var DARK_HALO_RESCUE_MAX_DARK_HALO_LUM = 4;
+  var DARK_HALO_RESCUE_MAX_VISUAL_ARTIFACT = 0.22;
+  var DARK_HALO_RESCUE_MAX_NEWLY_CLIPPED_RATIO = 0.04;
+  var DARK_HALO_RESCUE_MIN_BALANCED_GAIN = 0.04;
+  var DARK_HALO_RESCUE_GAINS = Object.freeze([0.25, 0.35, 0.45]);
+  var DARK_HALO_RESCUE_LOGO_VALUES = Object.freeze([224, 232, 240]);
+  var DARK_HALO_RESCUE_CONFIGS = Object.freeze([
+    { logoSize: 48, marginRight: 96, marginBottom: 98 },
+    { logoSize: 48, marginRight: 96, marginBottom: 97 },
+    { logoSize: 48, marginRight: 96, marginBottom: 96 },
+    { logoSize: 46, marginRight: 97, marginBottom: 97 },
+    { logoSize: 46, marginRight: 97, marginBottom: 96 },
+    { logoSize: 46, marginRight: 96, marginBottom: 97 },
+    { logoSize: 47, marginRight: 96, marginBottom: 96 },
+    { logoSize: 47, marginRight: 97, marginBottom: 96 }
+  ]);
+  function nowMs() {
+    if (typeof globalThis.performance?.now === "function") {
+      return globalThis.performance.now();
+    }
+    return Date.now();
+  }
+  function cloneImageData3(imageData) {
+    if (typeof ImageData !== "undefined" && imageData instanceof ImageData) {
+      return new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height
+      );
+    }
+    return {
+      width: imageData.width,
+      height: imageData.height,
+      data: new Uint8ClampedArray(imageData.data)
+    };
+  }
+  function shouldRecalibrateAlphaStrength({ originalScore, processedScore, suppressionGain }) {
+    return originalScore >= 0.6 && processedScore >= RESIDUAL_RECALIBRATION_THRESHOLD && suppressionGain <= MIN_SUPPRESSION_FOR_SKIP_RECALIBRATION;
+  }
+  function refineSubpixelOutline({
+    sourceImageData,
+    alphaMap,
+    position,
+    alphaGain,
+    originalNearBlackRatio,
+    baselineSpatialScore,
+    baselineGradientScore,
+    baselineShift,
+    minGain = OUTLINE_REFINEMENT_MIN_GAIN,
+    shiftCandidates = SUBPIXEL_REFINE_SHIFTS,
+    scaleCandidates = SUBPIXEL_REFINE_SCALES,
+    minGradientImprovement = 0.04,
+    maxSpatialDrift = 0.08
+  }) {
+    const size = position.width;
+    if (!size || size <= 8) return null;
+    if (alphaGain < minGain) return null;
+    const maxAllowedNearBlackRatio = Math.min(1, originalNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    const gainCandidates = [alphaGain];
+    const lower = Math.max(1, Number((alphaGain - 0.01).toFixed(2)));
+    const upper = Number((alphaGain + 0.01).toFixed(2));
+    if (lower !== alphaGain) gainCandidates.push(lower);
+    if (upper !== alphaGain) gainCandidates.push(upper);
+    const baseDx = baselineShift?.dx ?? 0;
+    const baseDy = baselineShift?.dy ?? 0;
+    const baseScale = baselineShift?.scale ?? 1;
+    let best = null;
+    for (const scaleDelta of scaleCandidates) {
+      const scale = Number((baseScale * scaleDelta).toFixed(4));
+      for (const dyDelta of shiftCandidates) {
+        const dy = baseDy + dyDelta;
+        for (const dxDelta of shiftCandidates) {
+          const dx = baseDx + dxDelta;
+          const warped = warpAlphaMap(alphaMap, size, { dx, dy, scale });
+          for (const gain of gainCandidates) {
+            const candidate = cloneImageData3(sourceImageData);
+            removeWatermark(candidate, warped, position, { alphaGain: gain });
+            const nearBlackRatio = calculateNearBlackRatio(candidate, position);
+            if (nearBlackRatio > maxAllowedNearBlackRatio) continue;
+            const spatialScore = computeRegionSpatialCorrelation({
+              imageData: candidate,
+              alphaMap: warped,
+              region: { x: position.x, y: position.y, size }
+            });
+            const gradientScore = computeRegionGradientCorrelation({
+              imageData: candidate,
+              alphaMap: warped,
+              region: { x: position.x, y: position.y, size }
+            });
+            const cost = Math.abs(spatialScore) * 0.6 + Math.max(0, gradientScore);
+            if (!best || cost < best.cost) {
+              best = {
+                imageData: candidate,
+                alphaMap: warped,
+                alphaGain: gain,
+                shift: { dx, dy, scale },
+                spatialScore,
+                gradientScore,
+                nearBlackRatio,
+                cost
+              };
+            }
+          }
+        }
+      }
+    }
+    if (!best) return null;
+    const improvedGradient = best.gradientScore <= baselineGradientScore - minGradientImprovement;
+    const keptSpatial = Math.abs(best.spatialScore) <= Math.abs(baselineSpatialScore) + maxSpatialDrift;
+    if (!improvedGradient || !keptSpatial) return null;
+    return best;
+  }
+  function recalibrateAlphaStrength({
+    sourceImageData,
+    alphaMap,
+    position,
+    originalSpatialScore,
+    processedSpatialScore,
+    originalNearBlackRatio
+  }) {
+    let bestScore = processedSpatialScore;
+    let bestGain = 1;
+    let bestImageData = null;
+    const maxAllowedNearBlackRatio = Math.min(1, originalNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    for (const alphaGain of ALPHA_GAIN_CANDIDATES) {
+      const candidate = cloneImageData3(sourceImageData);
+      removeWatermark(candidate, alphaMap, position, { alphaGain });
+      const candidateNearBlackRatio = calculateNearBlackRatio(candidate, position);
+      if (candidateNearBlackRatio > maxAllowedNearBlackRatio) {
+        continue;
+      }
+      const score = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: {
+          x: position.x,
+          y: position.y,
+          size: position.width
+        }
+      });
+      if (score < bestScore) {
+        bestScore = score;
+        bestGain = alphaGain;
+        bestImageData = candidate;
+      }
+    }
+    const scoreDelta = processedSpatialScore - bestScore;
+    if (!bestImageData || scoreDelta < MIN_RECALIBRATION_SCORE_DELTA) {
+      return null;
+    }
+    return {
+      imageData: bestImageData,
+      alphaGain: bestGain,
+      processedSpatialScore: bestScore,
+      suppressionGain: originalSpatialScore - bestScore
+    };
+  }
+  function createLocalAlphaSearchInstrumentation({ debugEnabled = false } = {}) {
+    return {
+      debugEnabled,
+      trialCount: 0,
+      trialAllocatedPixels: 0,
+      maxTrialBufferPixels: 0,
+      trialFullImageCloneCount: 0,
+      fullImageMaterializationCount: 0,
+      darkSupportTrialCount: 0,
+      darkSupportAcceptedTrialCount: 0,
+      darkSupportBestProbe: null,
+      acceptedTrials: []
+    };
+  }
+  function createLocalAlphaSearchWindow(imageData, position, scratchPad = LOCAL_ALPHA_SEARCH_SCRATCH_PAD) {
+    const x = Math.max(0, position.x - scratchPad);
+    const y = Math.max(0, position.y - scratchPad);
+    const right = Math.min(
+      imageData.width,
+      position.x + position.width + scratchPad
+    );
+    const bottom = Math.min(
+      imageData.height,
+      position.y + position.height + scratchPad
+    );
+    return {
+      x,
+      y,
+      width: right - x,
+      height: bottom - y,
+      position: {
+        x: position.x - x,
+        y: position.y - y,
+        width: position.width,
+        height: position.height
+      }
+    };
+  }
+  function extractLocalAlphaSearchScratch(imageData, window2) {
+    const scratch = {
+      width: window2.width,
+      height: window2.height,
+      data: new Uint8ClampedArray(window2.width * window2.height * 4)
+    };
+    for (let row = 0; row < window2.height; row++) {
+      const sourceStart = ((window2.y + row) * imageData.width + window2.x) * 4;
+      const sourceEnd = sourceStart + window2.width * 4;
+      scratch.data.set(
+        imageData.data.subarray(sourceStart, sourceEnd),
+        row * window2.width * 4
+      );
+    }
+    return scratch;
+  }
+  function createLocalAlphaSearchContext(originalImageData, position, scratchPad = LOCAL_ALPHA_SEARCH_SCRATCH_PAD) {
+    const window2 = createLocalAlphaSearchWindow(
+      originalImageData,
+      position,
+      scratchPad
+    );
+    return {
+      window: window2,
+      position: window2.position,
+      originalScratch: extractLocalAlphaSearchScratch(originalImageData, window2)
+    };
+  }
+  function cloneLocalAlphaTrialScratch({
+    originalScratch,
+    originalImageData,
+    instrumentation
+  }) {
+    const scratch = cloneImageData3(originalScratch);
+    if (instrumentation?.debugEnabled === true) {
+      const pixels = scratch.width * scratch.height;
+      instrumentation.trialCount++;
+      instrumentation.trialAllocatedPixels += pixels;
+      instrumentation.maxTrialBufferPixels = Math.max(
+        instrumentation.maxTrialBufferPixels,
+        pixels
+      );
+      if (pixels >= originalImageData.width * originalImageData.height) {
+        instrumentation.trialFullImageCloneCount++;
+      }
+    }
+    return scratch;
+  }
+  function evaluateLocalAlphaGainCandidate({
+    originalImageData,
+    candidateImageData = null,
+    alphaMap,
+    position,
+    alphaGain,
+    originalSpatialScore,
+    originalNearBlackRatio,
+    searchContext = createLocalAlphaSearchContext(originalImageData, position),
+    instrumentation = null
+  }) {
+    const scratchPosition = searchContext.position;
+    const scratchImageData = candidateImageData ? extractLocalAlphaSearchScratch(candidateImageData, searchContext.window) : cloneLocalAlphaTrialScratch({
+      originalScratch: searchContext.originalScratch,
+      originalImageData,
+      instrumentation
+    });
+    if (!candidateImageData) {
+      removeWatermark(scratchImageData, alphaMap, scratchPosition, { alphaGain });
+    }
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData: scratchImageData,
+      alphaMap,
+      region: {
+        x: scratchPosition.x,
+        y: scratchPosition.y,
+        size: scratchPosition.width
+      }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData: scratchImageData,
+      alphaMap,
+      region: {
+        x: scratchPosition.x,
+        y: scratchPosition.y,
+        size: scratchPosition.width
+      }
+    });
+    const nearBlackRatio = calculateNearBlackRatio(scratchImageData, scratchPosition);
+    const nearBlackIncrease = nearBlackRatio - originalNearBlackRatio;
+    const texture = assessReferenceTextureAlignmentFromStats({
+      originalImageData,
+      referenceImageData: originalImageData,
+      candidateTextureStats: getRegionTextureStats(
+        scratchImageData,
+        scratchPosition
+      ),
+      position
+    });
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData: searchContext.originalScratch,
+      candidateImageData: scratchImageData,
+      alphaMap,
+      position: scratchPosition,
+      alphaGain
+    });
+    const damage = scoreDamage({
+      hardReject: texture?.hardReject === true,
+      nearBlackIncrease,
+      texturePenalty: texture?.texturePenalty ?? 0,
+      newlyClippedRatio: artifacts?.newlyClippedRatio ?? 0,
+      halo: artifacts?.halo ?? null
+    });
+    const suppressionGain = originalSpatialScore - spatialScore;
+    const residual = scoreResidual({
+      processedSpatial: spatialScore,
+      processedGradient: gradientScore,
+      suppressionGain,
+      artifactCost: artifacts?.visualArtifactCost ?? 0
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData: scratchImageData,
+      position: scratchPosition,
+      alphaMap
+    });
+    const cost = residual.score + damage.penalty * LOCAL_ALPHA_SEARCH_DAMAGE_WEIGHT;
+    return {
+      scratchImageData,
+      alphaMap,
+      position,
+      alphaGain,
+      spatialScore,
+      gradientScore,
+      nearBlackRatio,
+      nearBlackIncrease,
+      suppressionGain,
+      texture,
+      artifacts,
+      damage,
+      residual,
+      residualVisibility,
+      cost
+    };
+  }
+  function measureDarkSupportClipping({
+    originalImageData,
+    candidateImageData,
+    alphaMap,
+    position
+  }) {
+    let newlyClippedCount = 0;
+    let outsideAlphaSupportCount = 0;
+    let strongAlphaSupportCount = 0;
+    const total = position.width * position.height;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const pixelIndex = ((position.y + row) * originalImageData.width + position.x + col) * 4;
+        const newlyClipped = [0, 1, 2].some((channel) => candidateImageData.data[pixelIndex + channel] === 0 && originalImageData.data[pixelIndex + channel] > 5);
+        if (!newlyClipped) continue;
+        newlyClippedCount++;
+        const alpha = Math.abs(alphaMap[localIndex]);
+        if (alpha < DARK_SUPPORT_ALPHA_MIN) {
+          outsideAlphaSupportCount++;
+        }
+        if (alpha >= DARK_SUPPORT_ALPHA_STRONG_MIN) {
+          strongAlphaSupportCount++;
+        }
+      }
+    }
+    return {
+      newlyClippedRatio: newlyClippedCount / Math.max(1, total),
+      outsideAlphaSupportRatio: newlyClippedCount > 0 ? outsideAlphaSupportCount / newlyClippedCount : 0,
+      strongAlphaSupportRatio: newlyClippedCount > 0 ? strongAlphaSupportCount / newlyClippedCount : 1
+    };
+  }
+  function measureDarkSupportPriorConvergence({
+    candidateImageData,
+    priorImageData,
+    alphaMap,
+    position
+  }) {
+    let absoluteDelta = 0;
+    let weightedAbsoluteDelta = 0;
+    let alphaWeight = 0;
+    let candidateLuminance = 0;
+    let priorLuminance = 0;
+    let channelCount = 0;
+    let pixelCount = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = Math.abs(alphaMap[localIndex]);
+        const pixelIndex = ((position.y + row) * candidateImageData.width + position.x + col) * 4;
+        const candidateR = candidateImageData.data[pixelIndex];
+        const candidateG = candidateImageData.data[pixelIndex + 1];
+        const candidateB = candidateImageData.data[pixelIndex + 2];
+        const priorR = priorImageData.data[pixelIndex];
+        const priorG = priorImageData.data[pixelIndex + 1];
+        const priorB = priorImageData.data[pixelIndex + 2];
+        for (let channel = 0; channel < 3; channel++) {
+          const delta = Math.abs(
+            candidateImageData.data[pixelIndex + channel] - priorImageData.data[pixelIndex + channel]
+          );
+          absoluteDelta += delta;
+          weightedAbsoluteDelta += delta * alpha;
+          channelCount++;
+        }
+        alphaWeight += alpha;
+        candidateLuminance += 0.2126 * candidateR + 0.7152 * candidateG + 0.0722 * candidateB;
+        priorLuminance += 0.2126 * priorR + 0.7152 * priorG + 0.0722 * priorB;
+        pixelCount++;
+      }
+    }
+    const candidateMeanLuminance = candidateLuminance / Math.max(1, pixelCount);
+    const priorMeanLuminance = priorLuminance / Math.max(1, pixelCount);
+    return {
+      meanAbsoluteDelta: absoluteDelta / Math.max(1, channelCount),
+      weightedMeanAbsoluteDelta: weightedAbsoluteDelta / Math.max(1e-8, alphaWeight * 3),
+      candidateMeanLuminance,
+      priorMeanLuminance,
+      meanLuminanceDelta: Math.abs(
+        candidateMeanLuminance - priorMeanLuminance
+      )
+    };
+  }
+  function createDarkSupportSearchContext(originalImageData, position) {
+    const searchContext = createLocalAlphaSearchContext(
+      originalImageData,
+      position,
+      DARK_SUPPORT_SEARCH_SCRATCH_PAD
+    );
+    const priors = DARK_SUPPORT_PRIOR_RADII.map((radius) => ({
+      radius,
+      imageData: buildPreviewNeighborhoodPrior({
+        previewImageData: searchContext.originalScratch,
+        position: searchContext.position,
+        radius,
+        relaxationPasses: DARK_SUPPORT_PRIOR_RELAXATION_PASSES
+      })
+    }));
+    return {
+      ...searchContext,
+      priors
+    };
+  }
+  function assessDarkBackgroundSupportConvergence({
+    candidate,
+    searchContext
+  }) {
+    const priorMetrics = searchContext.priors.map(({ radius, imageData }) => ({
+      radius,
+      ...measureDarkSupportPriorConvergence({
+        candidateImageData: candidate.scratchImageData,
+        priorImageData: imageData,
+        alphaMap: candidate.alphaMap,
+        position: searchContext.position
+      })
+    }));
+    const clipping = measureDarkSupportClipping({
+      originalImageData: searchContext.originalScratch,
+      candidateImageData: candidate.scratchImageData,
+      alphaMap: candidate.alphaMap,
+      position: searchContext.position
+    });
+    const boundary = measurePreviewBoundaryMetrics(
+      candidate.scratchImageData,
+      searchContext.originalScratch,
+      searchContext.position
+    );
+    const maximumPriorMeanLuminance = Math.max(
+      ...priorMetrics.map((item) => item.priorMeanLuminance)
+    );
+    const maximumCandidateMeanLuminance = Math.max(
+      ...priorMetrics.map((item) => item.candidateMeanLuminance)
+    );
+    const maximumPriorMeanDelta = Math.max(
+      ...priorMetrics.map((item) => item.meanLuminanceDelta)
+    );
+    const maximumPriorMae = Math.max(
+      ...priorMetrics.map((item) => item.meanAbsoluteDelta)
+    );
+    const maximumPriorWeightedMae = Math.max(
+      ...priorMetrics.map((item) => item.weightedMeanAbsoluteDelta)
+    );
+    const accepted = Boolean(
+      candidate.residualVisibility?.visible === false && Math.abs(candidate.spatialScore) <= DARK_SUPPORT_MAX_ABS_SPATIAL && candidate.gradientScore <= DARK_SUPPORT_MAX_GRADIENT && candidate.texture?.hardReject !== true && Number(candidate.texture?.texturePenalty ?? Infinity) <= DARK_SUPPORT_MAX_TEXTURE_PENALTY && Number(candidate.artifacts?.newlyClippedRatio ?? Infinity) <= DARK_SUPPORT_MAX_NEWLY_CLIPPED_RATIO && Number(candidate.artifacts?.oppositeDirectionHaloLum ?? Infinity) <= DARK_SUPPORT_MAX_OPPOSITE_HALO_LUMINANCE && clipping.outsideAlphaSupportRatio <= DARK_SUPPORT_MAX_OUTSIDE_ALPHA_CLIP_RATIO && clipping.strongAlphaSupportRatio >= DARK_SUPPORT_MIN_STRONG_ALPHA_CLIP_RATIO && maximumPriorMeanLuminance <= DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE && maximumCandidateMeanLuminance <= DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE && maximumPriorMeanDelta <= DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA && maximumPriorMae <= DARK_SUPPORT_MAX_PRIOR_MAE && maximumPriorWeightedMae <= DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE && boundary.normalizedScore <= DARK_SUPPORT_MAX_BOUNDARY_SCORE
+    );
+    return {
+      accepted,
+      priorRadii: [...DARK_SUPPORT_PRIOR_RADII],
+      maximumPriorMeanLuminance,
+      maximumCandidateMeanLuminance,
+      maximumPriorMeanDelta,
+      maximumPriorMae,
+      maximumPriorWeightedMae,
+      boundaryScore: boundary.normalizedScore,
+      clipping
+    };
+  }
+  function materializeLocalAlphaGainCandidate({
+    candidate,
+    originalImageData,
+    instrumentation
+  }) {
+    const imageData = cloneImageData3(originalImageData);
+    if (instrumentation?.debugEnabled === true) {
+      instrumentation.fullImageMaterializationCount++;
+    }
+    removeWatermark(imageData, candidate.alphaMap, candidate.position, {
+      alphaGain: candidate.alphaGain
+    });
+    const { scratchImageData, ...rest } = candidate;
+    return {
+      ...rest,
+      imageData
+    };
+  }
+  function isEligibleLocalAlphaGainCandidate(candidate) {
+    const standardEligible = Boolean(
+      candidate && candidate.residualVisibility?.visible === false && Math.abs(candidate.spatialScore) <= LOCAL_ALPHA_SEARCH_MAX_ABS_SPATIAL && candidate.gradientScore <= LOCAL_ALPHA_SEARCH_MAX_GRADIENT && (candidate.artifacts?.newlyClippedRatio ?? 0) <= LOCAL_ALPHA_SEARCH_MAX_NEWLY_CLIPPED_RATIO
+    );
+    return standardEligible || candidate?.darkBackgroundSupportConvergence?.accepted === true;
+  }
+  function pickBetterLocalAlphaGainCandidate(currentBest, candidate) {
+    if (!isEligibleLocalAlphaGainCandidate(candidate)) return currentBest;
+    if (!currentBest) return candidate;
+    if (candidate.damage.safe !== currentBest.damage.safe) {
+      return candidate.damage.safe ? candidate : currentBest;
+    }
+    if (candidate.cost < currentBest.cost - LOCAL_ALPHA_SEARCH_COST_TIE) {
+      return candidate;
+    }
+    if (Math.abs(candidate.cost - currentBest.cost) <= LOCAL_ALPHA_SEARCH_COST_TIE && candidate.alphaGain > currentBest.alphaGain) {
+      return candidate;
+    }
+    return currentBest;
+  }
+  function fineTuneEvidenceGatedLocalAlpha({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    originalNearBlackRatio,
+    instrumentation = null
+  }) {
+    if (position?.width !== 48 || position?.height !== 48 || originalSpatialScore < LOCAL_ALPHA_SEARCH_MIN_ORIGINAL_SPATIAL || originalGradientScore < LOCAL_ALPHA_SEARCH_MIN_ORIGINAL_GRADIENT || !Number.isFinite(currentAlphaGain) || currentAlphaGain <= 0) {
+      return null;
+    }
+    const searchContext = createLocalAlphaSearchContext(originalImageData, position);
+    if (currentAlphaGain < 1 && assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position,
+      alphaMap
+    })?.visible !== true) {
+      return null;
+    }
+    const current = evaluateLocalAlphaGainCandidate({
+      originalImageData,
+      candidateImageData: currentImageData,
+      alphaMap,
+      position,
+      alphaGain: currentAlphaGain,
+      originalSpatialScore,
+      originalNearBlackRatio,
+      searchContext
+    });
+    const damageTriggered = currentAlphaGain === 1 && current.damage.safe === false;
+    const overshootTriggered = currentAlphaGain < 1 && current.residualVisibility?.visible === true && currentSpatialScore <= OVER_SUBTRACTION_SPATIAL_THRESHOLD;
+    if (!damageTriggered && !overshootTriggered) return null;
+    let best = null;
+    let trigger = null;
+    if (damageTriggered) {
+      let lowerBracket = null;
+      const coarseStepCount = Math.round(
+        LOCAL_ALPHA_SEARCH_DAMAGE_MAX_DROP / LOCAL_ALPHA_SEARCH_DAMAGE_COARSE_STEP
+      );
+      for (let step = 1; step <= coarseStepCount; step++) {
+        const alphaGain = Number((currentAlphaGain - step * LOCAL_ALPHA_SEARCH_DAMAGE_COARSE_STEP).toFixed(3));
+        if (alphaGain <= 0) break;
+        const candidate = evaluateLocalAlphaGainCandidate({
+          originalImageData,
+          alphaMap,
+          position,
+          alphaGain,
+          originalSpatialScore,
+          originalNearBlackRatio,
+          searchContext,
+          instrumentation
+        });
+        if (candidate.damage.safe === true && (candidate.artifacts?.newlyClippedRatio ?? 0) <= LOCAL_ALPHA_SEARCH_MAX_NEWLY_CLIPPED_RATIO) {
+          lowerBracket = candidate;
+          break;
+        }
+      }
+      if (!lowerBracket) {
+        if (originalSpatialScore < DARK_SUPPORT_SEARCH_MIN_ORIGINAL_SPATIAL || originalGradientScore < DARK_SUPPORT_SEARCH_MIN_ORIGINAL_GRADIENT || originalNearBlackRatio < DARK_SUPPORT_SEARCH_MIN_ORIGINAL_NEAR_BLACK) {
+          return null;
+        }
+        const darkSupportSearchContext = createDarkSupportSearchContext(
+          originalImageData,
+          position
+        );
+        const stepCount = Math.round(
+          (DARK_SUPPORT_SEARCH_MAX_GAIN - DARK_SUPPORT_SEARCH_MIN_GAIN) / DARK_SUPPORT_SEARCH_GAIN_STEP
+        );
+        for (let step = 0; step <= stepCount; step++) {
+          const alphaGain = Number((DARK_SUPPORT_SEARCH_MIN_GAIN + step * DARK_SUPPORT_SEARCH_GAIN_STEP).toFixed(3));
+          const candidate = evaluateLocalAlphaGainCandidate({
+            originalImageData,
+            alphaMap,
+            position,
+            alphaGain,
+            originalSpatialScore,
+            originalNearBlackRatio,
+            searchContext: darkSupportSearchContext,
+            instrumentation
+          });
+          candidate.darkBackgroundSupportConvergence = assessDarkBackgroundSupportConvergence({
+            candidate,
+            searchContext: darkSupportSearchContext
+          });
+          if (instrumentation?.debugEnabled === true) {
+            instrumentation.darkSupportTrialCount++;
+            if (candidate.darkBackgroundSupportConvergence.accepted === true) {
+              instrumentation.darkSupportAcceptedTrialCount++;
+              if (!instrumentation.darkSupportBestProbe || candidate.cost < instrumentation.darkSupportBestProbe.cost) {
+                instrumentation.darkSupportBestProbe = {
+                  alphaGain,
+                  spatialScore: candidate.spatialScore,
+                  gradientScore: candidate.gradientScore,
+                  cost: candidate.cost,
+                  damageSafe: candidate.damage.safe === true,
+                  convergence: candidate.darkBackgroundSupportConvergence
+                };
+              }
+            }
+          }
+          if (candidate.darkBackgroundSupportConvergence.accepted !== true) {
+            continue;
+          }
+          best = pickBetterLocalAlphaGainCandidate(best, candidate);
+        }
+        if (!best) return null;
+        trigger = "dark-background-support";
+      } else {
+        const fineStepCount = Math.floor(
+          (currentAlphaGain - lowerBracket.alphaGain) / LOCAL_ALPHA_SEARCH_FINE_STEP
+        );
+        for (let step = 0; step <= fineStepCount; step++) {
+          const alphaGain = Number((lowerBracket.alphaGain + step * LOCAL_ALPHA_SEARCH_FINE_STEP).toFixed(3));
+          if (alphaGain >= currentAlphaGain) continue;
+          const candidate = step === 0 ? lowerBracket : evaluateLocalAlphaGainCandidate({
+            originalImageData,
+            alphaMap,
+            position,
+            alphaGain,
+            originalSpatialScore,
+            originalNearBlackRatio,
+            searchContext,
+            instrumentation
+          });
+          best = pickBetterLocalAlphaGainCandidate(best, candidate);
+        }
+        trigger = "damage";
+      }
+    } else {
+      const stepCount = Math.round(
+        LOCAL_ALPHA_SEARCH_OVERSHOOT_WINDOW / LOCAL_ALPHA_SEARCH_OVERSHOOT_STEP
+      );
+      for (let step = stepCount; step >= 1; step--) {
+        const alphaGain = Number((currentAlphaGain - step * LOCAL_ALPHA_SEARCH_OVERSHOOT_STEP).toFixed(3));
+        if (alphaGain <= 0) continue;
+        const candidate = evaluateLocalAlphaGainCandidate({
+          originalImageData,
+          alphaMap,
+          position,
+          alphaGain,
+          originalSpatialScore,
+          originalNearBlackRatio,
+          searchContext,
+          instrumentation
+        });
+        best = pickBetterLocalAlphaGainCandidate(best, candidate);
+      }
+      trigger = "overshoot";
+    }
+    const darkSupportImproved = Boolean(
+      trigger === "dark-background-support" && best?.darkBackgroundSupportConvergence?.accepted === true && Math.abs(current.spatialScore) - Math.abs(best.spatialScore) >= DARK_SUPPORT_MIN_ABS_SPATIAL_IMPROVEMENT && current.gradientScore - best.gradientScore >= DARK_SUPPORT_MIN_GRADIENT_IMPROVEMENT
+    );
+    if (!best || !darkSupportImproved && best.cost > current.cost - LOCAL_ALPHA_SEARCH_MIN_COST_IMPROVEMENT) {
+      return null;
+    }
+    const materialized = materializeLocalAlphaGainCandidate({
+      candidate: best,
+      originalImageData,
+      instrumentation
+    });
+    instrumentation?.acceptedTrials.push({
+      trigger,
+      damageSafe: best.damage.safe === true,
+      darkBackgroundSupportConvergence: best.darkBackgroundSupportConvergence ?? null,
+      alphaMap: best.alphaMap,
+      position: best.position,
+      alphaGain: best.alphaGain,
+      spatialScore: best.spatialScore,
+      gradientScore: best.gradientScore
+    });
+    return {
+      ...materialized,
+      localSearchTrigger: trigger,
+      beforeDamage: current.damage,
+      beforeResidual: current.residual
+    };
+  }
+  function recalibrateOverSubtractedAlpha({
+    originalImageData,
+    alphaMap,
+    position,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalNearBlackRatio
+  }) {
+    if (currentSpatialScore > OVER_SUBTRACTION_SPATIAL_THRESHOLD || currentGradientScore < OVER_SUBTRACTION_GRADIENT_THRESHOLD) {
+      return null;
+    }
+    const maxAllowedNearBlackRatio = Math.min(1, originalNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    let best = null;
+    const evaluateAlphaGain = (alphaGain) => {
+      const candidate = cloneImageData3(originalImageData);
+      removeWatermark(candidate, alphaMap, position, { alphaGain });
+      const nearBlackRatio = calculateNearBlackRatio(candidate, position);
+      if (nearBlackRatio > maxAllowedNearBlackRatio) return null;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData: candidate,
+        alphaMap,
+        position,
+        alphaGain
+      });
+      const absSpatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      const gradientImprovement = currentGradientScore - gradientScore;
+      if (absSpatialImprovement < OVER_SUBTRACTION_MIN_ABS_SPATIAL_IMPROVEMENT || gradientImprovement < OVER_SUBTRACTION_MIN_GRADIENT_IMPROVEMENT) {
+        return null;
+      }
+      const cost = artifacts?.visualArtifactCost ?? Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.8 + nearBlackRatio * 2;
+      return {
+        imageData: candidate,
+        alphaGain,
+        spatialScore,
+        gradientScore,
+        nearBlackRatio,
+        suppressionGain: originalSpatialScore - spatialScore,
+        cost
+      };
+    };
+    for (const alphaGain of ALPHA_GAIN_CANDIDATES) {
+      if (alphaGain >= currentAlphaGain) continue;
+      const candidate = evaluateAlphaGain(alphaGain);
+      if (!candidate) continue;
+      if (!best || candidate.cost < best.cost) {
+        best = candidate;
+      }
+    }
+    if (!best) return null;
+    const fineGains = /* @__PURE__ */ new Set();
+    const fineStepCount = Math.round(OVER_SUBTRACTION_FINE_ALPHA_WINDOW / OVER_SUBTRACTION_FINE_ALPHA_STEP);
+    for (let step = -fineStepCount; step <= fineStepCount; step++) {
+      const alphaGain = Number((best.alphaGain + step * OVER_SUBTRACTION_FINE_ALPHA_STEP).toFixed(2));
+      if (alphaGain <= 0 || alphaGain >= currentAlphaGain) continue;
+      fineGains.add(alphaGain);
+    }
+    for (const alphaGain of fineGains) {
+      if (alphaGain === best.alphaGain) continue;
+      const candidate = evaluateAlphaGain(alphaGain);
+      if (!candidate) continue;
+      if (candidate.cost < best.cost) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+  function fineTuneWeakPositiveResidualAlpha({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    originalNearBlackRatio
+  }) {
+    if (currentAlphaGain >= 1 || originalSpatialScore < WEAK_ALPHA_FINE_TUNE_MIN_ORIGINAL_SPATIAL || currentSpatialScore < WEAK_ALPHA_FINE_TUNE_MIN_POSITIVE_RESIDUAL) {
+      return null;
+    }
+    const currentResidualVisibility = currentImageData ? assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position,
+      alphaMap
+    }) : null;
+    if (currentResidualVisibility?.visible === false) return null;
+    const maxAllowedNearBlackRatio = Math.min(1, originalNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    let best = null;
+    const fineStepCount = Math.round(OVER_SUBTRACTION_FINE_ALPHA_WINDOW / OVER_SUBTRACTION_FINE_ALPHA_STEP);
+    const alphaGainCandidates = /* @__PURE__ */ new Set();
+    for (let step = 1; step <= fineStepCount; step++) {
+      const alphaGain = Number((currentAlphaGain + step * OVER_SUBTRACTION_FINE_ALPHA_STEP).toFixed(2));
+      if (alphaGain >= 1) continue;
+      alphaGainCandidates.add(alphaGain);
+    }
+    const shouldTryStrongPositiveFineTune = currentSpatialScore >= STRONG_POSITIVE_FINE_TUNE_MIN_CURRENT_SPATIAL && originalSpatialScore >= STRONG_POSITIVE_FINE_TUNE_MIN_ORIGINAL_SPATIAL && originalGradientScore >= STRONG_POSITIVE_FINE_TUNE_MIN_ORIGINAL_GRADIENT;
+    if (shouldTryStrongPositiveFineTune) {
+      for (const alphaGain of [
+        ...STRONG_POSITIVE_FINE_TUNE_MID_GAINS,
+        ...STRONG_POSITIVE_FINE_TUNE_EXTRA_GAINS
+      ]) {
+        alphaGainCandidates.add(alphaGain);
+      }
+    }
+    for (const alphaGain of alphaGainCandidates) {
+      if (alphaGain <= currentAlphaGain || alphaGain > 1) continue;
+      const candidate = cloneImageData3(originalImageData);
+      removeWatermark(candidate, alphaMap, position, { alphaGain });
+      const nearBlackRatio = calculateNearBlackRatio(candidate, position);
+      if (nearBlackRatio > maxAllowedNearBlackRatio) continue;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData: candidate,
+        alphaMap,
+        position,
+        alphaGain
+      });
+      const absSpatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      const gradientIncrease = gradientScore - currentGradientScore;
+      const strongPositiveClearsResidual = shouldTryStrongPositiveFineTune && Math.abs(spatialScore) <= STRONG_POSITIVE_FINE_TUNE_MAX_ACCEPTED_SPATIAL && gradientScore <= STRONG_POSITIVE_FINE_TUNE_MAX_ACCEPTED_GRADIENT && (artifacts?.halo?.positiveDeltaLum ?? Number.POSITIVE_INFINITY) <= STRONG_POSITIVE_FINE_TUNE_MAX_POSITIVE_HALO_LUM;
+      if (!strongPositiveClearsResidual && (absSpatialImprovement < WEAK_ALPHA_FINE_TUNE_MIN_ABS_SPATIAL_IMPROVEMENT || gradientIncrease > WEAK_ALPHA_FINE_TUNE_MAX_GRADIENT_INCREASE)) {
+        continue;
+      }
+      const cost = artifacts ? artifacts.visualArtifactCost + Math.max(0, gradientIncrease) * 0.25 : Math.abs(spatialScore) + Math.max(0, gradientIncrease) * 0.25 + nearBlackRatio * 2;
+      const clearsResidual = strongPositiveClearsResidual;
+      if (!best || clearsResidual && !best.clearsResidual || clearsResidual === best.clearsResidual && cost < best.cost) {
+        best = {
+          imageData: candidate,
+          alphaGain,
+          spatialScore,
+          gradientScore,
+          nearBlackRatio,
+          suppressionGain: originalSpatialScore - spatialScore,
+          cost,
+          clearsResidual
+        };
+      }
+    }
+    return best;
+  }
+  function fineTuneDarkCatalogAlpha({
+    originalImageData,
+    alphaMap,
+    position,
+    source,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    originalNearBlackRatio
+  }) {
+    if (typeof source !== "string" || !source.includes("catalog") || currentAlphaGain < 1 || originalSpatialScore < CATALOG_ALPHA_DARK_FINE_TUNE_MIN_ORIGINAL_SPATIAL || originalGradientScore < CATALOG_ALPHA_DARK_FINE_TUNE_MIN_ORIGINAL_GRADIENT || currentSpatialScore > CATALOG_ALPHA_DARK_FINE_TUNE_MAX_NEGATIVE_RESIDUAL) {
+      return null;
+    }
+    const maxAllowedNearBlackRatio = Math.min(1, originalNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    let best = null;
+    for (const alphaGain of CATALOG_DARK_ALPHA_GAIN_CANDIDATES) {
+      if (alphaGain >= currentAlphaGain) continue;
+      const candidate = cloneImageData3(originalImageData);
+      removeWatermark(candidate, alphaMap, position, { alphaGain });
+      const nearBlackRatio = calculateNearBlackRatio(candidate, position);
+      if (nearBlackRatio > maxAllowedNearBlackRatio) continue;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData: candidate,
+        alphaMap,
+        position,
+        alphaGain
+      });
+      const absSpatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      const gradientIncrease = gradientScore - currentGradientScore;
+      if (absSpatialImprovement <= 0 || gradientIncrease > CATALOG_ALPHA_DARK_FINE_TUNE_MAX_GRADIENT_INCREASE) {
+        continue;
+      }
+      const cost = artifacts?.visualArtifactCost ?? Math.abs(spatialScore) * 0.25 + Math.max(0, gradientScore) + nearBlackRatio * 2;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidate,
+          alphaGain,
+          spatialScore,
+          gradientScore,
+          nearBlackRatio,
+          suppressionGain: originalSpatialScore - spatialScore,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function shouldRefineResidualEdge({
+    source,
+    position,
+    baselineSpatialScore,
+    baselineGradientScore,
+    baselinePositiveHalo,
+    mode = "preview"
+  }) {
+    if (mode === "known-48") {
+      return position?.width >= KNOWN_48_EDGE_CLEANUP_MIN_SIZE && position?.width <= KNOWN_48_EDGE_CLEANUP_MAX_SIZE && Math.abs(baselineSpatialScore) <= KNOWN_48_EDGE_CLEANUP_MAX_ABS_SPATIAL && (baselineGradientScore >= KNOWN_48_EDGE_CLEANUP_MIN_GRADIENT || baselinePositiveHalo >= PREVIEW_EDGE_CLEANUP_STRONG_HALO_THRESHOLD);
+    }
+    if (mode === "v2-small") {
+      return position?.width >= V2_SMALL_EDGE_CLEANUP_SIZE - V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE && position?.width <= V2_SMALL_EDGE_CLEANUP_SIZE + V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE && Math.abs(baselineSpatialScore) <= V2_SMALL_EDGE_CLEANUP_MAX_ABS_SPATIAL && baselineGradientScore >= V2_SMALL_EDGE_CLEANUP_MIN_GRADIENT;
+    }
+    const isSmallPreviewAnchor = position?.width >= 24 && position?.width <= SMALL_PREVIEW_EDGE_CLEANUP_MAX_SIZE;
+    const gradientThreshold = isSmallPreviewAnchor ? SMALL_PREVIEW_EDGE_CLEANUP_GRADIENT_THRESHOLD : PREVIEW_EDGE_CLEANUP_GRADIENT_THRESHOLD;
+    return typeof source === "string" && source.includes("preview-anchor") && position?.width >= 24 && position?.width <= PREVIEW_EDGE_CLEANUP_MAX_SIZE && (Math.abs(baselineSpatialScore) <= PREVIEW_EDGE_CLEANUP_SPATIAL_THRESHOLD || baselinePositiveHalo >= PREVIEW_EDGE_CLEANUP_STRONG_HALO_THRESHOLD && Math.abs(baselineSpatialScore) <= PREVIEW_EDGE_CLEANUP_HALO_SPATIAL_THRESHOLD) && baselineGradientScore >= gradientThreshold;
+  }
+  function blendPreviewResidualEdge({
+    sourceImageData,
+    alphaMap,
+    position,
+    minAlpha,
+    maxAlpha,
+    radius,
+    strength,
+    outsideAlphaMax
+  }) {
+    const candidate = cloneImageData3(sourceImageData);
+    const { width: imageWidth, height: imageHeight, data } = sourceImageData;
+    const regionSize = position.width;
+    const maxAlphaSafe = Math.max(maxAlpha, 1e-6);
+    const edgeMask = createAlphaGradientMask({
+      alphaMap,
+      width: regionSize,
+      height: regionSize
+    });
+    for (let row = 0; row < regionSize; row++) {
+      for (let col = 0; col < regionSize; col++) {
+        const localIndex = row * regionSize + col;
+        const alpha = Math.abs(alphaMap[localIndex]);
+        if (alpha < minAlpha || alpha > maxAlpha) continue;
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+        let sumWeight = 0;
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const localY = row + dy;
+            const localX = col + dx;
+            const pixelX = position.x + localX;
+            const pixelY = position.y + localY;
+            if (pixelX < 0 || pixelY < 0 || pixelX >= imageWidth || pixelY >= imageHeight) {
+              continue;
+            }
+            let neighborAlpha = 0;
+            if (localY >= 0 && localX >= 0 && localY < regionSize && localX < regionSize) {
+              neighborAlpha = Math.abs(alphaMap[localY * regionSize + localX]);
+            }
+            if (neighborAlpha > outsideAlphaMax) continue;
+            const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+            const weight = 1 / distance;
+            const pixelIndex2 = (pixelY * imageWidth + pixelX) * 4;
+            sumR += data[pixelIndex2] * weight;
+            sumG += data[pixelIndex2 + 1] * weight;
+            sumB += data[pixelIndex2 + 2] * weight;
+            sumWeight += weight;
+          }
+        }
+        if (sumWeight <= 0) continue;
+        const edgeWeight = getAlphaGradientWeight(edgeMask, localIndex);
+        const blend = Math.max(0, Math.min(1, strength * alpha / maxAlphaSafe * edgeWeight));
+        const pixelIndex = ((position.y + row) * imageWidth + (position.x + col)) * 4;
+        candidate.data[pixelIndex] = Math.round(data[pixelIndex] * (1 - blend) + sumR / sumWeight * blend);
+        candidate.data[pixelIndex + 1] = Math.round(data[pixelIndex + 1] * (1 - blend) + sumG / sumWeight * blend);
+        candidate.data[pixelIndex + 2] = Math.round(data[pixelIndex + 2] * (1 - blend) + sumB / sumWeight * blend);
+      }
+    }
+    return candidate;
+  }
+  function solveLinear3x3(matrix, vector) {
+    const augmented = matrix.map((row, index) => [...row, vector[index]]);
+    for (let column = 0; column < 3; column++) {
+      let pivot = column;
+      for (let row = column + 1; row < 3; row++) {
+        if (Math.abs(augmented[row][column]) > Math.abs(augmented[pivot][column])) {
+          pivot = row;
+        }
+      }
+      if (Math.abs(augmented[pivot][column]) < 1e-8) return null;
+      if (pivot !== column) {
+        [augmented[pivot], augmented[column]] = [augmented[column], augmented[pivot]];
+      }
+      const divisor = augmented[column][column];
+      for (let next = column; next < 4; next++) {
+        augmented[column][next] /= divisor;
+      }
+      for (let row = 0; row < 3; row++) {
+        if (row === column) continue;
+        const factor = augmented[row][column];
+        for (let next = column; next < 4; next++) {
+          augmented[row][next] -= factor * augmented[column][next];
+        }
+      }
+    }
+    return [augmented[0][3], augmented[1][3], augmented[2][3]];
+  }
+  function fitColorPlane(samples, channel) {
+    const matrix = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0]
+    ];
+    const vector = [0, 0, 0];
+    for (const sample2 of samples) {
+      const terms = [1, sample2.x, sample2.y];
+      const value = sample2[channel];
+      for (let row = 0; row < 3; row++) {
+        vector[row] += terms[row] * value;
+        for (let column = 0; column < 3; column++) {
+          matrix[row][column] += terms[row] * terms[column];
+        }
+      }
+    }
+    return solveLinear3x3(matrix, vector);
+  }
+  function calculateBackgroundSampleStats(samples) {
+    let sum = 0;
+    let squareSum = 0;
+    for (const sample2 of samples) {
+      const luminance = 0.2126 * sample2.r + 0.7152 * sample2.g + 0.0722 * sample2.b;
+      sum += luminance;
+      squareSum += luminance * luminance;
+    }
+    const count = samples.length;
+    const mean = count > 0 ? sum / count : 0;
+    return {
+      count,
+      mean,
+      std: count > 0 ? Math.sqrt(Math.max(0, squareSum / count - mean * mean)) : Number.POSITIVE_INFINITY
+    };
+  }
+  function sampleFlatBackgroundPixels(imageData, alphaMap, position, {
+    pad = KNOWN_48_FLAT_FILL_PAD,
+    outsideAlphaMax = KNOWN_48_FLAT_FILL_OUTSIDE_ALPHA_MAX,
+    minSampleLum = 0
+  } = {}) {
+    const samples = [];
+    const left = Math.max(0, position.x - pad);
+    const top = Math.max(0, position.y - pad);
+    const right = Math.min(imageData.width - 1, position.x + position.width + pad - 1);
+    const bottom = Math.min(imageData.height - 1, position.y + position.height + pad - 1);
+    for (let y = top; y <= bottom; y++) {
+      for (let x = left; x <= right; x++) {
+        const inside = x >= position.x && x < position.x + position.width && y >= position.y && y < position.y + position.height;
+        if (inside) {
+          const row = y - position.y;
+          const col = x - position.x;
+          if (alphaMap[row * position.width + col] > outsideAlphaMax) {
+            continue;
+          }
+        }
+        const pixelIndex = (y * imageData.width + x) * 4;
+        const luminance = 0.2126 * imageData.data[pixelIndex] + 0.7152 * imageData.data[pixelIndex + 1] + 0.0722 * imageData.data[pixelIndex + 2];
+        if (luminance < minSampleLum) continue;
+        samples.push({
+          x: (x - position.x) / Math.max(1, position.width),
+          y: (y - position.y) / Math.max(1, position.height),
+          r: imageData.data[pixelIndex],
+          g: imageData.data[pixelIndex + 1],
+          b: imageData.data[pixelIndex + 2]
+        });
+      }
+    }
+    return samples;
+  }
+  function applyFlatBackgroundFill({
+    sourceImageData,
+    alphaMap,
+    position,
+    minAlpha,
+    maxAlpha,
+    strength,
+    maxBackgroundStd = KNOWN_48_FLAT_FILL_MAX_BACKGROUND_STD,
+    edgeWeightFloor = 0.35,
+    edgeMaskAlphaScale = 0,
+    pad = KNOWN_48_FLAT_FILL_PAD,
+    outsideAlphaMax = KNOWN_48_FLAT_FILL_OUTSIDE_ALPHA_MAX,
+    minSampleLum = 0
+  }) {
+    const samples = sampleFlatBackgroundPixels(sourceImageData, alphaMap, position, {
+      pad,
+      outsideAlphaMax,
+      minSampleLum
+    });
+    const stats = calculateBackgroundSampleStats(samples);
+    if (stats.count < 24 || stats.std > maxBackgroundStd) {
+      return null;
+    }
+    const redPlane = fitColorPlane(samples, "r");
+    const greenPlane = fitColorPlane(samples, "g");
+    const bluePlane = fitColorPlane(samples, "b");
+    if (!redPlane || !greenPlane || !bluePlane) return null;
+    const candidate = cloneImageData3(sourceImageData);
+    const edgeMask = createAlphaGradientMask({
+      alphaMap,
+      width: position.width,
+      height: position.height
+    });
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = alphaMap[localIndex];
+        const edgeWeight = getAlphaGradientWeight(edgeMask, localIndex, edgeWeightFloor);
+        const repairAlpha = Math.max(
+          alpha,
+          Number(edgeMask[localIndex] ?? 0) * edgeMaskAlphaScale
+        );
+        if (repairAlpha < minAlpha || repairAlpha > maxAlpha) continue;
+        const x = col / Math.max(1, position.width);
+        const y = row / Math.max(1, position.height);
+        const target = [
+          redPlane[0] + redPlane[1] * x + redPlane[2] * y,
+          greenPlane[0] + greenPlane[1] * x + greenPlane[2] * y,
+          bluePlane[0] + bluePlane[1] * x + bluePlane[2] * y
+        ];
+        const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+        const blend = Math.max(0, Math.min(
+          1,
+          strength * Math.min(1, repairAlpha / 0.2) * edgeWeight
+        ));
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(
+            candidate.data[pixelIndex + channel] * (1 - blend) + target[channel] * blend
+          );
+        }
+      }
+    }
+    return { imageData: candidate, stats };
+  }
+  function applySmallPreviewBrightBackgroundFill({
+    sourceImageData,
+    alphaMap,
+    position,
+    minAlpha,
+    minTargetLum,
+    strength,
+    pad,
+    outsideAlphaMax,
+    minSampleLum,
+    maxBackgroundStd
+  }) {
+    const samples = sampleFlatBackgroundPixels(sourceImageData, alphaMap, position, {
+      pad,
+      outsideAlphaMax,
+      minSampleLum
+    });
+    const stats = calculateBackgroundSampleStats(samples);
+    if (stats.count < 24 || stats.std > maxBackgroundStd) {
+      return null;
+    }
+    const redPlane = fitColorPlane(samples, "r");
+    const greenPlane = fitColorPlane(samples, "g");
+    const bluePlane = fitColorPlane(samples, "b");
+    if (!redPlane || !greenPlane || !bluePlane) return null;
+    const candidate = cloneImageData3(sourceImageData);
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        if (alphaMap[localIndex] < minAlpha) continue;
+        const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+        const currentLum = 0.2126 * candidate.data[pixelIndex] + 0.7152 * candidate.data[pixelIndex + 1] + 0.0722 * candidate.data[pixelIndex + 2];
+        if (currentLum < minTargetLum) continue;
+        const x = col / Math.max(1, position.width);
+        const y = row / Math.max(1, position.height);
+        const target = [
+          redPlane[0] + redPlane[1] * x + redPlane[2] * y,
+          greenPlane[0] + greenPlane[1] * x + greenPlane[2] * y,
+          bluePlane[0] + bluePlane[1] * x + bluePlane[2] * y
+        ];
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(
+            candidate.data[pixelIndex + channel] * (1 - strength) + target[channel] * strength
+          );
+        }
+      }
+    }
+    return { imageData: candidate, stats };
+  }
+  function refineKnown48FlatBackgroundResidual({
+    sourceImageData,
+    alphaMap,
+    position,
+    baselineSpatialScore,
+    baselineGradientScore,
+    minBaselineGradient = KNOWN_48_FLAT_FILL_MIN_GRADIENT,
+    minGradientImprovement = KNOWN_48_FLAT_FILL_MIN_GRADIENT_IMPROVEMENT
+  }) {
+    if (position?.width < KNOWN_48_EDGE_CLEANUP_MIN_SIZE || position?.width > KNOWN_48_EDGE_CLEANUP_MAX_SIZE || baselineGradientScore < minBaselineGradient) {
+      return null;
+    }
+    let best = null;
+    for (const preset of KNOWN_48_FLAT_FILL_PRESETS) {
+      const filled = applyFlatBackgroundFill({
+        sourceImageData,
+        alphaMap,
+        position,
+        ...preset
+      });
+      if (!filled) continue;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: filled.imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: filled.imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientImprovement = baselineGradientScore - gradientScore;
+      const keptSpatial = Math.abs(spatialScore) <= Math.abs(baselineSpatialScore) + KNOWN_48_FLAT_FILL_MAX_SPATIAL_DRIFT;
+      const acceptedSpatial = Math.abs(spatialScore) <= KNOWN_48_FLAT_FILL_MAX_ACCEPTED_ABS_SPATIAL;
+      if (gradientImprovement < minGradientImprovement || !keptSpatial || !acceptedSpatial) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) * 0.45 + Math.max(0, gradientScore);
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: filled.imageData,
+          spatialScore,
+          gradientScore,
+          stats: filled.stats,
+          preset: preset.name,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function isNewMargin96AlphaVariantConfig(config) {
+    return config?.logoSize === 96 && config.marginRight === 192 && config.marginBottom === 192 && config.alphaVariant === "20260520";
+  }
+  function refineNewMargin96FlatBackgroundResidual({
+    sourceImageData,
+    alphaMap,
+    position,
+    config,
+    alphaGain,
+    baselineSpatialScore,
+    baselineGradientScore
+  }) {
+    if (!isNewMargin96AlphaVariantConfig(config) || alphaGain !== 1 || position?.width !== 96 || baselineGradientScore < NEW_MARGIN_96_FLAT_FILL_MIN_GRADIENT) {
+      return null;
+    }
+    let best = null;
+    for (const preset of NEW_MARGIN_96_FLAT_FILL_PRESETS) {
+      if (Number.isFinite(preset.minBaselineGradient) && baselineGradientScore < preset.minBaselineGradient) {
+        continue;
+      }
+      const filled = applyFlatBackgroundFill({
+        sourceImageData,
+        alphaMap,
+        position,
+        maxBackgroundStd: NEW_MARGIN_96_FLAT_FILL_MAX_BACKGROUND_STD,
+        edgeWeightFloor: 0.85,
+        ...preset
+      });
+      if (!filled) continue;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: filled.imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: filled.imageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientImprovement = baselineGradientScore - gradientScore;
+      const keptSpatial = Math.abs(spatialScore) <= Math.abs(baselineSpatialScore) + NEW_MARGIN_96_FLAT_FILL_MAX_SPATIAL_DRIFT;
+      const acceptedSpatial = Math.abs(spatialScore) <= NEW_MARGIN_96_FLAT_FILL_MAX_ACCEPTED_ABS_SPATIAL;
+      if (gradientImprovement < NEW_MARGIN_96_FLAT_FILL_MIN_GRADIENT_IMPROVEMENT || !keptSpatial || !acceptedSpatial) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) * 0.6 + Math.max(0, gradientScore);
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: filled.imageData,
+          spatialScore,
+          gradientScore,
+          stats: filled.stats,
+          preset: preset.name,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function refineNewMargin96SmoothEdgeResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSource,
+    currentAlphaGain,
+    currentSpatialScore,
+    currentGradientScore
+  }) {
+    if (!isNewMargin96AlphaVariantConfig(currentConfig) || typeof currentSource !== "string" || !currentSource.includes("located-aggressive") || currentPosition?.width !== 96 || currentPosition?.height !== 96 || currentAlphaGain < NEW_MARGIN_96_SMOOTH_EDGE_MIN_ALPHA_GAIN || currentAlphaGain > NEW_MARGIN_96_SMOOTH_EDGE_MAX_ALPHA_GAIN || Math.abs(currentSpatialScore) > NEW_MARGIN_96_SMOOTH_EDGE_MAX_BASELINE_ABS_SPATIAL || currentGradientScore < NEW_MARGIN_96_SMOOTH_EDGE_MIN_BASELINE_GRADIENT) {
+      return null;
+    }
+    const samples = sampleFlatBackgroundPixels(
+      currentImageData,
+      currentAlphaMap,
+      currentPosition,
+      { pad: 10, outsideAlphaMax: 0.012 }
+    );
+    const backgroundStats = calculateBackgroundSampleStats(samples);
+    if (backgroundStats.count < 24 || backgroundStats.std > NEW_MARGIN_96_SMOOTH_EDGE_MAX_BACKGROUND_STD) {
+      return null;
+    }
+    const searchContext = createLocalAlphaSearchContext(
+      currentImageData,
+      currentPosition,
+      NEW_MARGIN_96_SMOOTH_EDGE_SCRATCH_PAD
+    );
+    const originalScratch = extractLocalAlphaSearchScratch(
+      originalImageData,
+      searchContext.window
+    );
+    const priorImageData = buildPreviewNeighborhoodPrior({
+      previewImageData: searchContext.originalScratch,
+      position: searchContext.position,
+      radius: 4,
+      relaxationPasses: 0
+    });
+    const edgeMask = createAlphaGradientMask({
+      alphaMap: currentAlphaMap,
+      width: currentPosition.width,
+      height: currentPosition.height,
+      gamma: 0.4,
+      dilateRadius: 2,
+      blurSigma: 1
+    });
+    let best = null;
+    for (const preset of NEW_MARGIN_96_SMOOTH_EDGE_PRESETS) {
+      const candidateScratch = cloneImageData3(searchContext.originalScratch);
+      for (let row = 0; row < searchContext.position.height; row++) {
+        for (let col = 0; col < searchContext.position.width; col++) {
+          const localIndex = row * searchContext.position.width + col;
+          const alpha = Math.abs(currentAlphaMap[localIndex]);
+          if (alpha < 3e-3 || alpha > preset.maxAlpha) continue;
+          const blend = Math.min(1, preset.strength * edgeMask[localIndex]);
+          if (blend <= 0) continue;
+          const pixelIndex = ((searchContext.position.y + row) * candidateScratch.width + searchContext.position.x + col) * 4;
+          for (let channel = 0; channel < 3; channel++) {
+            candidateScratch.data[pixelIndex + channel] = clampChannel2(
+              candidateScratch.data[pixelIndex + channel] * (1 - blend) + priorImageData.data[pixelIndex + channel] * blend
+            );
+          }
+        }
+      }
+      const region = {
+        x: searchContext.position.x,
+        y: searchContext.position.y,
+        size: searchContext.position.width
+      };
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidateScratch,
+        alphaMap: currentAlphaMap,
+        region
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidateScratch,
+        alphaMap: currentAlphaMap,
+        region
+      });
+      const visibility = assessCalibratedWatermarkResidualVisibility({
+        imageData: candidateScratch,
+        originalImageData: originalScratch,
+        position: searchContext.position,
+        alphaMap: currentAlphaMap,
+        alphaGain: currentAlphaGain
+      });
+      const boundary = measurePreviewBoundaryMetrics(
+        candidateScratch,
+        searchContext.originalScratch,
+        searchContext.position
+      );
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData: originalScratch,
+        candidateImageData: candidateScratch,
+        alphaMap: currentAlphaMap,
+        position: searchContext.position,
+        alphaGain: currentAlphaGain
+      });
+      if (visibility?.visible !== false || currentGradientScore - gradientScore < NEW_MARGIN_96_SMOOTH_EDGE_MIN_GRADIENT_IMPROVEMENT || Math.abs(spatialScore) > NEW_MARGIN_96_SMOOTH_EDGE_MAX_FINAL_ABS_SPATIAL || Math.abs(gradientScore) > NEW_MARGIN_96_SMOOTH_EDGE_MAX_FINAL_ABS_GRADIENT || boundary.rawScore > NEW_MARGIN_96_SMOOTH_EDGE_MAX_BOUNDARY_RAW_SCORE || Number(artifacts?.visualArtifactCost ?? Infinity) > NEW_MARGIN_96_SMOOTH_EDGE_MAX_ARTIFACT_COST) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) * 0.45 + Math.abs(gradientScore) * 0.55 + Number(artifacts?.visualArtifactCost ?? 0) * 0.25;
+      if (!best || cost < best.cost) {
+        best = {
+          candidateScratch,
+          spatialScore,
+          gradientScore,
+          boundary,
+          artifacts,
+          preset,
+          cost
+        };
+      }
+    }
+    if (!best) return null;
+    const imageData = cloneImageData3(currentImageData);
+    for (let row = 0; row < currentPosition.height; row++) {
+      const sourceStart = ((searchContext.position.y + row) * best.candidateScratch.width + searchContext.position.x) * 4;
+      const targetStart = ((currentPosition.y + row) * imageData.width + currentPosition.x) * 4;
+      imageData.data.set(
+        best.candidateScratch.data.subarray(
+          sourceStart,
+          sourceStart + currentPosition.width * 4
+        ),
+        targetStart
+      );
+    }
+    return {
+      imageData,
+      spatialScore: best.spatialScore,
+      gradientScore: best.gradientScore,
+      backgroundStats,
+      boundary: best.boundary,
+      artifacts: best.artifacts,
+      preset: best.preset,
+      cost: best.cost
+    };
+  }
+  function refineNewMargin96VariantResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    originalSpatialScore,
+    originalGradientScore,
+    variantAlphaMap
+  }) {
+    if (!variantAlphaMap || currentConfig?.logoSize !== 96 || currentConfig.marginRight !== 192 || currentConfig.marginBottom !== 192 || currentConfig.alphaVariant === "20260520" || currentPosition?.width !== 96 || currentPosition?.height !== 96 || originalSpatialScore < NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_SPATIAL || originalGradientScore < NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_GRADIENT || currentSpatialScore < NEW_MARGIN_96_VARIANT_RESCUE_MIN_CURRENT_SPATIAL || currentGradientScore > NEW_MARGIN_96_VARIANT_RESCUE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visibleSpatialResidual !== true) return null;
+    let best = null;
+    for (const profile of NEW_MARGIN_96_VARIANT_RESCUE_PROFILES) {
+      const alphaMap = powerKnown48AlphaMap(variantAlphaMap, profile.exponent);
+      const variantOriginalSpatial = computeRegionSpatialCorrelation({
+        imageData: originalImageData,
+        alphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const variantOriginalGradient = computeRegionGradientCorrelation({
+        imageData: originalImageData,
+        alphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      if (variantOriginalSpatial < NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_SPATIAL || variantOriginalGradient < NEW_MARGIN_96_VARIANT_RESCUE_MIN_ORIGINAL_GRADIENT) {
+        continue;
+      }
+      const candidate = scoreKnown48AntiTemplateRescueCandidate({
+        originalImageData,
+        alphaMap,
+        position: currentPosition,
+        alphaGain: profile.alphaGain,
+        baselineGradientScore: currentGradientScore,
+        maxSpatial: NEW_MARGIN_96_VARIANT_RESCUE_MAX_SPATIAL,
+        maxVisualArtifact: NEW_MARGIN_96_VARIANT_RESCUE_MAX_VISUAL_ARTIFACT
+      });
+      if (!candidate) continue;
+      if (candidate.gradientScore > NEW_MARGIN_96_VARIANT_RESCUE_MAX_GRADIENT || (candidate.artifacts?.newlyClippedRatio ?? 0) > NEW_MARGIN_96_VARIANT_RESCUE_MAX_CLIPPED) {
+        continue;
+      }
+      const cost = Math.abs(candidate.spatialScore) + Math.max(0, candidate.gradientScore) * 0.7 + (candidate.artifacts?.visualArtifactCost ?? 0) * 0.35;
+      if (!best || cost < best.cost) {
+        best = {
+          ...candidate,
+          config: {
+            logoSize: 96,
+            marginRight: 192,
+            marginBottom: 192,
+            alphaVariant: "20260520"
+          },
+          profileExponent: profile.exponent,
+          originalSpatialScore: variantOriginalSpatial,
+          originalGradientScore: variantOriginalGradient,
+          suppressionGain: variantOriginalSpatial - candidate.spatialScore,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function pixelLuminance2(data, index) {
+    return 0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2];
+  }
+  function applyLumaEdgeCorrection({
+    sourceImageData,
+    alphaMap,
+    position,
+    minAlpha,
+    maxAlpha,
+    referenceAlphaMax,
+    radius,
+    strength,
+    colorSigma,
+    maxDelta
+  }) {
+    const candidate = cloneImageData3(sourceImageData);
+    const { data, width: imageWidth, height: imageHeight } = sourceImageData;
+    const size = position.width;
+    const colorSigmaSafe = Math.max(1, colorSigma);
+    const edgeMask = createAlphaGradientMask({
+      alphaMap,
+      width: size,
+      height: size
+    });
+    for (let row = 0; row < size; row++) {
+      for (let col = 0; col < size; col++) {
+        const localIndex = row * size + col;
+        const alpha = alphaMap[localIndex];
+        if (alpha < minAlpha || alpha > maxAlpha) continue;
+        const x = position.x + col;
+        const y = position.y + row;
+        const pixelIndex = (y * imageWidth + x) * 4;
+        const currentLum = pixelLuminance2(data, pixelIndex);
+        let weightedLum = 0;
+        let sumWeight = 0;
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared > radius * radius) continue;
+            const localX = col + dx;
+            const localY = row + dy;
+            const pixelX = x + dx;
+            const pixelY = y + dy;
+            if (pixelX < 0 || pixelY < 0 || pixelX >= imageWidth || pixelY >= imageHeight) continue;
+            let neighborAlpha = 0;
+            if (localX >= 0 && localY >= 0 && localX < size && localY < size) {
+              neighborAlpha = alphaMap[localY * size + localX];
+            }
+            if (neighborAlpha > referenceAlphaMax && neighborAlpha >= alpha) continue;
+            const neighborIndex = (pixelY * imageWidth + pixelX) * 4;
+            const neighborLum = pixelLuminance2(data, neighborIndex);
+            const colorDistance = Math.abs(data[pixelIndex] - data[neighborIndex]) + Math.abs(data[pixelIndex + 1] - data[neighborIndex + 1]) + Math.abs(data[pixelIndex + 2] - data[neighborIndex + 2]);
+            const colorWeight = Math.exp(
+              -(colorDistance * colorDistance) / (2 * colorSigmaSafe * colorSigmaSafe * 9)
+            );
+            const alphaWeight = neighborAlpha <= referenceAlphaMax ? 1.25 : 0.65;
+            const distanceWeight = 1 / Math.sqrt(distanceSquared);
+            const weight = colorWeight * alphaWeight * distanceWeight;
+            weightedLum += neighborLum * weight;
+            sumWeight += weight;
+          }
+        }
+        if (sumWeight <= 0) continue;
+        const targetLum = weightedLum / sumWeight;
+        const delta = Math.max(-maxDelta, Math.min(maxDelta, targetLum - currentLum)) * strength;
+        const edgeWeight = getAlphaGradientWeight(edgeMask, localIndex);
+        const scaledStrength = Math.min(1, Math.max(0, alpha / Math.max(maxAlpha, 1e-6))) * edgeWeight;
+        const finalDelta = delta * scaledStrength;
+        candidate.data[pixelIndex] = clampChannel2(data[pixelIndex] + finalDelta);
+        candidate.data[pixelIndex + 1] = clampChannel2(data[pixelIndex + 1] + finalDelta);
+        candidate.data[pixelIndex + 2] = clampChannel2(data[pixelIndex + 2] + finalDelta);
+      }
+    }
+    return candidate;
+  }
+  function refineKnown48LumaEdgeResidual({
+    sourceImageData,
+    alphaMap,
+    position,
+    baselineSpatialScore,
+    baselineGradientScore
+  }) {
+    if (position?.width < KNOWN_48_EDGE_CLEANUP_MIN_SIZE || position?.width > KNOWN_48_EDGE_CLEANUP_MAX_SIZE || baselineGradientScore < KNOWN_48_LUMA_EDGE_MIN_GRADIENT) {
+      return null;
+    }
+    let best = null;
+    for (const preset of KNOWN_48_LUMA_EDGE_PRESETS) {
+      const candidate = applyLumaEdgeCorrection({
+        sourceImageData,
+        alphaMap,
+        position,
+        ...preset
+      });
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientImprovement = baselineGradientScore - gradientScore;
+      const keptSpatial = Math.abs(spatialScore) <= Math.abs(baselineSpatialScore) + KNOWN_48_LUMA_EDGE_MAX_SPATIAL_DRIFT;
+      const acceptedSpatial = Math.abs(spatialScore) <= KNOWN_48_LUMA_EDGE_MAX_ACCEPTED_ABS_SPATIAL;
+      if (gradientImprovement < KNOWN_48_LUMA_EDGE_MIN_GRADIENT_IMPROVEMENT || !keptSpatial || !acceptedSpatial) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) * 0.45 + Math.max(0, gradientScore);
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidate,
+          spatialScore,
+          gradientScore,
+          preset: preset.name,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function alphaBandBiasWeight(alpha, {
+    outerMinAlpha = 0.12,
+    innerMinAlpha = 0.18,
+    innerMaxAlpha = 0.35,
+    outerMaxAlpha = 0.42
+  } = {}) {
+    if (alpha < outerMinAlpha || alpha > outerMaxAlpha) return 0;
+    if (alpha >= innerMinAlpha && alpha <= innerMaxAlpha) return 1;
+    if (alpha < innerMinAlpha) {
+      return smoothstep(outerMinAlpha, innerMinAlpha, alpha);
+    }
+    return 1 - smoothstep(innerMaxAlpha, outerMaxAlpha, alpha);
+  }
+  function smoothstep(edge0, edge1, value) {
+    if (edge0 === edge1) return value >= edge1 ? 1 : 0;
+    const t = clamp013((value - edge0) / (edge1 - edge0));
+    return t * t * (3 - 2 * t);
+  }
+  function applyMidCoreBiasCorrection({ sourceImageData, alphaMap, position, positiveHaloLum, strength }) {
+    const candidate = cloneImageData3(sourceImageData);
+    const bias = Math.max(0, positiveHaloLum) * strength;
+    if (bias <= 0) return candidate;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = alphaMap[localIndex] ?? 0;
+        const weight = alphaBandBiasWeight(alpha);
+        if (weight <= 0) continue;
+        const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+        const delta = bias * weight;
+        candidate.data[pixelIndex] = clampChannel2(candidate.data[pixelIndex] - delta);
+        candidate.data[pixelIndex + 1] = clampChannel2(candidate.data[pixelIndex + 1] - delta);
+        candidate.data[pixelIndex + 2] = clampChannel2(candidate.data[pixelIndex + 2] - delta);
+      }
+    }
+    return candidate;
+  }
+  function positiveBandDelta(imageData, position, alphaMap, minAlpha, maxAlpha) {
+    const halo = assessAlphaBandHalo({
+      imageData,
+      position,
+      alphaMap,
+      minAlpha,
+      maxAlpha,
+      outsideAlphaMax: 0.012,
+      outerMargin: 4
+    });
+    return halo.positiveDeltaLum ?? 0;
+  }
+  function hasDominantMidCoreHalo({ imageData, position, alphaMap }) {
+    const edge = positiveBandDelta(imageData, position, alphaMap, 0.02, 0.12);
+    const midCore = positiveBandDelta(imageData, position, alphaMap, 0.18, 0.35);
+    const highCore = positiveBandDelta(imageData, position, alphaMap, 0.35, 0.78);
+    return midCore > edge && midCore > highCore;
+  }
+  function refineKnown48MidCoreBiasResidual({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    source,
+    alphaGain,
+    baselineSpatialScore,
+    baselineGradientScore
+  }) {
+    if (position?.width < KNOWN_48_EDGE_CLEANUP_MIN_SIZE || position?.width > KNOWN_48_EDGE_CLEANUP_MAX_SIZE || typeof source !== "string" || !source.includes("edge-cleanup") || source.includes("v2-small-edge-cleanup")) {
+      return null;
+    }
+    const baselineVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position,
+      alphaMap
+    });
+    if (baselineVisibility?.visiblePositiveHalo !== true || (baselineVisibility.positiveHaloLum ?? 0) < KNOWN_48_MID_CORE_BIAS_MIN_HALO || !hasDominantMidCoreHalo({ imageData: currentImageData, position, alphaMap })) {
+      return null;
+    }
+    const baselineArtifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: currentImageData,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const baselineArtifactCost = Number(baselineArtifacts?.visualArtifactCost);
+    if (!Number.isFinite(baselineArtifactCost)) return null;
+    const candidate = applyMidCoreBiasCorrection({
+      sourceImageData: currentImageData,
+      alphaMap,
+      position,
+      positiveHaloLum: baselineVisibility.positiveHaloLum,
+      strength: KNOWN_48_MID_CORE_BIAS_STRENGTH
+    });
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData: candidate,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData: candidate,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData: candidate,
+      position,
+      alphaMap
+    });
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: candidate,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const artifactCost = Number(artifacts?.visualArtifactCost);
+    if (!Number.isFinite(artifactCost)) return null;
+    const haloReduction = (baselineVisibility.positiveHaloLum ?? 0) - (residualVisibility?.positiveHaloLum ?? 0);
+    const gradientDrift = gradientScore - baselineGradientScore;
+    const spatialDrift = Math.abs(spatialScore) - Math.abs(baselineSpatialScore);
+    const artifactDrift = artifactCost - baselineArtifactCost;
+    const newClipDrift = (artifacts?.newlyClippedRatio ?? 0) - (baselineArtifacts?.newlyClippedRatio ?? 0);
+    if (haloReduction < KNOWN_48_MID_CORE_BIAS_MIN_HALO_REDUCTION || gradientDrift > KNOWN_48_MID_CORE_BIAS_MAX_GRADIENT_DRIFT || spatialDrift > KNOWN_48_MID_CORE_BIAS_MAX_SPATIAL_DRIFT || artifactDrift > KNOWN_48_MID_CORE_BIAS_MAX_ARTIFACT_DRIFT || newClipDrift > KNOWN_48_MID_CORE_BIAS_MAX_NEW_CLIP_DRIFT) {
+      return null;
+    }
+    return {
+      imageData: candidate,
+      spatialScore,
+      gradientScore,
+      residualVisibility,
+      cost: artifactCost,
+      haloReduction,
+      artifactDrift,
+      newClipDrift
+    };
+  }
+  function expandPosition(position, imageData, pad) {
+    const left = Math.max(0, position.x - pad);
+    const top = Math.max(0, position.y - pad);
+    const right = Math.min(imageData.width, position.x + position.width + pad);
+    const bottom = Math.min(imageData.height, position.y + position.height + pad);
+    return {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top
+    };
+  }
+  function measureOuterBorderLuminanceStats(imageData, position, margin = 10) {
+    let sum = 0;
+    let sq = 0;
+    let count = 0;
+    const left = Math.max(0, position.x - margin);
+    const top = Math.max(0, position.y - margin);
+    const right = Math.min(imageData.width, position.x + position.width + margin);
+    const bottom = Math.min(imageData.height, position.y + position.height + margin);
+    for (let y = top; y < bottom; y++) {
+      for (let x = left; x < right; x++) {
+        const inside = x >= position.x && x < position.x + position.width && y >= position.y && y < position.y + position.height;
+        if (inside) continue;
+        const idx = (y * imageData.width + x) * 4;
+        const lum = 0.2126 * imageData.data[idx] + 0.7152 * imageData.data[idx + 1] + 0.0722 * imageData.data[idx + 2];
+        sum += lum;
+        sq += lum * lum;
+        count++;
+      }
+    }
+    if (count <= 0) {
+      return {
+        mean: Number.POSITIVE_INFINITY,
+        std: Number.POSITIVE_INFINITY,
+        count
+      };
+    }
+    const mean = sum / count;
+    return {
+      mean,
+      std: Math.sqrt(Math.max(0, sq / count - mean * mean)),
+      count
+    };
+  }
+  function measureOuterBorderLuminanceStd(imageData, position, margin = 10) {
+    return measureOuterBorderLuminanceStats(imageData, position, margin).std;
+  }
+  function clamp013(value) {
+    if (!Number.isFinite(value)) return 0;
+    if (value <= 0) return 0;
+    if (value >= 1) return 1;
+    return value;
+  }
+  function clampChannel2(value) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+  }
+  function estimateAlphaMapFromBackgroundPrior({
+    originalImageData,
+    priorImageData,
+    position,
+    threshold,
+    blurRadius
+  }) {
+    const alphaMap = new Float32Array(position.width * position.height);
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const pixelIndex = ((position.y + row) * originalImageData.width + position.x + col) * 4;
+        let estimatedAlpha = 0;
+        for (let channel = 0; channel < 3; channel++) {
+          const denominator = 255 - priorImageData.data[pixelIndex + channel];
+          if (denominator <= 2) continue;
+          estimatedAlpha = Math.max(
+            estimatedAlpha,
+            (originalImageData.data[pixelIndex + channel] - priorImageData.data[pixelIndex + channel]) / denominator
+          );
+        }
+        alphaMap[localIndex] = Math.min(0.9, clamp013((estimatedAlpha - threshold) * 1.2));
+      }
+    }
+    return blurRadius > 0 ? blurAlphaMap(alphaMap, position.width, blurRadius) : alphaMap;
+  }
+  function applyEstimatedPriorBlend({
+    sourceImageData,
+    priorImageData,
+    estimatedAlphaMap,
+    position,
+    strength,
+    gamma
+  }) {
+    const candidate = cloneImageData3(sourceImageData);
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = estimatedAlphaMap[localIndex];
+        if (alpha <= 5e-3) continue;
+        const blend = clamp013(Math.pow(alpha, gamma) * strength);
+        if (blend <= 5e-3) continue;
+        const pixelIndex = ((position.y + row) * sourceImageData.width + position.x + col) * 4;
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(
+            sourceImageData.data[pixelIndex + channel] * (1 - blend) + priorImageData.data[pixelIndex + channel] * blend
+          );
+        }
+      }
+    }
+    return candidate;
+  }
+  function refineSmoothLocatedResidualWithEstimatedPrior({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    source,
+    alphaGain,
+    baselineSpatialScore,
+    baselineGradientScore
+  }) {
+    if (typeof source !== "string" || !source.includes("located-aggressive") || position?.width < SMOOTH_PRIOR_LOCATED_MIN_SIZE || position?.width > SMOOTH_PRIOR_LOCATED_MAX_SIZE || baselineSpatialScore < SMOOTH_PRIOR_LOCATED_MIN_SPATIAL || baselineGradientScore > SMOOTH_PRIOR_LOCATED_MAX_GRADIENT) {
+      return null;
+    }
+    const borderStats = measureOuterBorderLuminanceStats(originalImageData, position, 16);
+    if (borderStats.mean < SMOOTH_PRIOR_LOCATED_MIN_BORDER_MEAN) {
+      return null;
+    }
+    const baselineArtifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: currentImageData,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const baselineArtifactCost = Number(baselineArtifacts?.visualArtifactCost);
+    if (!Number.isFinite(baselineArtifactCost)) return null;
+    let best = null;
+    const priorByRadius = /* @__PURE__ */ new Map();
+    for (const preset of SMOOTH_PRIOR_LOCATED_PRESETS) {
+      let priorImageData = priorByRadius.get(preset.radius);
+      if (!priorImageData) {
+        priorImageData = buildPreviewNeighborhoodPrior({
+          previewImageData: originalImageData,
+          position,
+          radius: preset.radius
+        });
+        priorByRadius.set(preset.radius, priorImageData);
+      }
+      const estimatedAlphaMap = estimateAlphaMapFromBackgroundPrior({
+        originalImageData,
+        priorImageData,
+        position,
+        threshold: preset.threshold,
+        blurRadius: preset.blurRadius
+      });
+      const candidateImageData = applyEstimatedPriorBlend({
+        sourceImageData: currentImageData,
+        priorImageData,
+        estimatedAlphaMap,
+        position,
+        strength: preset.strength,
+        gamma: preset.gamma
+      });
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidateImageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidateImageData,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData,
+        alphaMap,
+        position,
+        alphaGain
+      });
+      const artifactCost = Number(artifacts?.visualArtifactCost);
+      if (!Number.isFinite(artifactCost)) continue;
+      const spatialImprovement = Math.abs(baselineSpatialScore) - Math.abs(spatialScore);
+      const gradientDrift = gradientScore - baselineGradientScore;
+      const artifactImprovement = baselineArtifactCost - artifactCost;
+      if (spatialImprovement < SMOOTH_PRIOR_LOCATED_MIN_SPATIAL_IMPROVEMENT || gradientDrift > SMOOTH_PRIOR_LOCATED_MAX_GRADIENT_DRIFT || artifactImprovement < SMOOTH_PRIOR_LOCATED_MIN_ARTIFACT_IMPROVEMENT || gradientScore > SMOOTH_PRIOR_LOCATED_MAX_ACCEPTED_GRADIENT) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) * 0.75 + Math.max(0, gradientScore) * 0.9 + artifactCost * 0.5;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidateImageData,
+          spatialScore,
+          gradientScore,
+          cost,
+          artifactCost,
+          borderStats,
+          preset
+        };
+      }
+    }
+    return best;
+  }
+  function averageStripColor2(imageData, {
+    xFrom,
+    xTo,
+    yFrom,
+    yTo
+  }) {
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let count = 0;
+    const left = Math.max(0, xFrom);
+    const right = Math.min(imageData.width - 1, xTo);
+    const top = Math.max(0, yFrom);
+    const bottom = Math.min(imageData.height - 1, yTo);
+    for (let y = top; y <= bottom; y++) {
+      for (let x = left; x <= right; x++) {
+        const idx = (y * imageData.width + x) * 4;
+        sumR += imageData.data[idx];
+        sumG += imageData.data[idx + 1];
+        sumB += imageData.data[idx + 2];
+        count++;
+      }
+    }
+    if (count <= 0) return [0, 0, 0];
+    return [
+      sumR / count,
+      sumG / count,
+      sumB / count
+    ];
+  }
+  function lerpColor2(left, right, t) {
+    return [
+      left[0] * (1 - t) + right[0] * t,
+      left[1] * (1 - t) + right[1] * t,
+      left[2] * (1 - t) + right[2] * t
+    ];
+  }
+  function applyPreviewSmoothBackgroundCleanup({
+    imageData,
+    position
+  }) {
+    const expandedPosition = expandPosition(
+      position,
+      imageData,
+      PREVIEW_BACKGROUND_CLEANUP_PAD
+    );
+    const candidate = cloneImageData3(imageData);
+    const stripRadius = PREVIEW_BACKGROUND_CLEANUP_PRIOR_RADIUS;
+    const leftBoundary = [];
+    const rightBoundary = [];
+    const topBoundary = [];
+    const bottomBoundary = [];
+    for (let row = 0; row < expandedPosition.height; row++) {
+      const y = expandedPosition.y + row;
+      leftBoundary.push(averageStripColor2(imageData, {
+        xFrom: expandedPosition.x - stripRadius,
+        xTo: expandedPosition.x - 1,
+        yFrom: y - 1,
+        yTo: y + 1
+      }));
+      rightBoundary.push(averageStripColor2(imageData, {
+        xFrom: expandedPosition.x + expandedPosition.width,
+        xTo: expandedPosition.x + expandedPosition.width + stripRadius - 1,
+        yFrom: y - 1,
+        yTo: y + 1
+      }));
+    }
+    for (let col = 0; col < expandedPosition.width; col++) {
+      const x = expandedPosition.x + col;
+      topBoundary.push(averageStripColor2(imageData, {
+        xFrom: x - 1,
+        xTo: x + 1,
+        yFrom: expandedPosition.y - stripRadius,
+        yTo: expandedPosition.y - 1
+      }));
+      bottomBoundary.push(averageStripColor2(imageData, {
+        xFrom: x - 1,
+        xTo: x + 1,
+        yFrom: expandedPosition.y + expandedPosition.height,
+        yTo: expandedPosition.y + expandedPosition.height + stripRadius - 1
+      }));
+    }
+    for (let row = 0; row < expandedPosition.height; row++) {
+      const ty = expandedPosition.height <= 1 ? 0.5 : row / (expandedPosition.height - 1);
+      for (let col = 0; col < expandedPosition.width; col++) {
+        const tx = expandedPosition.width <= 1 ? 0.5 : col / (expandedPosition.width - 1);
+        const horizontal = lerpColor2(leftBoundary[row], rightBoundary[row], tx);
+        const vertical = lerpColor2(topBoundary[col], bottomBoundary[col], ty);
+        const idx = ((expandedPosition.y + row) * candidate.width + expandedPosition.x + col) * 4;
+        candidate.data[idx] = clampChannel2((horizontal[0] + vertical[0]) * 0.5);
+        candidate.data[idx + 1] = clampChannel2((horizontal[1] + vertical[1]) * 0.5);
+        candidate.data[idx + 2] = clampChannel2((horizontal[2] + vertical[2]) * 0.5);
+      }
+    }
+    return {
+      imageData: candidate,
+      expandedPosition
+    };
+  }
+  function shouldApplyPreviewSmoothBackgroundCleanup({
+    enabled = true,
+    source,
+    position,
+    baselineSpatialScore,
+    borderStd
+  }) {
+    return enabled === true && typeof source === "string" && source.includes("preview-anchor") && position?.width >= 24 && position?.width <= PREVIEW_BACKGROUND_CLEANUP_MAX_SIZE && baselineSpatialScore >= PREVIEW_BACKGROUND_CLEANUP_MIN_RESIDUAL && borderStd <= PREVIEW_BACKGROUND_CLEANUP_MAX_BORDER_STD;
+  }
+  function refineSmallPreviewAnchorCandidate({
+    originalImageData,
+    source,
+    position,
+    originalGradientScore,
+    currentSpatialScore,
+    currentGradientScore,
+    getAlphaMap
+  }) {
+    if (typeof source !== "string" || !source.includes("preview-anchor") || !source.includes("edge-cleanup") || position?.width > SMALL_PREVIEW_REFINEMENT_MAX_SOURCE_SIZE || originalGradientScore > SMALL_PREVIEW_REFINEMENT_MAX_ORIGINAL_GRADIENT || currentSpatialScore < SMALL_PREVIEW_REFINEMENT_MIN_CURRENT_SPATIAL || currentGradientScore > SMALL_PREVIEW_REFINEMENT_MAX_CURRENT_GRADIENT || typeof getAlphaMap !== "function") {
+      return null;
+    }
+    let best = null;
+    const sizeCandidates = [
+      position.width + 4,
+      position.width + 6,
+      position.width + 8
+    ].filter((size) => size <= SMALL_PREVIEW_REFINEMENT_MAX_REFINED_SIZE);
+    const shiftCandidates = [-8, -6, -4, -2, 0];
+    const gainCandidates = ALPHA_GAIN_CANDIDATES.filter((gain) => gain < 1);
+    for (const size of sizeCandidates) {
+      const alphaMap = getAlphaMap(size);
+      if (!alphaMap) continue;
+      for (const dy of shiftCandidates) {
+        for (const dx of shiftCandidates) {
+          const candidatePosition = {
+            x: position.x + dx,
+            y: position.y + dy,
+            width: size,
+            height: size
+          };
+          if (candidatePosition.x < 0 || candidatePosition.y < 0 || candidatePosition.x + size > originalImageData.width || candidatePosition.y + size > originalImageData.height) {
+            continue;
+          }
+          for (const alphaGain of gainCandidates) {
+            const originalSpatialScore = computeRegionSpatialCorrelation({
+              imageData: originalImageData,
+              alphaMap,
+              region: { x: candidatePosition.x, y: candidatePosition.y, size }
+            });
+            const originalGradientScore2 = computeRegionGradientCorrelation({
+              imageData: originalImageData,
+              alphaMap,
+              region: { x: candidatePosition.x, y: candidatePosition.y, size }
+            });
+            const candidate = cloneImageData3(originalImageData);
+            removeWatermark(candidate, alphaMap, candidatePosition, { alphaGain });
+            const spatialScore = computeRegionSpatialCorrelation({
+              imageData: candidate,
+              alphaMap,
+              region: { x: candidatePosition.x, y: candidatePosition.y, size }
+            });
+            const gradientScore = computeRegionGradientCorrelation({
+              imageData: candidate,
+              alphaMap,
+              region: { x: candidatePosition.x, y: candidatePosition.y, size }
+            });
+            const absSpatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+            const gradientImprovement = currentGradientScore - gradientScore;
+            if (absSpatialImprovement < SMALL_PREVIEW_REFINEMENT_MIN_ABS_SPATIAL_IMPROVEMENT || gradientImprovement < SMALL_PREVIEW_REFINEMENT_MIN_GRADIENT_IMPROVEMENT) {
+              continue;
+            }
+            const nearBlackRatio = calculateNearBlackRatio(candidate, candidatePosition);
+            const cost = Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.8 + nearBlackRatio * 2;
+            if (!best || cost < best.cost) {
+              best = {
+                imageData: candidate,
+                alphaMap,
+                alphaGain,
+                position: candidatePosition,
+                originalSpatialScore,
+                originalGradientScore: originalGradientScore2,
+                spatialScore,
+                gradientScore,
+                nearBlackRatio,
+                cost
+              };
+            }
+          }
+        }
+      }
+    }
+    return best;
+  }
+  function refinePreviewResidualEdge({
+    sourceImageData,
+    alphaMap,
+    position,
+    source,
+    baselineSpatialScore,
+    baselineGradientScore,
+    minGradientImprovement = PREVIEW_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT,
+    maxSpatialDrift = PREVIEW_EDGE_CLEANUP_MAX_SPATIAL_DRIFT,
+    allowAggressivePresets = false,
+    mode = "preview"
+  }) {
+    const baselineHalo = assessAlphaBandHalo({
+      imageData: sourceImageData,
+      position,
+      alphaMap
+    });
+    const baselinePositiveHalo = baselineHalo.positiveDeltaLum;
+    if (!shouldRefineResidualEdge({
+      source,
+      position,
+      baselineSpatialScore,
+      baselineGradientScore,
+      baselinePositiveHalo,
+      mode
+    })) {
+      return null;
+    }
+    const baselineNearBlackRatio = calculateNearBlackRatio(sourceImageData, position);
+    const maxAllowedNearBlackRatio = Math.min(1, baselineNearBlackRatio + MAX_NEAR_BLACK_RATIO_INCREASE2);
+    const resolvedMinGradientImprovement = baselineGradientScore <= PREVIEW_EDGE_CLEANUP_FINE_GRADIENT_THRESHOLD ? PREVIEW_EDGE_CLEANUP_FINE_MIN_GRADIENT_IMPROVEMENT : baselinePositiveHalo >= PREVIEW_EDGE_CLEANUP_STRONG_HALO_THRESHOLD ? PREVIEW_EDGE_CLEANUP_HALO_RELAXED_MIN_GRADIENT_IMPROVEMENT : minGradientImprovement;
+    const smallPreviewPresets = mode === "preview" && position?.width >= 24 && position?.width <= SMALL_PREVIEW_EDGE_CLEANUP_MAX_SIZE ? SMALL_PREVIEW_EDGE_CLEANUP_PRESETS : [];
+    const presets = allowAggressivePresets && baselineGradientScore >= PREVIEW_EDGE_CLEANUP_STRONG_GRADIENT_THRESHOLD && Math.abs(baselineSpatialScore) <= 0.05 ? [...PREVIEW_EDGE_CLEANUP_PRESETS, ...PREVIEW_EDGE_CLEANUP_AGGRESSIVE_PRESETS] : [...PREVIEW_EDGE_CLEANUP_PRESETS, ...smallPreviewPresets];
+    let best = null;
+    for (const preset of presets) {
+      const candidate = blendPreviewResidualEdge({
+        sourceImageData,
+        alphaMap,
+        position,
+        ...preset
+      });
+      const nearBlackRatio = calculateNearBlackRatio(candidate, position);
+      if (nearBlackRatio > maxAllowedNearBlackRatio) continue;
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidate,
+        alphaMap,
+        region: { x: position.x, y: position.y, size: position.width }
+      });
+      const halo = assessAlphaBandHalo({
+        imageData: candidate,
+        position,
+        alphaMap
+      });
+      const presetMinGradientImprovement = preset.minGradientImprovement ?? resolvedMinGradientImprovement;
+      const presetMaxSpatialDrift = preset.maxSpatialDrift ?? maxSpatialDrift;
+      const presetMaxAcceptedSpatial = preset.maxAcceptedSpatial ?? 0.22;
+      const improvedGradient = gradientScore <= baselineGradientScore - presetMinGradientImprovement;
+      const keptSpatial = Math.abs(spatialScore) <= Math.abs(baselineSpatialScore) + presetMaxSpatialDrift;
+      const keptResidualWithinTarget = Math.abs(spatialScore) <= presetMaxAcceptedSpatial;
+      const candidatePositiveHalo = halo.positiveDeltaLum;
+      const improvedHalo = baselinePositiveHalo < PREVIEW_EDGE_CLEANUP_STRONG_HALO_THRESHOLD || candidatePositiveHalo <= baselinePositiveHalo - PREVIEW_EDGE_CLEANUP_MIN_HALO_REDUCTION;
+      if (!improvedGradient || !keptSpatial || !keptResidualWithinTarget || !improvedHalo) continue;
+      const cost = Math.abs(spatialScore) * 0.6 + Math.max(0, gradientScore) + candidatePositiveHalo * PREVIEW_EDGE_CLEANUP_HALO_WEIGHT;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidate,
+          spatialScore,
+          gradientScore,
+          halo,
+          cost
+        };
+      }
+    }
+    if (!best || !(mode === "preview" && position?.width >= 24 && position?.width <= SMALL_PREVIEW_EDGE_CLEANUP_MAX_SIZE)) {
+      return best;
+    }
+    const flatFilled = applySmallPreviewBrightBackgroundFill({
+      sourceImageData: best.imageData,
+      alphaMap,
+      position,
+      ...SMALL_PREVIEW_FLAT_FILL_PRESET
+    });
+    if (!flatFilled) return best;
+    if (flatFilled.stats.mean < SMALL_PREVIEW_FLAT_FILL_MIN_BACKGROUND_MEAN || flatFilled.stats.std > SMALL_PREVIEW_FLAT_FILL_MAX_BACKGROUND_STD) {
+      return best;
+    }
+    const flatSpatialScore = computeRegionSpatialCorrelation({
+      imageData: flatFilled.imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const flatGradientScore = computeRegionGradientCorrelation({
+      imageData: flatFilled.imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    if (Math.abs(flatSpatialScore) > SMALL_PREVIEW_FLAT_FILL_MAX_ABS_SPATIAL || flatGradientScore > SMALL_PREVIEW_FLAT_FILL_MAX_GRADIENT) {
+      return best;
+    }
+    return {
+      ...best,
+      imageData: flatFilled.imageData,
+      spatialScore: flatSpatialScore,
+      gradientScore: flatGradientScore,
+      flatFillStats: flatFilled.stats,
+      cost: Math.abs(flatSpatialScore) * 0.6 + Math.max(0, flatGradientScore)
+    };
+  }
+  function scoreLocatedAggressiveCandidate({
+    imageData,
+    originalImageData,
+    alphaMap,
+    position,
+    alphaGain = 1,
+    baselineGradientScore = null
+  }) {
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    const baselineNearBlackRatio = originalImageData ? calculateNearBlackRatio(originalImageData, position) : nearBlackRatio;
+    const artifacts = originalImageData ? assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: imageData,
+      alphaMap,
+      position,
+      alphaGain
+    }) : null;
+    const balancedVisual = scoreBalancedVisualCandidate({
+      processedSpatial: spatialScore,
+      processedGradient: gradientScore,
+      nearBlackIncrease: nearBlackRatio - baselineNearBlackRatio,
+      newlyClippedRatio: artifacts?.newlyClippedRatio,
+      darkHaloLum: Math.max(0, -(artifacts?.halo?.deltaLum ?? 0)),
+      visualArtifactCost: artifacts?.visualArtifactCost,
+      gradientIncrease: Number.isFinite(baselineGradientScore) ? gradientScore - baselineGradientScore : 0
+    });
+    return {
+      spatialScore,
+      gradientScore,
+      nearBlackRatio,
+      artifacts,
+      balancedVisual,
+      cost: balancedVisual.score
+    };
+  }
+  function pickLocatedAggressiveCandidate(currentBest, candidate) {
+    if (!candidate) return currentBest;
+    if (!currentBest || candidate.cost < currentBest.cost) return candidate;
+    return currentBest;
+  }
+  function buildLocatedAggressiveCandidate({
+    originalImageData,
+    sourceImageData,
+    alphaMap,
+    position,
+    alphaGain,
+    repeatCount,
+    baselineGradientScore
+  }) {
+    const candidate = cloneImageData3(sourceImageData);
+    for (let passIndex = 0; passIndex < repeatCount; passIndex++) {
+      removeWatermark(candidate, alphaMap, position, { alphaGain });
+    }
+    return {
+      imageData: candidate,
+      alphaGain,
+      repeatCount,
+      ...scoreLocatedAggressiveCandidate({
+        imageData: candidate,
+        originalImageData,
+        alphaMap,
+        position,
+        alphaGain,
+        baselineGradientScore
+      })
+    };
+  }
+  function refineLocatedAggressiveRemoval({
+    originalImageData,
+    currentImageData,
+    alphaMap,
+    position,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    onRejected = null
+  }) {
+    if (!position || !alphaMap || position.width !== position.height) return null;
+    const current = {
+      imageData: currentImageData,
+      alphaGain: currentAlphaGain,
+      repeatCount: 0,
+      spatialScore: currentSpatialScore,
+      gradientScore: currentGradientScore,
+      nearBlackRatio: calculateNearBlackRatio(currentImageData, position),
+      ...scoreLocatedAggressiveCandidate({
+        imageData: currentImageData,
+        originalImageData,
+        alphaMap,
+        position,
+        alphaGain: currentAlphaGain,
+        baselineGradientScore: currentGradientScore
+      })
+    };
+    let best = current;
+    const gains = new Set([
+      currentAlphaGain,
+      ...LOCATED_AGGRESSIVE_ALPHA_GAINS
+    ].filter((value) => Number.isFinite(value) && value > 0));
+    for (const alphaGain of gains) {
+      for (const repeatCount of [1, 2]) {
+        best = pickLocatedAggressiveCandidate(
+          best,
+          buildLocatedAggressiveCandidate({
+            originalImageData,
+            sourceImageData: originalImageData,
+            alphaMap,
+            position,
+            alphaGain,
+            repeatCount,
+            baselineGradientScore: currentGradientScore
+          })
+        );
+      }
+    }
+    const edgeSources = [{
+      imageData: best.imageData,
+      alphaGain: best.alphaGain,
+      repeatCount: best.repeatCount
+    }];
+    if (best.imageData !== currentImageData) {
+      edgeSources.push({
+        imageData: currentImageData,
+        alphaGain: currentAlphaGain,
+        repeatCount: 0
+      });
+    }
+    for (const edgeSource of edgeSources) {
+      for (const preset of LOCATED_AGGRESSIVE_EDGE_PRESETS) {
+        const edgeCandidate = blendPreviewResidualEdge({
+          sourceImageData: edgeSource.imageData,
+          alphaMap,
+          position,
+          ...preset
+        });
+        best = pickLocatedAggressiveCandidate(best, {
+          imageData: edgeCandidate,
+          alphaGain: edgeSource.alphaGain,
+          repeatCount: edgeSource.repeatCount,
+          edgeCleanup: true,
+          ...scoreLocatedAggressiveCandidate({
+            imageData: edgeCandidate,
+            originalImageData,
+            alphaMap,
+            position,
+            alphaGain: edgeSource.alphaGain,
+            baselineGradientScore: currentGradientScore
+          })
+        });
+      }
+    }
+    if (best.imageData === currentImageData) return null;
+    const currentSpatialPassable = current.spatialScore <= LOCATED_AGGRESSIVE_PASSABLE_SPATIAL_THRESHOLD;
+    const bestSpatialFails = best.spatialScore > LOCATED_AGGRESSIVE_PASSABLE_SPATIAL_THRESHOLD;
+    const spatialDrift = best.spatialScore - current.spatialScore;
+    if (currentSpatialPassable && bestSpatialFails && spatialDrift > LOCATED_AGGRESSIVE_MAX_PASSABLE_SPATIAL_DRIFT) {
+      if (typeof onRejected === "function") {
+        onRejected({
+          strategy: "located-aggressive-alpha",
+          blockedGate: "passable-spatial-drift",
+          currentSpatialScore: current.spatialScore,
+          candidateSpatialScore: best.spatialScore,
+          spatialDrift,
+          currentGradientScore: current.gradientScore,
+          candidateGradientScore: best.gradientScore,
+          currentCost: current.cost,
+          candidateCost: best.cost,
+          alphaGain: best.alphaGain,
+          repeatCount: best.repeatCount,
+          edgeCleanup: best.edgeCleanup === true
+        });
+      }
+      return null;
+    }
+    if (best.cost > current.cost - LOCATED_AGGRESSIVE_MIN_BALANCED_GAIN) {
+      if (typeof onRejected === "function") {
+        onRejected({
+          strategy: "located-aggressive-alpha",
+          blockedGate: "insufficient-balanced-gain",
+          currentSpatialScore: current.spatialScore,
+          candidateSpatialScore: best.spatialScore,
+          spatialDrift: best.spatialScore - current.spatialScore,
+          currentGradientScore: current.gradientScore,
+          candidateGradientScore: best.gradientScore,
+          currentCost: current.cost,
+          candidateCost: best.cost,
+          alphaGain: best.alphaGain,
+          repeatCount: best.repeatCount,
+          edgeCleanup: best.edgeCleanup === true
+        });
+      }
+      return null;
+    }
+    return best;
+  }
+  function shouldSkipLocatedAggressiveForCleanCanonical96({
+    config,
+    alphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    currentSpatialScore,
+    currentGradientScore
+  }) {
+    const resolvedAlphaGain = Number(alphaGain);
+    const originalSpatial = Number(originalSpatialScore);
+    const originalGradient = Number(originalGradientScore);
+    const currentSpatial = Number(currentSpatialScore);
+    const currentGradient = Number(currentGradientScore);
+    if (!Number.isFinite(resolvedAlphaGain) || !Number.isFinite(originalSpatial) || !Number.isFinite(originalGradient) || !Number.isFinite(currentSpatial) || !Number.isFinite(currentGradient)) {
+      return false;
+    }
+    const cleanExactNewMarginVariant = config?.logoSize === 96 && config.marginRight === 192 && config.marginBottom === 192 && config.alphaVariant === "20260520" && resolvedAlphaGain <= 1.3 && originalSpatial >= 0.18 && originalSpatial < 0.4 && originalGradient >= 0.05 && originalGradient < 0.08;
+    if (cleanExactNewMarginVariant) return true;
+    const cleanFullStrengthNewMarginVariant = config?.logoSize === 96 && config.marginRight === 192 && config.marginBottom === 192 && config.alphaVariant === "20260520" && resolvedAlphaGain === 1 && originalSpatial > 0 && originalGradient >= FULL_STRENGTH_NEW_MARGIN_MIN_ORIGINAL_GRADIENT2 && currentGradient <= FULL_STRENGTH_NEW_MARGIN_MAX_CURRENT_GRADIENT;
+    if (cleanFullStrengthNewMarginVariant) return true;
+    if (config?.logoSize !== 96 || config.marginRight !== 64 || config.marginBottom !== 64) {
+      return false;
+    }
+    const cleanStandardAlpha = resolvedAlphaGain <= 1 && currentSpatial >= 0 && currentSpatial <= 0.35 && Math.max(0, currentGradient) <= 0.08;
+    const cleanBalancedAlpha = resolvedAlphaGain <= 1.1 && currentSpatial >= 0 && currentSpatial <= 0.22 && Math.max(0, currentGradient) <= 0.1;
+    const cleanModerateSignalStandardAlpha = resolvedAlphaGain <= 1 && currentSpatial >= 0 && currentSpatial <= CANONICAL_96_MODERATE_SIGNAL_MAX_CURRENT_SPATIAL && Math.max(0, currentGradient) <= CANONICAL_96_MODERATE_SIGNAL_MAX_CURRENT_GRADIENT;
+    return originalSpatial >= 0.55 && originalGradient >= 0.2 && (cleanStandardAlpha || cleanBalancedAlpha) || originalSpatial >= CANONICAL_96_MODERATE_SIGNAL_MIN_ORIGINAL_SPATIAL && originalGradient >= CANONICAL_96_MODERATE_SIGNAL_MIN_ORIGINAL_GRADIENT && cleanModerateSignalStandardAlpha;
+  }
+  function isCanonical96Config(config) {
+    return config?.logoSize === 96 && config.marginRight === 64 && config.marginBottom === 64;
+  }
+  function luminanceAt2(imageData, pixelIndex) {
+    return 0.2126 * imageData.data[pixelIndex] + 0.7152 * imageData.data[pixelIndex + 1] + 0.0722 * imageData.data[pixelIndex + 2];
+  }
+  function repairCanonical96DarkClipResidual({ sourceImageData, priorImageData, alphaMap, position }) {
+    const candidate = cloneImageData3(sourceImageData);
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = alphaMap[localIndex] ?? 0;
+        if (alpha < CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_MIN_ALPHA) continue;
+        const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+        const sourceLum = luminanceAt2(sourceImageData, pixelIndex);
+        const priorLum = luminanceAt2(priorImageData, pixelIndex);
+        if (priorLum - sourceLum < CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_THRESHOLD) {
+          continue;
+        }
+        const blend = clamp013(
+          Math.pow(alpha, CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_GAMMA) * CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_STRENGTH
+        );
+        if (blend <= 5e-3) continue;
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(
+            sourceImageData.data[pixelIndex + channel] * (1 - blend) + priorImageData.data[pixelIndex + channel] * blend
+          );
+        }
+      }
+    }
+    return candidate;
+  }
+  function refineCanonical96PositiveHaloResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    if (!isCanonical96Config(currentConfig) || currentPosition?.width !== 96 || currentPosition?.height !== 96 || originalSpatialScore < CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_ORIGINAL_SPATIAL || originalGradientScore < CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_ORIGINAL_GRADIENT || Math.abs(currentSpatialScore) > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_ABS_CURRENT_SPATIAL || currentGradientScore > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const baselineVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (baselineVisibility?.visiblePositiveHalo !== true || (baselineVisibility.positiveHaloLum ?? 0) < CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_HALO) {
+      return null;
+    }
+    const alphaMap = currentAlphaMap;
+    const baseImageData = cloneImageData3(originalImageData);
+    removeWatermark(baseImageData, alphaMap, currentPosition, {
+      alphaGain: CANONICAL_96_POSITIVE_HALO_RESCUE_ALPHA_GAIN
+    });
+    const priorImageData = buildPreviewNeighborhoodPrior({
+      previewImageData: baseImageData,
+      position: currentPosition,
+      radius: CANONICAL_96_POSITIVE_HALO_RESCUE_REPAIR_RADIUS
+    });
+    const imageData = repairCanonical96DarkClipResidual({
+      sourceImageData: baseImageData,
+      priorImageData,
+      alphaMap,
+      position: currentPosition
+    });
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: currentPosition.x, y: currentPosition.y, size: currentPosition.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: currentPosition.x, y: currentPosition.y, size: currentPosition.width }
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData,
+      position: currentPosition,
+      alphaMap
+    });
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: imageData,
+      alphaMap,
+      position: currentPosition,
+      alphaGain: CANONICAL_96_POSITIVE_HALO_RESCUE_ALPHA_GAIN
+    });
+    const haloReduction = (baselineVisibility.positiveHaloLum ?? 0) - (residualVisibility?.positiveHaloLum ?? 0);
+    if (residualVisibility?.visible !== false || (residualVisibility.positiveHaloLum ?? 0) > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_POSITIVE_HALO || haloReduction < CANONICAL_96_POSITIVE_HALO_RESCUE_MIN_HALO_REDUCTION || Math.abs(spatialScore) > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_SPATIAL || gradientScore > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_GRADIENT || (artifacts?.visualArtifactCost ?? 0) > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_VISUAL_ARTIFACT || (artifacts?.newlyClippedRatio ?? 0) > CANONICAL_96_POSITIVE_HALO_RESCUE_MAX_NEWLY_CLIPPED) {
+      return null;
+    }
+    const originalSpatial = computeRegionSpatialCorrelation({
+      imageData: originalImageData,
+      alphaMap,
+      region: { x: currentPosition.x, y: currentPosition.y, size: currentPosition.width }
+    });
+    const originalGradient = computeRegionGradientCorrelation({
+      imageData: originalImageData,
+      alphaMap,
+      region: { x: currentPosition.x, y: currentPosition.y, size: currentPosition.width }
+    });
+    const balancedVisual = scoreBalancedVisualCandidate({
+      processedSpatial: spatialScore,
+      processedGradient: gradientScore,
+      newlyClippedRatio: artifacts?.newlyClippedRatio,
+      visualArtifactCost: artifacts?.visualArtifactCost
+    });
+    return {
+      imageData,
+      alphaMap,
+      position: currentPosition,
+      config: currentConfig,
+      alphaGain: CANONICAL_96_POSITIVE_HALO_RESCUE_ALPHA_GAIN,
+      originalSpatialScore: originalSpatial,
+      originalGradientScore: originalGradient,
+      spatialScore,
+      gradientScore,
+      residualVisibility,
+      artifacts,
+      haloReduction,
+      suppressionGain: originalSpatial - spatialScore,
+      cost: balancedVisual.score
+    };
+  }
+  function shouldRelocateSmallFixedLocalAnchor({
+    source,
+    config,
+    position,
+    currentGradientScore,
+    currentResidualVisibility
+  }) {
+    const sourceText = String(source || "");
+    if (!sourceText.includes("fixed-local")) return false;
+    if (!position || position.width !== position.height || position.width < SMALL_ANCHOR_RELOCATION_MIN_SIZE || position.width > SMALL_ANCHOR_RELOCATION_MAX_SIZE) {
+      return false;
+    }
+    if (!config || config.logoSize < SMALL_ANCHOR_RELOCATION_MIN_SIZE || config.logoSize > SMALL_ANCHOR_RELOCATION_MAX_SIZE) {
+      return false;
+    }
+    if (!currentResidualVisibility?.visible) return false;
+    return currentResidualVisibility.visiblePositiveHalo === true || currentGradientScore >= SMALL_ANCHOR_RELOCATION_MIN_CURRENT_GRADIENT;
+  }
+  function resolveRelocationAlphaMap({ size, currentAlphaMap, currentPosition, alpha96, getAlphaMap }) {
+    if (size === currentPosition?.width) return currentAlphaMap;
+    if (typeof getAlphaMap === "function") {
+      const resolved = getAlphaMap(size);
+      if (resolved) return resolved;
+    }
+    return interpolateAlphaMap(alpha96, 96, size);
+  }
+  function createSmallAnchorRelocationGeometry({
+    originalImageData,
+    alphaMap,
+    size,
+    marginRight,
+    marginBottom
+  }) {
+    const position = {
+      x: originalImageData.width - marginRight - size,
+      y: originalImageData.height - marginBottom - size,
+      width: size,
+      height: size
+    };
+    if (position.x < 0 || position.y < 0 || position.x + size > originalImageData.width || position.y + size > originalImageData.height) {
+      return null;
+    }
+    const originalSpatialScore = computeRegionSpatialCorrelation({
+      imageData: originalImageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size }
+    });
+    if (originalSpatialScore < SMALL_ANCHOR_RELOCATION_MIN_ORIGINAL_SPATIAL) {
+      return null;
+    }
+    const originalGradientScore = computeRegionGradientCorrelation({
+      imageData: originalImageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size }
+    });
+    return {
+      alphaMap,
+      position,
+      size,
+      marginRight,
+      marginBottom,
+      originalSpatialScore,
+      originalGradientScore,
+      searchContext: createLocalAlphaSearchContext(
+        originalImageData,
+        position
+      )
+    };
+  }
+  function buildSmallAnchorRelocationScratchCandidate({
+    geometry,
+    alphaGain
+  }) {
+    const {
+      alphaMap,
+      position,
+      size,
+      marginRight,
+      marginBottom,
+      originalSpatialScore,
+      originalGradientScore,
+      searchContext
+    } = geometry;
+    const scratchPosition = searchContext.position;
+    const scratchImageData = cloneImageData3(searchContext.originalScratch);
+    removeWatermark(scratchImageData, alphaMap, scratchPosition, { alphaGain });
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData: scratchImageData,
+      alphaMap,
+      region: {
+        x: scratchPosition.x,
+        y: scratchPosition.y,
+        size
+      }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData: scratchImageData,
+      alphaMap,
+      region: {
+        x: scratchPosition.x,
+        y: scratchPosition.y,
+        size
+      }
+    });
+    const suppressionGain = originalSpatialScore - spatialScore;
+    if (Math.abs(spatialScore) > SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_SPATIAL || gradientScore > SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_GRADIENT || suppressionGain < SMALL_ANCHOR_RELOCATION_MIN_SUPPRESSION_GAIN) {
+      return null;
+    }
+    return {
+      scratchImageData,
+      alphaMap,
+      position,
+      config: { logoSize: size, marginRight, marginBottom },
+      alphaGain,
+      originalSpatialScore,
+      originalGradientScore,
+      spatialScore,
+      gradientScore,
+      suppressionGain
+    };
+  }
+  function materializeSmallAnchorRelocationCandidate({
+    candidate,
+    originalImageData
+  }) {
+    const imageData = cloneImageData3(originalImageData);
+    removeWatermark(imageData, candidate.alphaMap, candidate.position, {
+      alphaGain: candidate.alphaGain
+    });
+    const size = candidate.position.width;
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap: candidate.alphaMap,
+      region: {
+        x: candidate.position.x,
+        y: candidate.position.y,
+        size
+      }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap: candidate.alphaMap,
+      region: {
+        x: candidate.position.x,
+        y: candidate.position.y,
+        size
+      }
+    });
+    const suppressionGain = candidate.originalSpatialScore - spatialScore;
+    if (Math.abs(spatialScore) > SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_SPATIAL || gradientScore > SMALL_ANCHOR_RELOCATION_MAX_ACCEPTED_GRADIENT || suppressionGain < SMALL_ANCHOR_RELOCATION_MIN_SUPPRESSION_GAIN) {
+      return null;
+    }
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData,
+      position: candidate.position,
+      alphaMap: candidate.alphaMap
+    });
+    if (residualVisibility.visible) return null;
+    const { scratchImageData, ...rest } = candidate;
+    return {
+      ...rest,
+      imageData,
+      spatialScore,
+      gradientScore,
+      suppressionGain,
+      residualVisibility,
+      cost: Math.abs(spatialScore) * 0.8 + Math.max(0, gradientScore) * 0.75 + Math.max(
+        0,
+        residualVisibility.positiveHaloLum ?? 0
+      ) * 0.01
+    };
+  }
+  function refineSmallFixedLocalAnchorGeometry({
+    originalImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSource,
+    currentGradientScore,
+    currentResidualVisibility,
+    alpha96,
+    getAlphaMap
+  }) {
+    if (!shouldRelocateSmallFixedLocalAnchor({
+      source: currentSource,
+      config: currentConfig,
+      position: currentPosition,
+      currentGradientScore,
+      currentResidualVisibility
+    })) {
+      return null;
+    }
+    const currentSize = currentConfig.logoSize ?? currentPosition.width;
+    const currentMarginRight = currentConfig.marginRight;
+    const currentMarginBottom = currentConfig.marginBottom;
+    if (![currentSize, currentMarginRight, currentMarginBottom].every(Number.isFinite)) {
+      return null;
+    }
+    let best = null;
+    const minSize = Math.max(SMALL_ANCHOR_RELOCATION_MIN_SIZE, currentSize);
+    const maxSize = Math.min(SMALL_ANCHOR_RELOCATION_MAX_SIZE, currentSize + SMALL_ANCHOR_RELOCATION_SIZE_DELTA);
+    const minMarginRight = Math.max(0, currentMarginRight - SMALL_ANCHOR_RELOCATION_MARGIN_DELTA);
+    const maxMarginRight = currentMarginRight + SMALL_ANCHOR_RELOCATION_MARGIN_DELTA;
+    const minMarginBottom = Math.max(0, currentMarginBottom - SMALL_ANCHOR_RELOCATION_MARGIN_DELTA);
+    const maxMarginBottom = currentMarginBottom + SMALL_ANCHOR_RELOCATION_MARGIN_DELTA;
+    for (let size = minSize; size <= maxSize; size++) {
+      const alphaMap = resolveRelocationAlphaMap({
+        size,
+        currentAlphaMap,
+        currentPosition,
+        alpha96,
+        getAlphaMap
+      });
+      if (!alphaMap) continue;
+      for (let marginRight = minMarginRight; marginRight <= maxMarginRight; marginRight++) {
+        for (let marginBottom = minMarginBottom; marginBottom <= maxMarginBottom; marginBottom++) {
+          const candidateY = originalImageData.height - marginBottom - size;
+          if (candidateY > currentPosition.y + 1) continue;
+          const geometry = createSmallAnchorRelocationGeometry({
+            originalImageData,
+            alphaMap,
+            size,
+            marginRight,
+            marginBottom
+          });
+          if (!geometry) continue;
+          for (const candidateAlphaGain of ALPHA_GAIN_CANDIDATES) {
+            const scratchCandidate = buildSmallAnchorRelocationScratchCandidate({
+              geometry,
+              alphaGain: candidateAlphaGain
+            });
+            if (!scratchCandidate) continue;
+            const candidate = materializeSmallAnchorRelocationCandidate({
+              candidate: scratchCandidate,
+              originalImageData
+            });
+            if (!candidate) continue;
+            if (!best || candidate.cost < best.cost) {
+              best = candidate;
+            }
+          }
+        }
+      }
+    }
+    return best;
+  }
+  function isKnown48LargeMarginConfig(config) {
+    if (!config || config.logoSize !== 48) return false;
+    return Math.abs(Number(config.marginRight) - 96) <= 2 && Math.abs(Number(config.marginBottom) - 96) <= 2;
+  }
+  function sharpenKnown48AlphaMap(alphaMap, size, amount) {
+    const sharpened = new Float32Array(alphaMap.length);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let sum = 0;
+        let count = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const sourceY = y + dy;
+          if (sourceY < 0 || sourceY >= size) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const sourceX = x + dx;
+            if (sourceX < 0 || sourceX >= size) continue;
+            sum += alphaMap[sourceY * size + sourceX];
+            count++;
+          }
+        }
+        const index = y * size + x;
+        const blurred = count > 0 ? sum / count : alphaMap[index];
+        sharpened[index] = Math.max(0, Math.min(0.99, alphaMap[index] + (alphaMap[index] - blurred) * amount));
+      }
+    }
+    return sharpened;
+  }
+  function scaleKnown48AlphaBand(alphaMap, { minAlpha, maxAlpha, scale }) {
+    const scaled = new Float32Array(alphaMap.length);
+    for (let index = 0; index < alphaMap.length; index++) {
+      const alpha = alphaMap[index];
+      scaled[index] = alpha >= minAlpha && alpha <= maxAlpha ? Math.max(0, Math.min(0.99, alpha * scale)) : alpha;
+    }
+    return scaled;
+  }
+  function powerKnown48AlphaMap(alphaMap, exponent) {
+    const transformed = new Float32Array(alphaMap.length);
+    for (let index = 0; index < alphaMap.length; index++) {
+      transformed[index] = Math.max(0, Math.min(0.99, Math.pow(alphaMap[index], exponent)));
+    }
+    return transformed;
+  }
+  function scoreKnown48AntiTemplateRescueCandidate({
+    originalImageData,
+    alphaMap,
+    position,
+    alphaGain,
+    baselineGradientScore,
+    logoValue = void 0,
+    maxSpatial = KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_SPATIAL,
+    maxVisualArtifact = KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_VISUAL_ARTIFACT
+  }) {
+    const imageData = cloneImageData3(originalImageData);
+    removeWatermark(imageData, alphaMap, position, { alphaGain, logoValue });
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    if (Math.abs(spatialScore) > maxSpatial || Math.max(0, gradientScore) > KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_GRADIENT) {
+      return null;
+    }
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData,
+      position,
+      alphaMap
+    });
+    if (residualVisibility?.visible !== false) return null;
+    const nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    const baselineNearBlackRatio = calculateNearBlackRatio(originalImageData, position);
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: imageData,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const darkHaloLum = Math.max(0, -(artifacts?.halo?.deltaLum ?? 0));
+    const visualArtifactCost = artifacts?.visualArtifactCost ?? 0;
+    if (darkHaloLum > KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_DARK_HALO || visualArtifactCost > maxVisualArtifact) {
+      return null;
+    }
+    const balancedVisual = scoreBalancedVisualCandidate({
+      processedSpatial: spatialScore,
+      processedGradient: gradientScore,
+      nearBlackIncrease: nearBlackRatio - baselineNearBlackRatio,
+      newlyClippedRatio: artifacts?.newlyClippedRatio,
+      darkHaloLum,
+      visualArtifactCost,
+      gradientIncrease: Number.isFinite(baselineGradientScore) ? gradientScore - baselineGradientScore : 0
+    });
+    return {
+      imageData,
+      alphaMap,
+      position,
+      config: {
+        logoSize: position.width,
+        marginRight: originalImageData.width - position.x - position.width,
+        marginBottom: originalImageData.height - position.y - position.height
+      },
+      alphaGain,
+      logoValue,
+      spatialScore,
+      gradientScore,
+      residualVisibility,
+      nearBlackRatio,
+      artifacts,
+      balancedVisual,
+      cost: balancedVisual.score
+    };
+  }
+  function refineLargeMargin48ProfileAlphaRescue({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    if (!isKnown48LargeMarginConfig(currentConfig) || currentPosition?.width !== 48 || currentPosition?.height !== 48 || currentAlphaGain !== 1 || originalSpatialScore < LARGE_MARGIN_48_PROFILE_MIN_ORIGINAL_SPATIAL || originalGradientScore < LARGE_MARGIN_48_PROFILE_MIN_ORIGINAL_GRADIENT || Math.abs(currentSpatialScore) > LARGE_MARGIN_48_PROFILE_MAX_ABS_CURRENT_SPATIAL || currentGradientScore > LARGE_MARGIN_48_PROFILE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true || currentVisibility.positiveHaloLum < LARGE_MARGIN_48_PROFILE_MIN_CURRENT_POSITIVE_HALO) {
+      return null;
+    }
+    const currentArtifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: currentImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain
+    });
+    const currentClippedRatio = currentArtifacts?.newlyClippedRatio ?? 0;
+    if (currentClippedRatio < LARGE_MARGIN_48_PROFILE_MIN_CURRENT_CLIPPED_RATIO || currentClippedRatio > LARGE_MARGIN_48_PROFILE_MAX_CURRENT_CLIPPED_RATIO || (currentArtifacts?.visualArtifactCost ?? Infinity) > LARGE_MARGIN_48_PROFILE_MAX_CURRENT_ARTIFACT) {
+      return null;
+    }
+    const profileAlphaMap = powerKnown48AlphaMap(
+      currentAlphaMap,
+      LARGE_MARGIN_48_PROFILE_ALPHA_RESCUE.exponent
+    );
+    const candidate = scoreKnown48AntiTemplateRescueCandidate({
+      originalImageData,
+      alphaMap: profileAlphaMap,
+      position: currentPosition,
+      alphaGain: LARGE_MARGIN_48_PROFILE_ALPHA_RESCUE.alphaGain,
+      baselineGradientScore: currentGradientScore,
+      maxSpatial: LARGE_MARGIN_48_PROFILE_MAX_SPATIAL,
+      maxVisualArtifact: LARGE_MARGIN_48_PROFILE_MAX_ARTIFACT
+    });
+    if (!candidate || candidate.residualVisibility?.visible !== false || candidate.gradientScore > LARGE_MARGIN_48_PROFILE_MAX_GRADIENT || candidate.residualVisibility.positiveHaloLum > LARGE_MARGIN_48_PROFILE_MAX_POSITIVE_HALO || (candidate.artifacts?.newlyClippedRatio ?? Infinity) > LARGE_MARGIN_48_PROFILE_MAX_CLIPPED_RATIO || (candidate.artifacts?.visualArtifactCost ?? Infinity) > LARGE_MARGIN_48_PROFILE_MAX_ARTIFACT) {
+      return null;
+    }
+    return {
+      ...candidate,
+      alphaMapSource: "known-48-power-0.90",
+      profileExponent: LARGE_MARGIN_48_PROFILE_ALPHA_RESCUE.exponent,
+      originalSpatialScore,
+      originalGradientScore,
+      suppressionGain: originalSpatialScore - candidate.spatialScore
+    };
+  }
+  function refineKnown48AntiTemplateResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    const hasStrongOriginalEvidence = originalSpatialScore >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_SPATIAL && originalGradientScore >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_GRADIENT;
+    const hasWeakOriginalEvidence = originalSpatialScore >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL && originalGradientScore >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_GRADIENT;
+    const hasMidBoostEntryEvidence = originalSpatialScore < KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL && currentSpatialScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_SPATIAL && currentGradientScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_GRADIENT;
+    if (!isKnown48LargeMarginConfig(currentConfig) || !currentPosition || currentPosition.width !== currentPosition.height || !hasStrongOriginalEvidence && !hasWeakOriginalEvidence && !hasMidBoostEntryEvidence || currentSpatialScore > KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_CURRENT_SPATIAL || Math.max(0, currentGradientScore) > KNOWN_48_ANTI_TEMPLATE_RESCUE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true || currentVisibility.visiblePositiveHalo === true) return null;
+    const currentScore = scoreKnown48AntiTemplateRescueCandidate({
+      originalImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    });
+    const currentCost = currentScore?.cost ?? scoreLocatedAggressiveCandidate({
+      imageData: currentImageData,
+      originalImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    }).cost;
+    let best = null;
+    const minSize = Math.max(KNOWN_48_EDGE_CLEANUP_MIN_SIZE, currentConfig.logoSize - 2);
+    const maxSize = Math.min(KNOWN_48_EDGE_CLEANUP_MAX_SIZE, currentConfig.logoSize + 1);
+    const minMarginRight = Math.max(0, currentConfig.marginRight - 1);
+    const maxMarginRight = currentConfig.marginRight + 2;
+    const minMarginBottom = Math.max(0, currentConfig.marginBottom - 1);
+    const maxMarginBottom = currentConfig.marginBottom + 2;
+    for (let size = minSize; size <= maxSize; size++) {
+      const alphaMap = size === currentPosition.width ? currentAlphaMap : interpolateAlphaMap(currentAlphaMap, currentPosition.width, size);
+      if (!alphaMap) continue;
+      for (let marginRight = minMarginRight; marginRight <= maxMarginRight; marginRight++) {
+        for (let marginBottom = minMarginBottom; marginBottom <= maxMarginBottom; marginBottom++) {
+          const position = {
+            x: originalImageData.width - marginRight - size,
+            y: originalImageData.height - marginBottom - size,
+            width: size,
+            height: size
+          };
+          if (position.x < 0 || position.y < 0 || position.x + size > originalImageData.width || position.y + size > originalImageData.height) {
+            continue;
+          }
+          const originalSpatial = computeRegionSpatialCorrelation({
+            imageData: originalImageData,
+            alphaMap,
+            region: { x: position.x, y: position.y, size }
+          });
+          const originalGradient = computeRegionGradientCorrelation({
+            imageData: originalImageData,
+            alphaMap,
+            region: { x: position.x, y: position.y, size }
+          });
+          const hasCandidateStrongEvidence = originalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_SPATIAL && originalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_GRADIENT;
+          const hasCandidateWeakEvidence = originalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL && originalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_GRADIENT;
+          if (!hasCandidateStrongEvidence && !hasCandidateWeakEvidence) {
+            continue;
+          }
+          for (const alphaGain of KNOWN_48_ANTI_TEMPLATE_RESCUE_GAINS) {
+            const candidate = scoreKnown48AntiTemplateRescueCandidate({
+              originalImageData,
+              alphaMap,
+              position,
+              alphaGain,
+              baselineGradientScore: currentGradientScore
+            });
+            if (!candidate) continue;
+            if (!best || candidate.cost < best.cost) {
+              best = {
+                ...candidate,
+                originalSpatialScore: originalSpatial,
+                originalGradientScore: originalGradient,
+                suppressionGain: originalSpatial - candidate.spatialScore
+              };
+            }
+          }
+        }
+      }
+    }
+    if (currentPosition.width === 48 && currentPosition.height === 48) {
+      const sharpenedAlphaMap = sharpenKnown48AlphaMap(
+        currentAlphaMap,
+        48,
+        KNOWN_48_ANTI_TEMPLATE_RESCUE_SHARPEN_AMOUNT
+      );
+      const sharpenedOriginalSpatial = computeRegionSpatialCorrelation({
+        imageData: originalImageData,
+        alphaMap: sharpenedAlphaMap,
+        region: { x: currentPosition.x, y: currentPosition.y, size: 48 }
+      });
+      const sharpenedOriginalGradient = computeRegionGradientCorrelation({
+        imageData: originalImageData,
+        alphaMap: sharpenedAlphaMap,
+        region: { x: currentPosition.x, y: currentPosition.y, size: 48 }
+      });
+      const hasSharpenedStrongEvidence = sharpenedOriginalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_SPATIAL && sharpenedOriginalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_GRADIENT;
+      const hasSharpenedWeakEvidence = sharpenedOriginalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL && sharpenedOriginalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_GRADIENT;
+      if (hasSharpenedStrongEvidence || hasSharpenedWeakEvidence) {
+        const sharpenedCandidate = scoreKnown48AntiTemplateRescueCandidate({
+          originalImageData,
+          alphaMap: sharpenedAlphaMap,
+          position: currentPosition,
+          alphaGain: KNOWN_48_ANTI_TEMPLATE_RESCUE_SHARPEN_ALPHA_GAIN,
+          baselineGradientScore: currentGradientScore
+        });
+        if (sharpenedCandidate && (!best || sharpenedCandidate.cost < best.cost)) {
+          best = {
+            ...sharpenedCandidate,
+            originalSpatialScore: sharpenedOriginalSpatial,
+            originalGradientScore: sharpenedOriginalGradient,
+            suppressionGain: sharpenedOriginalSpatial - sharpenedCandidate.spatialScore
+          };
+        }
+      }
+      if (currentSpatialScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_CURRENT_SPATIAL && currentGradientScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_CURRENT_GRADIENT) {
+        const coreDampenedAlphaMap = scaleKnown48AlphaBand(currentAlphaMap, {
+          minAlpha: KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MIN_ALPHA,
+          maxAlpha: KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_ALPHA,
+          scale: KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_SCALE
+        });
+        const coreDampenedOriginalSpatial = computeRegionSpatialCorrelation({
+          imageData: originalImageData,
+          alphaMap: coreDampenedAlphaMap,
+          region: { x: currentPosition.x, y: currentPosition.y, size: 48 }
+        });
+        const coreDampenedOriginalGradient = computeRegionGradientCorrelation({
+          imageData: originalImageData,
+          alphaMap: coreDampenedAlphaMap,
+          region: { x: currentPosition.x, y: currentPosition.y, size: 48 }
+        });
+        const hasCoreDampenedStrongEvidence = coreDampenedOriginalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_SPATIAL && coreDampenedOriginalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_ORIGINAL_GRADIENT;
+        const hasCoreDampenedWeakEvidence = coreDampenedOriginalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_SPATIAL && coreDampenedOriginalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_WEAK_MIN_ORIGINAL_GRADIENT;
+        if (hasCoreDampenedStrongEvidence || hasCoreDampenedWeakEvidence) {
+          const coreDampenedCandidate = scoreKnown48AntiTemplateRescueCandidate({
+            originalImageData,
+            alphaMap: coreDampenedAlphaMap,
+            position: currentPosition,
+            alphaGain: KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_ALPHA_GAIN,
+            baselineGradientScore: currentGradientScore,
+            maxSpatial: KNOWN_48_ANTI_TEMPLATE_RESCUE_CORE_DAMPEN_MAX_SPATIAL
+          });
+          if (coreDampenedCandidate && (!best || coreDampenedCandidate.cost < best.cost)) {
+            best = {
+              ...coreDampenedCandidate,
+              originalSpatialScore: coreDampenedOriginalSpatial,
+              originalGradientScore: coreDampenedOriginalGradient,
+              suppressionGain: coreDampenedOriginalSpatial - coreDampenedCandidate.spatialScore
+            };
+          }
+        }
+      }
+      if (hasMidBoostEntryEvidence && currentSpatialScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_SPATIAL && currentGradientScore <= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_CURRENT_GRADIENT) {
+        const midBoostBaseAlphaMap = interpolateAlphaMap(
+          currentAlphaMap,
+          currentPosition.width,
+          KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE
+        );
+        if (midBoostBaseAlphaMap) {
+          const midBoostAlphaMap = scaleKnown48AlphaBand(midBoostBaseAlphaMap, {
+            minAlpha: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ALPHA,
+            maxAlpha: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_ALPHA,
+            scale: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SCALE
+          });
+          const midBoostPosition = {
+            x: originalImageData.width - KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MARGIN - KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE,
+            y: originalImageData.height - KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MARGIN - KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE,
+            width: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE,
+            height: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_SIZE
+          };
+          if (midBoostPosition.x >= 0 && midBoostPosition.y >= 0 && midBoostPosition.x + midBoostPosition.width <= originalImageData.width && midBoostPosition.y + midBoostPosition.height <= originalImageData.height) {
+            const midBoostOriginalSpatial = computeRegionSpatialCorrelation({
+              imageData: originalImageData,
+              alphaMap: midBoostAlphaMap,
+              region: {
+                x: midBoostPosition.x,
+                y: midBoostPosition.y,
+                size: midBoostPosition.width
+              }
+            });
+            const midBoostOriginalGradient = computeRegionGradientCorrelation({
+              imageData: originalImageData,
+              alphaMap: midBoostAlphaMap,
+              region: {
+                x: midBoostPosition.x,
+                y: midBoostPosition.y,
+                size: midBoostPosition.width
+              }
+            });
+            if (midBoostOriginalSpatial >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ORIGINAL_SPATIAL && midBoostOriginalGradient >= KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MIN_ORIGINAL_GRADIENT) {
+              const midBoostCandidate = scoreKnown48AntiTemplateRescueCandidate({
+                originalImageData,
+                alphaMap: midBoostAlphaMap,
+                position: midBoostPosition,
+                alphaGain: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_ALPHA_GAIN,
+                baselineGradientScore: currentGradientScore,
+                maxSpatial: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_SPATIAL,
+                maxVisualArtifact: KNOWN_48_ANTI_TEMPLATE_RESCUE_MID_BOOST_MAX_VISUAL_ARTIFACT
+              });
+              if (midBoostCandidate && (!best || midBoostCandidate.cost < best.cost)) {
+                best = {
+                  ...midBoostCandidate,
+                  originalSpatialScore: midBoostOriginalSpatial,
+                  originalGradientScore: midBoostOriginalGradient,
+                  suppressionGain: midBoostOriginalSpatial - midBoostCandidate.spatialScore
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!best) return null;
+    if (best.cost > currentCost - KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_BALANCED_GAIN) return null;
+    return best;
+  }
+  function refineKnown48PowerProfileResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    if (!isKnown48LargeMarginConfig(currentConfig) || currentPosition?.width !== 48 || currentPosition?.height !== 48 || originalSpatialScore < KNOWN_48_POWER_PROFILE_RESCUE_MIN_ORIGINAL_SPATIAL || originalGradientScore < KNOWN_48_POWER_PROFILE_RESCUE_MIN_ORIGINAL_GRADIENT || currentSpatialScore < KNOWN_48_POWER_PROFILE_RESCUE_MIN_CURRENT_SPATIAL || currentGradientScore > KNOWN_48_POWER_PROFILE_RESCUE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true || currentVisibility.visibleSpatialResidual !== true || currentVisibility.visiblePositiveHalo === true) {
+      return null;
+    }
+    const currentCost = scoreLocatedAggressiveCandidate({
+      imageData: currentImageData,
+      originalImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    }).cost;
+    let best = null;
+    for (const profile of KNOWN_48_POWER_PROFILE_RESCUE_CANDIDATES) {
+      const powerAlphaMap = powerKnown48AlphaMap(currentAlphaMap, profile.exponent);
+      const candidate = scoreKnown48AntiTemplateRescueCandidate({
+        originalImageData,
+        alphaMap: powerAlphaMap,
+        position: currentPosition,
+        alphaGain: profile.alphaGain,
+        baselineGradientScore: currentGradientScore,
+        maxSpatial: profile.maxSpatial
+      });
+      if (!candidate) continue;
+      const clearsVisibleSpatialResidual = currentVisibility.visibleSpatialResidual === true && candidate.residualVisibility?.visible === false && Math.abs(currentSpatialScore) - Math.abs(candidate.spatialScore) >= 0.25;
+      if (!clearsVisibleSpatialResidual && candidate.cost > currentCost - KNOWN_48_ANTI_TEMPLATE_RESCUE_MIN_BALANCED_GAIN) {
+        continue;
+      }
+      best = {
+        ...candidate,
+        profileExponent: profile.exponent
+      };
+      break;
+    }
+    if (!best) {
+      return null;
+    }
+    return {
+      ...best,
+      originalSpatialScore,
+      originalGradientScore,
+      suppressionGain: originalSpatialScore - best.spatialScore
+    };
+  }
+  function refineKnown48PositiveResidualRebalance({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    if (!currentConfig || currentConfig.logoSize !== 48 || !(Math.abs(Number(currentConfig.marginRight) - 96) <= 2 && Math.abs(Number(currentConfig.marginBottom) - 96) <= 2 || Math.abs(Number(currentConfig.marginRight) - 32) <= 2 && Math.abs(Number(currentConfig.marginBottom) - 32) <= 2) || currentPosition?.width !== 48 || currentPosition?.height !== 48 || originalSpatialScore < KNOWN_48_RESIDUAL_REBALANCE_MIN_ORIGINAL_SPATIAL || originalGradientScore < KNOWN_48_RESIDUAL_REBALANCE_MIN_ORIGINAL_GRADIENT || currentSpatialScore < KNOWN_48_RESIDUAL_REBALANCE_MIN_CURRENT_SPATIAL || currentGradientScore > KNOWN_48_RESIDUAL_REBALANCE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visibleSpatialResidual !== true) return null;
+    const currentPositiveHalo = Math.max(0, currentVisibility?.positiveHaloLum ?? 0);
+    let best = null;
+    const candidateProfiles = [{
+      alphaMap: currentAlphaMap,
+      profileExponent: null,
+      gains: [
+        ...KNOWN_48_RESIDUAL_REBALANCE_GAINS,
+        Number((currentAlphaGain + 0.02).toFixed(2)),
+        Number((currentAlphaGain + 0.05).toFixed(2)),
+        Number((currentAlphaGain + 0.1).toFixed(2))
+      ]
+    }];
+    for (const profile of KNOWN_48_RESIDUAL_REBALANCE_POWER_PROFILES) {
+      candidateProfiles.push({
+        alphaMap: powerKnown48AlphaMap(currentAlphaMap, profile.exponent),
+        profileExponent: profile.exponent,
+        gains: profile.gains
+      });
+    }
+    for (const profile of candidateProfiles) {
+      const gainCandidates = new Set(profile.gains);
+      for (const alphaGain of gainCandidates) {
+        if (!Number.isFinite(alphaGain) || alphaGain <= 0) continue;
+        const imageData = cloneImageData3(originalImageData);
+        removeWatermark(imageData, profile.alphaMap, currentPosition, { alphaGain });
+        const spatialScore = computeRegionSpatialCorrelation({
+          imageData,
+          alphaMap: profile.alphaMap,
+          region: {
+            x: currentPosition.x,
+            y: currentPosition.y,
+            size: currentPosition.width
+          }
+        });
+        const gradientScore = computeRegionGradientCorrelation({
+          imageData,
+          alphaMap: profile.alphaMap,
+          region: {
+            x: currentPosition.x,
+            y: currentPosition.y,
+            size: currentPosition.width
+          }
+        });
+        if (spatialScore >= KNOWN_48_RESIDUAL_REBALANCE_MAX_ACCEPTED_SPATIAL || Math.abs(spatialScore) > KNOWN_48_RESIDUAL_REBALANCE_MAX_ACCEPTED_SPATIAL || gradientScore > KNOWN_48_RESIDUAL_REBALANCE_MAX_ACCEPTED_GRADIENT) {
+          continue;
+        }
+        const residualVisibility = assessWatermarkResidualVisibility({
+          imageData,
+          position: currentPosition,
+          alphaMap: profile.alphaMap
+        });
+        const positiveHaloDrop = currentPositiveHalo - Math.max(0, residualVisibility?.positiveHaloLum ?? 0);
+        const lowVisibleHaloAccepted = residualVisibility?.visible === false && Math.max(0, residualVisibility?.positiveHaloLum ?? 0) <= KNOWN_48_RESIDUAL_REBALANCE_MAX_CLEARED_POSITIVE_HALO;
+        if (residualVisibility?.visibleSpatialResidual === true || positiveHaloDrop < KNOWN_48_RESIDUAL_REBALANCE_MIN_POSITIVE_HALO_DROP && !lowVisibleHaloAccepted) {
+          continue;
+        }
+        const artifacts = assessRemovalDiffArtifacts({
+          originalImageData,
+          candidateImageData: imageData,
+          alphaMap: profile.alphaMap,
+          position: currentPosition,
+          alphaGain
+        });
+        const darkHaloLum = Math.max(0, -(artifacts?.halo?.deltaLum ?? 0));
+        const visualArtifactCost = artifacts?.visualArtifactCost ?? Number.POSITIVE_INFINITY;
+        const newlyClippedRatio = artifacts?.newlyClippedRatio ?? 0;
+        if (darkHaloLum > KNOWN_48_RESIDUAL_REBALANCE_MAX_DARK_HALO || visualArtifactCost > KNOWN_48_RESIDUAL_REBALANCE_MAX_VISUAL_ARTIFACT || newlyClippedRatio > KNOWN_48_RESIDUAL_REBALANCE_MAX_CLIPPED_RATIO) {
+          continue;
+        }
+        const cost = Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.7 + visualArtifactCost * 0.35;
+        if (!best || cost < best.cost) {
+          best = {
+            imageData,
+            alphaMap: profile.alphaMap,
+            alphaGain,
+            profileExponent: profile.profileExponent,
+            spatialScore,
+            gradientScore,
+            residualVisibility,
+            artifacts,
+            darkHaloLum,
+            positiveHaloDrop,
+            suppressionGain: originalSpatialScore - spatialScore,
+            cost
+          };
+        }
+      }
+    }
+    return best;
+  }
+  function applyKnown48BoundaryRepair({
+    imageData,
+    priorImageData,
+    alphaMap,
+    position,
+    preset = KNOWN_48_BOUNDARY_REPAIR_RESCUE_PRESET
+  }) {
+    const candidate = cloneImageData3(imageData);
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = Math.abs(alphaMap[localIndex] ?? 0);
+        if (alpha < preset.minAlpha || alpha > preset.maxAlpha) continue;
+        const blend = clamp013(Math.pow(alpha, preset.gamma) * preset.strength);
+        if (blend <= 5e-3) continue;
+        const pixelIndex = ((position.y + row) * candidate.width + position.x + col) * 4;
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(
+            imageData.data[pixelIndex + channel] * (1 - blend) + priorImageData.data[pixelIndex + channel] * blend
+          );
+        }
+      }
+    }
+    return candidate;
+  }
+  function scoreKnown48BoundaryRepairCandidate({
+    originalImageData,
+    imageData,
+    alphaMap,
+    position,
+    alphaGain,
+    baselineGradientScore
+  }) {
+    const locatedScore = scoreLocatedAggressiveCandidate({
+      imageData,
+      originalImageData,
+      alphaMap,
+      position,
+      alphaGain,
+      baselineGradientScore
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData,
+      position,
+      alphaMap
+    });
+    const calibratedVisibility = assessCalibratedWatermarkResidualVisibility({
+      imageData,
+      originalImageData,
+      position,
+      alphaMap,
+      alphaGain
+    });
+    return {
+      ...locatedScore,
+      residualVisibility,
+      calibratedVisibility,
+      visualArtifactCost: locatedScore.artifacts?.visualArtifactCost ?? 0
+    };
+  }
+  function refineKnown48BoundaryRepairResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore
+  }) {
+    if (!isKnown48LargeMarginConfig(currentConfig) || currentPosition?.width !== 48 || currentPosition?.height !== 48 || originalSpatialScore < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_ORIGINAL_SPATIAL || originalGradientScore < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_ORIGINAL_GRADIENT || currentSpatialScore < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_CURRENT_SPATIAL || currentSpatialScore > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_CURRENT_SPATIAL || currentGradientScore < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_CURRENT_GRADIENT || currentGradientScore > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true) {
+      return null;
+    }
+    const currentNearBlackRatio = calculateNearBlackRatio(currentImageData, currentPosition);
+    if (currentNearBlackRatio < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_NEAR_BLACK_RATIO) {
+      return null;
+    }
+    const beforeScore = scoreKnown48BoundaryRepairCandidate({
+      originalImageData,
+      imageData: currentImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    });
+    const priorImageData = buildPreviewNeighborhoodPrior({
+      previewImageData: currentImageData,
+      position: currentPosition,
+      radius: KNOWN_48_BOUNDARY_REPAIR_RESCUE_PRESET.radius
+    });
+    const candidateImageData = applyKnown48BoundaryRepair({
+      imageData: currentImageData,
+      priorImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition
+    });
+    const afterScore = scoreKnown48BoundaryRepairCandidate({
+      originalImageData,
+      imageData: candidateImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    });
+    const balancedGain = beforeScore.cost - afterScore.cost;
+    const artifactDelta = afterScore.visualArtifactCost - beforeScore.visualArtifactCost;
+    if (afterScore.residualVisibility?.visible !== false || afterScore.calibratedVisibility?.calibratedVisible !== false || afterScore.spatialScore > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_SPATIAL || afterScore.gradientScore > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_GRADIENT || afterScore.visualArtifactCost > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_ARTIFACT || balancedGain < KNOWN_48_BOUNDARY_REPAIR_RESCUE_MIN_BALANCED_GAIN || artifactDelta > KNOWN_48_BOUNDARY_REPAIR_RESCUE_MAX_ARTIFACT_DELTA) {
+      return null;
+    }
+    return {
+      imageData: candidateImageData,
+      position: currentPosition,
+      config: currentConfig,
+      alphaMap: currentAlphaMap,
+      alphaGain: currentAlphaGain,
+      spatialScore: afterScore.spatialScore,
+      gradientScore: afterScore.gradientScore,
+      originalSpatialScore,
+      originalGradientScore,
+      suppressionGain: currentSpatialScore - afterScore.spatialScore,
+      balancedGain,
+      artifactDelta,
+      cost: afterScore.cost
+    };
+  }
+  function refineKnown48SmallMarginPriorRepairResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    source
+  }) {
+    if (typeof source !== "string" || !source.includes("located-aggressive") || currentConfig?.logoSize !== 48 || Math.abs(Number(currentConfig.marginRight) - 32) > 2 || Math.abs(Number(currentConfig.marginBottom) - 32) > 2 || currentPosition?.width !== 48 || currentPosition?.height !== 48 || originalSpatialScore < KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_ORIGINAL_SPATIAL || originalGradientScore < KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_ORIGINAL_GRADIENT || currentSpatialScore < KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_CURRENT_SPATIAL || currentGradientScore > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visibleSpatialResidual !== true) return null;
+    let best = null;
+    const priorByRadius = /* @__PURE__ */ new Map();
+    for (const preset of KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_PRESETS) {
+      let priorImageData = priorByRadius.get(preset.radius);
+      if (!priorImageData) {
+        priorImageData = buildPreviewNeighborhoodPrior({
+          previewImageData: currentImageData,
+          position: currentPosition,
+          radius: preset.radius
+        });
+        priorByRadius.set(preset.radius, priorImageData);
+      }
+      const candidateImageData = applyKnown48BoundaryRepair({
+        imageData: currentImageData,
+        priorImageData,
+        alphaMap: currentAlphaMap,
+        position: currentPosition,
+        preset
+      });
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const spatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      if (spatialImprovement < KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MIN_SPATIAL_IMPROVEMENT || spatialScore > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_SPATIAL || Math.abs(spatialScore) > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_SPATIAL || gradientScore > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_GRADIENT) {
+        continue;
+      }
+      const residualVisibility = assessWatermarkResidualVisibility({
+        imageData: candidateImageData,
+        position: currentPosition,
+        alphaMap: currentAlphaMap
+      });
+      if (residualVisibility?.visible !== false) continue;
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData,
+        alphaMap: currentAlphaMap,
+        position: currentPosition,
+        alphaGain: currentAlphaGain
+      });
+      const visualArtifactCost = artifacts?.visualArtifactCost ?? Number.POSITIVE_INFINITY;
+      const newlyClippedRatio = artifacts?.newlyClippedRatio ?? Number.POSITIVE_INFINITY;
+      const darkHaloLum = Math.max(0, -(artifacts?.halo?.deltaLum ?? 0));
+      if (visualArtifactCost > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_ARTIFACT || newlyClippedRatio > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_CLIPPED || darkHaloLum > KNOWN_48_SMALL_MARGIN_PRIOR_REPAIR_MAX_DARK_HALO) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.7 + visualArtifactCost * 0.35;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidateImageData,
+          alphaMap: currentAlphaMap,
+          position: currentPosition,
+          config: currentConfig,
+          alphaGain: currentAlphaGain,
+          spatialScore,
+          gradientScore,
+          residualVisibility,
+          artifacts,
+          spatialImprovement,
+          suppressionGain: originalSpatialScore - spatialScore,
+          preset,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function refineProjectedSmallDarkSupportResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    source
+  }) {
+    const marginRight = Number(currentConfig?.marginRight);
+    const marginBottom = Number(currentConfig?.marginBottom);
+    if (typeof source !== "string" || !source.includes("preview-anchor") || !source.includes("located-aggressive") || currentPosition?.width !== PROJECTED_SMALL_DARK_SUPPORT_SIZE || currentPosition?.height !== PROJECTED_SMALL_DARK_SUPPORT_SIZE || currentConfig?.logoSize !== PROJECTED_SMALL_DARK_SUPPORT_SIZE || currentConfig?.alphaVariant || !Number.isFinite(marginRight) || !Number.isFinite(marginBottom) || marginRight < PROJECTED_SMALL_DARK_SUPPORT_MIN_MARGIN || marginRight > PROJECTED_SMALL_DARK_SUPPORT_MAX_MARGIN || marginBottom < PROJECTED_SMALL_DARK_SUPPORT_MIN_MARGIN || marginBottom > PROJECTED_SMALL_DARK_SUPPORT_MAX_MARGIN || originalSpatialScore < PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_SPATIAL || originalGradientScore < PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_GRADIENT || currentSpatialScore < PROJECTED_SMALL_DARK_SUPPORT_MIN_CURRENT_SPATIAL || currentGradientScore < PROJECTED_SMALL_DARK_SUPPORT_MIN_CURRENT_GRADIENT || currentGradientScore > PROJECTED_SMALL_DARK_SUPPORT_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const originalNearBlackRatio = calculateNearBlackRatio(
+      originalImageData,
+      currentPosition
+    );
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (originalNearBlackRatio < PROJECTED_SMALL_DARK_SUPPORT_MIN_ORIGINAL_NEAR_BLACK || currentVisibility?.visible !== true || currentVisibility.visiblePositiveHalo !== true || Number(currentVisibility.positiveHaloLum ?? 0) < PROJECTED_SMALL_DARK_SUPPORT_MIN_POSITIVE_HALO) {
+      return null;
+    }
+    const expansion = PROJECTED_SMALL_DARK_SUPPORT_EXPANSION;
+    const expandedSize = currentPosition.width + expansion * 2;
+    const expandedPosition = {
+      x: currentPosition.x - expansion,
+      y: currentPosition.y - expansion,
+      width: expandedSize,
+      height: expandedSize
+    };
+    if (expandedPosition.x < 0 || expandedPosition.y < 0 || expandedPosition.x + expandedPosition.width > originalImageData.width || expandedPosition.y + expandedPosition.height > originalImageData.height) {
+      return null;
+    }
+    const expandedAlphaMap = interpolateAlphaMap(
+      currentAlphaMap,
+      currentPosition.width,
+      expandedSize
+    );
+    const priors = PROJECTED_SMALL_DARK_SUPPORT_PRIOR_RADII.map((radius) => ({
+      radius,
+      imageData: buildPreviewNeighborhoodPrior({
+        previewImageData: originalImageData,
+        position: expandedPosition,
+        radius,
+        relaxationPasses: DARK_SUPPORT_PRIOR_RELAXATION_PASSES
+      })
+    }));
+    let best = null;
+    for (const prior of priors) {
+      const candidateImageData = applyKnown48BoundaryRepair({
+        imageData: currentImageData,
+        priorImageData: prior.imageData,
+        alphaMap: expandedAlphaMap,
+        position: expandedPosition,
+        preset: PROJECTED_SMALL_DARK_SUPPORT_PRESET
+      });
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const residualVisibility = assessWatermarkResidualVisibility({
+        imageData: candidateImageData,
+        position: currentPosition,
+        alphaMap: currentAlphaMap
+      });
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData,
+        alphaMap: currentAlphaMap,
+        position: currentPosition,
+        alphaGain: currentAlphaGain
+      });
+      const expandedArtifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData,
+        alphaMap: expandedAlphaMap,
+        position: expandedPosition,
+        alphaGain: currentAlphaGain
+      });
+      const priorMetrics = priors.map((candidatePrior) => ({
+        radius: candidatePrior.radius,
+        ...measureDarkSupportPriorConvergence({
+          candidateImageData,
+          priorImageData: candidatePrior.imageData,
+          alphaMap: expandedAlphaMap,
+          position: expandedPosition
+        })
+      }));
+      const clipping = measureDarkSupportClipping({
+        originalImageData,
+        candidateImageData,
+        alphaMap: expandedAlphaMap,
+        position: expandedPosition
+      });
+      const boundary = measurePreviewBoundaryMetrics(
+        candidateImageData,
+        originalImageData,
+        expandedPosition
+      );
+      const maximumPriorMeanLuminance = Math.max(
+        ...priorMetrics.map((item) => item.priorMeanLuminance)
+      );
+      const maximumCandidateMeanLuminance = Math.max(
+        ...priorMetrics.map((item) => item.candidateMeanLuminance)
+      );
+      const maximumPriorMeanDelta = Math.max(
+        ...priorMetrics.map((item) => item.meanLuminanceDelta)
+      );
+      const maximumPriorMae = Math.max(
+        ...priorMetrics.map((item) => item.meanAbsoluteDelta)
+      );
+      const maximumPriorWeightedMae = Math.max(
+        ...priorMetrics.map((item) => item.weightedMeanAbsoluteDelta)
+      );
+      const spatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      const gradientImprovement = currentGradientScore - gradientScore;
+      const visualArtifactCost = Number(
+        expandedArtifacts?.visualArtifactCost ?? Infinity
+      );
+      const accepted = Boolean(
+        residualVisibility?.visible === false && Math.abs(spatialScore) <= PROJECTED_SMALL_DARK_SUPPORT_MAX_ABS_SPATIAL && gradientScore <= PROJECTED_SMALL_DARK_SUPPORT_MAX_GRADIENT && spatialImprovement >= PROJECTED_SMALL_DARK_SUPPORT_MIN_ABS_SPATIAL_IMPROVEMENT && gradientImprovement >= PROJECTED_SMALL_DARK_SUPPORT_MIN_GRADIENT_IMPROVEMENT && visualArtifactCost <= PROJECTED_SMALL_DARK_SUPPORT_MAX_ARTIFACT && Number(expandedArtifacts?.newlyClippedRatio ?? Infinity) <= PROJECTED_SMALL_DARK_SUPPORT_MAX_CLIPPED && Number(residualVisibility?.positiveHaloLum ?? Infinity) <= PROJECTED_SMALL_DARK_SUPPORT_MAX_POSITIVE_HALO && clipping.outsideAlphaSupportRatio <= DARK_SUPPORT_MAX_OUTSIDE_ALPHA_CLIP_RATIO && clipping.strongAlphaSupportRatio >= DARK_SUPPORT_MIN_STRONG_ALPHA_CLIP_RATIO && maximumPriorMeanLuminance <= PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MEAN_LUMINANCE && maximumCandidateMeanLuminance <= PROJECTED_SMALL_DARK_SUPPORT_MAX_CANDIDATE_MEAN_LUMINANCE && maximumPriorMeanDelta <= PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MEAN_DELTA && maximumPriorMae <= PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_MAE && maximumPriorWeightedMae <= PROJECTED_SMALL_DARK_SUPPORT_MAX_PRIOR_WEIGHTED_MAE && boundary.normalizedScore <= PROJECTED_SMALL_DARK_SUPPORT_MAX_BOUNDARY_SCORE
+      );
+      if (!accepted) continue;
+      const darkBackgroundSupportConvergence = {
+        accepted: true,
+        mode: "projected-small-dark-support",
+        textureHardRejectResolved: true,
+        supportExpansion: expansion,
+        selectedPriorRadius: prior.radius,
+        priorRadii: [...PROJECTED_SMALL_DARK_SUPPORT_PRIOR_RADII],
+        maximumPriorMeanLuminance,
+        maximumCandidateMeanLuminance,
+        maximumPriorMeanDelta,
+        maximumPriorMae,
+        maximumPriorWeightedMae,
+        boundaryScore: boundary.normalizedScore,
+        clipping
+      };
+      const cost = Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.7 + visualArtifactCost * 0.35;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidateImageData,
+          alphaMap: currentAlphaMap,
+          position: currentPosition,
+          config: currentConfig,
+          alphaGain: currentAlphaGain,
+          spatialScore,
+          gradientScore,
+          residualVisibility,
+          artifacts,
+          expandedArtifacts,
+          spatialImprovement,
+          suppressionGain: originalSpatialScore - spatialScore,
+          darkBackgroundSupportConvergence,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function refineSmallLocatedPriorRepairResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    originalSpatialScore,
+    originalGradientScore,
+    source
+  }) {
+    const projectedSmallDarkSupport = refineProjectedSmallDarkSupportResidual({
+      originalImageData,
+      currentImageData,
+      currentAlphaMap,
+      currentPosition,
+      currentConfig,
+      currentSpatialScore,
+      currentGradientScore,
+      currentAlphaGain,
+      originalSpatialScore,
+      originalGradientScore,
+      source
+    });
+    if (projectedSmallDarkSupport) return projectedSmallDarkSupport;
+    if (typeof source !== "string" || !source.includes("located-aggressive") || currentPosition?.width !== currentPosition?.height || currentPosition.width < SMALL_LOCATED_PRIOR_REPAIR_MIN_SIZE || currentPosition.width > SMALL_LOCATED_PRIOR_REPAIR_MAX_SIZE || currentConfig?.logoSize !== currentPosition.width || originalSpatialScore < SMALL_LOCATED_PRIOR_REPAIR_MIN_ORIGINAL_SPATIAL || originalGradientScore < SMALL_LOCATED_PRIOR_REPAIR_MIN_ORIGINAL_GRADIENT || currentSpatialScore < SMALL_LOCATED_PRIOR_REPAIR_MIN_CURRENT_SPATIAL || currentGradientScore > SMALL_LOCATED_PRIOR_REPAIR_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visibleSpatialResidual !== true) return null;
+    let best = null;
+    const priorByRadius = /* @__PURE__ */ new Map();
+    for (const preset of SMALL_LOCATED_PRIOR_REPAIR_PRESETS) {
+      let priorImageData = priorByRadius.get(preset.radius);
+      if (!priorImageData) {
+        priorImageData = buildPreviewNeighborhoodPrior({
+          previewImageData: currentImageData,
+          position: currentPosition,
+          radius: preset.radius
+        });
+        priorByRadius.set(preset.radius, priorImageData);
+      }
+      const candidateImageData = applyKnown48BoundaryRepair({
+        imageData: currentImageData,
+        priorImageData,
+        alphaMap: currentAlphaMap,
+        position: currentPosition,
+        preset
+      });
+      const spatialScore = computeRegionSpatialCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const gradientScore = computeRegionGradientCorrelation({
+        imageData: candidateImageData,
+        alphaMap: currentAlphaMap,
+        region: {
+          x: currentPosition.x,
+          y: currentPosition.y,
+          size: currentPosition.width
+        }
+      });
+      const spatialImprovement = Math.abs(currentSpatialScore) - Math.abs(spatialScore);
+      if (spatialImprovement < SMALL_LOCATED_PRIOR_REPAIR_MIN_SPATIAL_IMPROVEMENT || spatialScore > SMALL_LOCATED_PRIOR_REPAIR_MAX_SPATIAL || Math.abs(spatialScore) > SMALL_LOCATED_PRIOR_REPAIR_MAX_SPATIAL || gradientScore > SMALL_LOCATED_PRIOR_REPAIR_MAX_GRADIENT) {
+        continue;
+      }
+      const residualVisibility = assessWatermarkResidualVisibility({
+        imageData: candidateImageData,
+        position: currentPosition,
+        alphaMap: currentAlphaMap
+      });
+      if (residualVisibility?.visible !== false) continue;
+      const artifacts = assessRemovalDiffArtifacts({
+        originalImageData,
+        candidateImageData,
+        alphaMap: currentAlphaMap,
+        position: currentPosition,
+        alphaGain: currentAlphaGain
+      });
+      const visualArtifactCost = artifacts?.visualArtifactCost ?? Number.POSITIVE_INFINITY;
+      const newlyClippedRatio = artifacts?.newlyClippedRatio ?? Number.POSITIVE_INFINITY;
+      const darkHaloLum = Math.max(0, -(artifacts?.halo?.deltaLum ?? 0));
+      if (visualArtifactCost > SMALL_LOCATED_PRIOR_REPAIR_MAX_ARTIFACT || newlyClippedRatio > SMALL_LOCATED_PRIOR_REPAIR_MAX_CLIPPED || darkHaloLum > SMALL_LOCATED_PRIOR_REPAIR_MAX_DARK_HALO) {
+        continue;
+      }
+      const cost = Math.abs(spatialScore) + Math.max(0, gradientScore) * 0.7 + visualArtifactCost * 0.35;
+      if (!best || cost < best.cost) {
+        best = {
+          imageData: candidateImageData,
+          alphaMap: currentAlphaMap,
+          position: currentPosition,
+          config: currentConfig,
+          alphaGain: currentAlphaGain,
+          spatialScore,
+          gradientScore,
+          residualVisibility,
+          artifacts,
+          spatialImprovement,
+          suppressionGain: originalSpatialScore - spatialScore,
+          preset,
+          cost
+        };
+      }
+    }
+    return best;
+  }
+  function measureQuantizedBodyResidualProfile({ imageData, priorImageData, alphaMap, position }) {
+    let lowCount = 0;
+    let lowAbsResidualSum = 0;
+    let bodyCount = 0;
+    let bodyResidualSum = 0;
+    let bodyNegativeCount = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = alphaMap[localIndex] ?? 0;
+        const pixelIndex = ((position.y + row) * imageData.width + position.x + col) * 4;
+        const residual = (imageData.data[pixelIndex] + imageData.data[pixelIndex + 1] + imageData.data[pixelIndex + 2] - (priorImageData.data[pixelIndex] + priorImageData.data[pixelIndex + 1] + priorImageData.data[pixelIndex + 2])) / 3;
+        if (alpha < QUANTIZED_BODY_CORRECTION_LOW_ALPHA_MAX) {
+          lowCount++;
+          lowAbsResidualSum += Math.abs(residual);
+        }
+        if (alpha >= QUANTIZED_BODY_CORRECTION_BODY_MIN_ALPHA) {
+          bodyCount++;
+          bodyResidualSum += residual;
+          if (residual < -1) bodyNegativeCount++;
+        }
+      }
+    }
+    return {
+      lowMeanAbsResidual: lowCount > 0 ? lowAbsResidualSum / lowCount : Number.POSITIVE_INFINITY,
+      bodyMeanResidual: bodyCount > 0 ? bodyResidualSum / bodyCount : 0,
+      bodyNegativeRatio: bodyCount > 0 ? bodyNegativeCount / bodyCount : 0
+    };
+  }
+  function applyQuantizedBodyCorrection({ imageData, priorImageData, alphaMap, position }) {
+    const candidate = cloneImageData3(imageData);
+    let changedPixels = 0;
+    for (let row = 0; row < position.height; row++) {
+      for (let col = 0; col < position.width; col++) {
+        const localIndex = row * position.width + col;
+        const alpha = alphaMap[localIndex] ?? 0;
+        if (alpha < QUANTIZED_BODY_CORRECTION_BODY_MIN_ALPHA) continue;
+        const pixelIndex = ((position.y + row) * imageData.width + position.x + col) * 4;
+        const residual = (imageData.data[pixelIndex] + imageData.data[pixelIndex + 1] + imageData.data[pixelIndex + 2] - (priorImageData.data[pixelIndex] + priorImageData.data[pixelIndex + 1] + priorImageData.data[pixelIndex + 2])) / 3;
+        if (residual >= QUANTIZED_BODY_CORRECTION_RESIDUAL_THRESHOLD) continue;
+        for (let channel = 0; channel < 3; channel++) {
+          candidate.data[pixelIndex + channel] = clampChannel2(imageData.data[pixelIndex + channel] + 1);
+        }
+        changedPixels++;
+      }
+    }
+    return {
+      imageData: candidate,
+      changedPixels
+    };
+  }
+  function scoreQuantizedBodyCorrectionImage({
+    originalImageData,
+    imageData,
+    alphaMap,
+    position,
+    alphaGain,
+    baselineGradientScore
+  }) {
+    const spatialScore = computeRegionSpatialCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const gradientScore = computeRegionGradientCorrelation({
+      imageData,
+      alphaMap,
+      region: { x: position.x, y: position.y, size: position.width }
+    });
+    const residualVisibility = assessWatermarkResidualVisibility({
+      imageData,
+      position,
+      alphaMap
+    });
+    const calibratedVisibility = assessCalibratedWatermarkResidualVisibility({
+      imageData,
+      originalImageData,
+      position,
+      alphaMap,
+      alphaGain
+    });
+    const nearBlackRatio = calculateNearBlackRatio(imageData, position);
+    const baselineNearBlackRatio = calculateNearBlackRatio(originalImageData, position);
+    const artifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: imageData,
+      alphaMap,
+      position,
+      alphaGain
+    });
+    const darkHaloLum = Math.max(0, -(artifacts?.halo?.deltaLum ?? 0));
+    const visualArtifactCost = artifacts?.visualArtifactCost ?? 0;
+    const balancedVisual = scoreBalancedVisualCandidate({
+      processedSpatial: spatialScore,
+      processedGradient: gradientScore,
+      nearBlackIncrease: nearBlackRatio - baselineNearBlackRatio,
+      newlyClippedRatio: artifacts?.newlyClippedRatio,
+      darkHaloLum,
+      visualArtifactCost,
+      gradientIncrease: Number.isFinite(baselineGradientScore) ? gradientScore - baselineGradientScore : 0
+    });
+    return {
+      spatialScore,
+      gradientScore,
+      residualVisibility,
+      calibratedVisibility,
+      artifacts,
+      darkHaloLum,
+      visualArtifactCost,
+      balancedVisual
+    };
+  }
+  function refineQuantizedNegativeBodyResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain
+  }) {
+    if (currentPosition?.width !== QUANTIZED_BODY_CORRECTION_SIZE || currentPosition?.height !== QUANTIZED_BODY_CORRECTION_SIZE || currentConfig?.logoSize !== QUANTIZED_BODY_CORRECTION_SIZE || currentConfig?.marginRight !== QUANTIZED_BODY_CORRECTION_MARGIN || currentConfig?.marginBottom !== QUANTIZED_BODY_CORRECTION_MARGIN || currentSpatialScore > QUANTIZED_BODY_CORRECTION_MAX_CURRENT_SPATIAL || currentGradientScore >= QUANTIZED_BODY_CORRECTION_MAX_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true) return null;
+    const priorImageData = buildPreviewNeighborhoodPrior({
+      previewImageData: currentImageData,
+      position: currentPosition,
+      radius: QUANTIZED_BODY_CORRECTION_PRIOR_RADIUS
+    });
+    const profile = measureQuantizedBodyResidualProfile({
+      imageData: currentImageData,
+      priorImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition
+    });
+    if (profile.lowMeanAbsResidual > QUANTIZED_BODY_CORRECTION_LOW_ABS_MAX || profile.bodyMeanResidual > QUANTIZED_BODY_CORRECTION_BODY_MEAN_MAX || profile.bodyNegativeRatio < QUANTIZED_BODY_CORRECTION_BODY_NEGATIVE_RATIO_MIN) {
+      return null;
+    }
+    const beforeScore = scoreQuantizedBodyCorrectionImage({
+      originalImageData,
+      imageData: currentImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    });
+    const correction = applyQuantizedBodyCorrection({
+      imageData: currentImageData,
+      priorImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition
+    });
+    if (correction.changedPixels <= 0) return null;
+    const afterScore = scoreQuantizedBodyCorrectionImage({
+      originalImageData,
+      imageData: correction.imageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain,
+      baselineGradientScore: currentGradientScore
+    });
+    const balancedGain = beforeScore.balancedVisual.score - afterScore.balancedVisual.score;
+    const artifactDelta = afterScore.visualArtifactCost - beforeScore.visualArtifactCost;
+    const clearsVisible = afterScore.calibratedVisibility?.calibratedVisible === false && afterScore.residualVisibility?.visible === false;
+    if (!clearsVisible || balancedGain < QUANTIZED_BODY_CORRECTION_MIN_BALANCED_GAIN || artifactDelta > QUANTIZED_BODY_CORRECTION_MAX_ARTIFACT_INCREASE) {
+      return null;
+    }
+    return {
+      imageData: correction.imageData,
+      changedPixels: correction.changedPixels,
+      profile,
+      spatialScore: afterScore.spatialScore,
+      gradientScore: afterScore.gradientScore,
+      suppressionGain: currentSpatialScore - afterScore.spatialScore,
+      balancedGain,
+      artifactDelta,
+      cost: afterScore.balancedVisual.score,
+      alphaGain: currentAlphaGain
+    };
+  }
+  function resolveRescueAlphaMaps({ size, currentAlphaMap, currentSize, alpha96, getAlphaMap }) {
+    const alphaMaps = [];
+    const addAlphaMap = (alphaMap, source) => {
+      if (!alphaMap || alphaMaps.some((entry) => entry.alphaMap === alphaMap)) return;
+      alphaMaps.push({ alphaMap, source });
+    };
+    if (typeof getAlphaMap === "function") {
+      addAlphaMap(getAlphaMap(size), "provided");
+    }
+    if (size === currentSize) {
+      addAlphaMap(currentAlphaMap, "current");
+    } else {
+      addAlphaMap(interpolateAlphaMap(currentAlphaMap, currentSize, size), "current-interpolated");
+    }
+    if (alpha96 && size !== 96) {
+      addAlphaMap(interpolateAlphaMap(alpha96, 96, size), "alpha96-interpolated");
+    }
+    return alphaMaps;
+  }
+  function refineDarkHaloResidual({
+    originalImageData,
+    currentImageData,
+    currentAlphaMap,
+    currentPosition,
+    currentConfig,
+    currentSpatialScore,
+    currentGradientScore,
+    currentAlphaGain,
+    alpha96,
+    getAlphaMap
+  }) {
+    if (!isKnown48LargeMarginConfig(currentConfig) || !currentPosition || currentPosition.width !== currentPosition.height || currentSpatialScore > DARK_HALO_RESCUE_MAX_CURRENT_SPATIAL || Math.abs(currentGradientScore) > DARK_HALO_RESCUE_MAX_ABS_CURRENT_GRADIENT) {
+      return null;
+    }
+    const currentVisibility = assessWatermarkResidualVisibility({
+      imageData: currentImageData,
+      position: currentPosition,
+      alphaMap: currentAlphaMap
+    });
+    if (currentVisibility?.visible !== true || currentVisibility.visiblePositiveHalo === true) {
+      return null;
+    }
+    const currentArtifacts = assessRemovalDiffArtifacts({
+      originalImageData,
+      candidateImageData: currentImageData,
+      alphaMap: currentAlphaMap,
+      position: currentPosition,
+      alphaGain: currentAlphaGain
+    });
+    const currentDarkHaloLum = Math.max(0, -(currentArtifacts?.halo?.deltaLum ?? 0));
+    if (currentDarkHaloLum < DARK_HALO_RESCUE_MIN_DARK_HALO_LUM) return null;
+    const currentScore = scoreBalancedVisualCandidate({
+      processedSpatial: currentSpatialScore,
+      processedGradient: currentGradientScore,
+      newlyClippedRatio: currentArtifacts?.newlyClippedRatio,
+      darkHaloLum: currentDarkHaloLum,
+      visualArtifactCost: currentArtifacts?.visualArtifactCost
+    }).score;
+    let best = null;
+    for (const config of DARK_HALO_RESCUE_CONFIGS) {
+      const size = config.logoSize;
+      const alphaMaps = resolveRescueAlphaMaps({
+        size,
+        currentAlphaMap,
+        currentSize: currentPosition.width,
+        alpha96,
+        getAlphaMap
+      });
+      if (alphaMaps.length === 0) continue;
+      const position = {
+        x: originalImageData.width - config.marginRight - size,
+        y: originalImageData.height - config.marginBottom - size,
+        width: size,
+        height: size
+      };
+      if (position.x < 0 || position.y < 0 || position.x + position.width > originalImageData.width || position.y + position.height > originalImageData.height) {
+        continue;
+      }
+      for (const alphaEntry of alphaMaps) {
+        const { alphaMap } = alphaEntry;
+        const originalSpatial = computeRegionSpatialCorrelation({
+          imageData: originalImageData,
+          alphaMap,
+          region: { x: position.x, y: position.y, size }
+        });
+        const originalGradient = computeRegionGradientCorrelation({
+          imageData: originalImageData,
+          alphaMap,
+          region: { x: position.x, y: position.y, size }
+        });
+        for (const alphaGain of DARK_HALO_RESCUE_GAINS) {
+          for (const logoValue of DARK_HALO_RESCUE_LOGO_VALUES) {
+            const candidate = scoreKnown48AntiTemplateRescueCandidate({
+              originalImageData,
+              alphaMap,
+              position,
+              alphaGain,
+              logoValue,
+              baselineGradientScore: currentGradientScore,
+              maxSpatial: 0.18,
+              maxVisualArtifact: DARK_HALO_RESCUE_MAX_VISUAL_ARTIFACT
+            });
+            if (!candidate) continue;
+            const darkHaloLum = Math.max(0, -(candidate.artifacts?.halo?.deltaLum ?? 0));
+            const newlyClippedRatio = candidate.artifacts?.newlyClippedRatio ?? 0;
+            if (darkHaloLum > DARK_HALO_RESCUE_MAX_DARK_HALO_LUM || newlyClippedRatio > DARK_HALO_RESCUE_MAX_NEWLY_CLIPPED_RATIO) {
+              continue;
+            }
+            if (!best || candidate.cost < best.cost) {
+              best = {
+                ...candidate,
+                alphaMapSource: alphaEntry.source,
+                originalSpatialScore: originalSpatial,
+                originalGradientScore: originalGradient,
+                suppressionGain: originalSpatial - candidate.spatialScore
+              };
+            }
+          }
+        }
+      }
+    }
+    if (!best) return null;
+    if (best.cost > currentScore - DARK_HALO_RESCUE_MIN_BALANCED_GAIN) return null;
+    return best;
+  }
+  function createAcceptedPipelineMetrics() {
+    return {
+      calculateNearBlackRatio,
+      computeRegionGradientCorrelation,
+      createRegionCorrelationMetrics,
+      measureOuterBorderLuminanceStd,
+      assessWatermarkResidualVisibility
+    };
+  }
+  function createAcceptedPipelineGates() {
+    return {
+      shouldRecalibrateAlphaStrength,
+      shouldApplyPreviewSmoothBackgroundCleanup,
+      shouldSkipLocatedAggressiveForCleanCanonical96
+    };
+  }
+  function createAcceptedPipelineExecutorConfig() {
+    return {
+      maxNearBlackRatioIncrease: MAX_NEAR_BLACK_RATIO_INCREASE2,
+      outlineConfig: {
+        outlineRefinementThreshold: OUTLINE_REFINEMENT_THRESHOLD,
+        outlineRefinementMinGain: OUTLINE_REFINEMENT_MIN_GAIN,
+        subpixelRefineShifts: SUBPIXEL_REFINE_SHIFTS,
+        subpixelRefineScales: SUBPIXEL_REFINE_SCALES,
+        minGradientImprovement: 0.04,
+        maxSpatialDrift: 0.08
+      },
+      repairCleanupConfig: {
+        previewEdgeCleanupMaxAppliedPasses: PREVIEW_EDGE_CLEANUP_MAX_APPLIED_PASSES,
+        previewEdgeCleanupMinGradientImprovement: PREVIEW_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT,
+        previewEdgeCleanupMaxSpatialDrift: PREVIEW_EDGE_CLEANUP_MAX_SPATIAL_DRIFT,
+        known48EdgeCleanupMinGradientImprovement: KNOWN_48_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT,
+        known48EdgeCleanupMaxSpatialDrift: KNOWN_48_EDGE_CLEANUP_MAX_SPATIAL_DRIFT,
+        v2SmallEdgeCleanupMinGradientImprovement: V2_SMALL_EDGE_CLEANUP_MIN_GRADIENT_IMPROVEMENT,
+        v2SmallEdgeCleanupMaxSpatialDrift: V2_SMALL_EDGE_CLEANUP_MAX_SPATIAL_DRIFT,
+        known48FlatFillMaxAppliedPasses: KNOWN_48_FLAT_FILL_MAX_APPLIED_PASSES,
+        known48FlatFillMinGradient: KNOWN_48_FLAT_FILL_MIN_GRADIENT,
+        strongUndersizedFlatFillMinGradient: STRONG_UNDERSIZED_FLAT_FILL_MIN_GRADIENT,
+        known48FlatFillMinGradientImprovement: KNOWN_48_FLAT_FILL_MIN_GRADIENT_IMPROVEMENT,
+        known48FlatFillSecondPassMinGradientImprovement: KNOWN_48_FLAT_FILL_SECOND_PASS_MIN_GRADIENT_IMPROVEMENT
+      }
+    };
+  }
+  function hasSameLocalAlphaPosition(left, right) {
+    return Boolean(
+      left && right && left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+    );
+  }
+  function findSelectedLocalAlphaTrial({ result, instrumentation }) {
+    const stage = result?.meta?.alphaAdjustmentStages?.find(
+      (item) => item.stage === "evidence-gated-local-alpha-search"
+    );
+    if (!stage) return null;
+    const candidates = instrumentation.acceptedTrials.filter((trial) => hasSameLocalAlphaPosition(trial.position, result.meta.position) && Math.abs(trial.alphaGain - stage.toAlphaGain) <= 1e-9);
+    if (candidates.length !== 1) return null;
+    const selected = candidates.reduce((best, trial) => {
+      const distance = Math.abs(trial.spatialScore - stage.afterSpatialScore) + Math.abs(trial.gradientScore - stage.afterGradientScore);
+      if (!best || distance < best.distance) return { trial, stage, distance };
+      return best;
+    }, null);
+    return selected?.distance <= 1e-9 ? selected : null;
+  }
+  function attachLocalAlphaSearchDiagnostics({
+    result,
+    instrumentation
+  }) {
+    if (!instrumentation) return result;
+    if (result?.debugTimings) {
+      Object.assign(result.debugTimings, {
+        localAlphaSearchTrialCount: instrumentation.trialCount,
+        localAlphaSearchTrialAllocatedPixels: instrumentation.trialAllocatedPixels,
+        localAlphaSearchMaxTrialBufferPixels: instrumentation.maxTrialBufferPixels,
+        localAlphaSearchTrialFullImageCloneCount: instrumentation.trialFullImageCloneCount,
+        localAlphaSearchFullImageMaterializationCount: instrumentation.fullImageMaterializationCount,
+        darkSupportSearchTrialCount: instrumentation.darkSupportTrialCount,
+        darkSupportSearchAcceptedTrialCount: instrumentation.darkSupportAcceptedTrialCount,
+        darkSupportSearchBestProbe: instrumentation.darkSupportBestProbe
+      });
+    }
+    const selected = findSelectedLocalAlphaTrial({ result, instrumentation });
+    if (!selected || !result?.imageData) return result;
+    const finalDamageSafe = typeof result.meta.decisionPath?.alphaTrial?.damage?.safe === "boolean" ? result.meta.decisionPath.alphaTrial.damage.safe : result.meta.qualitySignals?.damageWarning !== true;
+    const darkBackgroundSupportConvergence = result.meta.qualitySignals?.darkBackgroundSupportConvergence?.accepted === true ? result.meta.qualitySignals.darkBackgroundSupportConvergence : null;
+    const riskResolution = finalDamageSafe ? selected.trial.damageSafe ? null : "repaired-downstream" : darkBackgroundSupportConvergence ? "dark-background-support-converged" : "best-effort-damage";
+    const localAlphaSearch = {
+      trigger: selected.trial.trigger,
+      acceptedTrialDamageSafe: selected.trial.damageSafe,
+      finalDamageSafe,
+      riskResolution
+    };
+    return {
+      ...result,
+      meta: {
+        ...result.meta,
+        qualitySignals: {
+          ...result.meta.qualitySignals,
+          localAlphaSearch,
+          darkBackgroundSupportConvergence
+        }
+      }
+    };
+  }
+  function createAcceptedPipelineRefiners({
+    localAlphaSearchInstrumentation = null
+  } = {}) {
+    return {
+      recalibrateAlphaStrength,
+      refineLargeMargin48ProfileAlphaRescue,
+      fineTuneEvidenceGatedLocalAlpha: (input) => fineTuneEvidenceGatedLocalAlpha({
+        ...input,
+        instrumentation: localAlphaSearchInstrumentation
+      }),
+      recalibrateOverSubtractedAlpha,
+      fineTuneDarkCatalogAlpha,
+      fineTuneWeakPositiveResidualAlpha,
+      applyPreviewSmoothBackgroundCleanup,
+      refineSubpixelOutline,
+      refinePreviewResidualEdge,
+      refineKnown48FlatBackgroundResidual,
+      refineKnown48LumaEdgeResidual,
+      refineNewMargin96FlatBackgroundResidual,
+      refineSmallPreviewAnchorCandidate,
+      refineSmallFixedLocalAnchorGeometry,
+      refineLocatedAggressiveRemoval,
+      refineCanonical96PositiveHaloResidual,
+      refineSmoothLocatedResidualWithEstimatedPrior,
+      refineNewMargin96SmoothEdgeResidual,
+      refineNewMargin96VariantResidual,
+      refineKnown48AntiTemplateResidual,
+      refineKnown48PowerProfileResidual,
+      refineKnown48PositiveResidualRebalance,
+      refineKnown48SmallMarginPriorRepairResidual,
+      refineSmallLocatedPriorRepairResidual,
+      refineKnown48BoundaryRepairResidual,
+      refineDarkHaloResidual,
+      refineQuantizedNegativeBodyResidual,
+      refineKnown48MidCoreBiasResidual
+    };
+  }
+  function createAcceptedPipelineDependencies({
+    localAlphaSearchInstrumentation = null
+  } = {}) {
+    return {
+      metrics: createAcceptedPipelineMetrics(),
+      gates: createAcceptedPipelineGates(),
+      config: createAcceptedPipelineExecutorConfig(),
+      refiners: createAcceptedPipelineRefiners({
+        localAlphaSearchInstrumentation
+      })
+    };
+  }
+  var watermarkProcessorTestInternals = Object.freeze({
+    createSmallAnchorRelocationGeometry,
+    buildSmallAnchorRelocationScratchCandidate,
+    materializeSmallAnchorRelocationCandidate
+  });
+  function processWatermarkImageData(imageData, options = {}) {
+    const instrumentationByCandidateId = /* @__PURE__ */ new Map();
+    const result = runImageWatermarkPipeline(createImageWatermarkPipelineRequest({
+      imageData,
+      options,
+      nowMs,
+      cloneImageData: cloneImageData3,
+      alphaGainCandidates: ALPHA_GAIN_CANDIDATES,
+      alphaPriorityGains: STANDARD_ALPHA_PRIORITY_GAINS,
+      createAcceptedPipelineDependencies: (hypothesis) => {
+        const instrumentation = createLocalAlphaSearchInstrumentation({
+          debugEnabled: options.debugTimings === true
+        });
+        if (hypothesis?.id != null) {
+          instrumentationByCandidateId.set(hypothesis.id, instrumentation);
+        }
+        return createAcceptedPipelineDependencies({
+          localAlphaSearchInstrumentation: instrumentation
+        });
+      },
+      cleanupConfig: createImageWatermarkPipelineCleanupConfig({
+        previewEdgeCleanupMaxSize: PREVIEW_EDGE_CLEANUP_MAX_SIZE,
+        known48EdgeCleanupMinSize: KNOWN_48_EDGE_CLEANUP_MIN_SIZE,
+        known48EdgeCleanupMaxSize: KNOWN_48_EDGE_CLEANUP_MAX_SIZE,
+        v2SmallEdgeCleanupSize: V2_SMALL_EDGE_CLEANUP_SIZE,
+        v2SmallEdgeCleanupSizeTolerance: V2_SMALL_EDGE_CLEANUP_SIZE_TOLERANCE
+      }),
+      visualPostProcessingEnabled: ENABLE_VISUAL_POST_PROCESSING
+    }));
+    const selectedCandidateId = result?.meta?.selectedCandidate?.id;
+    return attachLocalAlphaSearchDiagnostics({
+      result,
+      instrumentation: selectedCandidateId == null ? null : instrumentationByCandidateId.get(selectedCandidateId) ?? null
+    });
+  }
+
+  // src/core/watermarkEngine.js
+  function createRuntimeCanvas(width, height) {
+    if (typeof OffscreenCanvas !== "undefined") {
+      return new OffscreenCanvas(width, height);
+    }
+    if (typeof document !== "undefined") {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      return canvas;
+    }
+    throw new Error("Canvas runtime not available");
+  }
+  function getCanvasContext2D(canvas) {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      throw new Error("Failed to get 2D canvas context");
+    }
+    return ctx;
+  }
+  var WatermarkEngine = class _WatermarkEngine {
+    constructor() {
+      this.alphaMaps = {};
+    }
+    static async create() {
+      return new _WatermarkEngine();
+    }
+    /**
+     * Get alpha map from background captured image based on watermark size
+     * @param {number} size - Watermark size (48 or 96)
+     * @returns {Promise<Float32Array>} Alpha map
+     */
+    async getAlphaMap(size) {
+      if (size === "96-20260520" || size === "96-outline-light" || size === "96-outline-dark" || size === "36-v2") {
+        if (this.alphaMaps[size]) return this.alphaMaps[size];
+        const alphaMap2 = getEmbeddedAlphaMap(size);
+        if (!alphaMap2) {
+          throw new Error(`Missing embedded alpha map for size ${size}`);
+        }
+        this.alphaMaps[size] = alphaMap2;
+        return alphaMap2;
+      }
+      if (size !== 48 && size !== 96) {
+        if (this.alphaMaps[size]) return this.alphaMaps[size];
+        const alpha96 = await this.getAlphaMap(96);
+        const interpolated = interpolateAlphaMap(alpha96, 96, size);
+        this.alphaMaps[size] = interpolated;
+        return interpolated;
+      }
+      if (this.alphaMaps[size]) {
+        return this.alphaMaps[size];
+      }
+      const alphaMap = getEmbeddedAlphaMap(size);
+      if (!alphaMap) {
+        throw new Error(`Missing embedded alpha map for size ${size}`);
+      }
+      this.alphaMaps[size] = alphaMap;
+      return alphaMap;
+    }
+    /**
+     * Remove watermark from image based on watermark size
+     * @param {HTMLImageElement|HTMLCanvasElement} image - Input image
+     * @returns {Promise<HTMLCanvasElement>} Processed canvas
+     */
+    async removeWatermarkFromImage(image, options = {}) {
+      const now = () => {
+        if (typeof globalThis.performance?.now === "function") {
+          return globalThis.performance.now();
+        }
+        return Date.now();
+      };
+      const canvas = createRuntimeCanvas(image.width, image.height);
+      const ctx = getCanvasContext2D(canvas);
+      const drawStartedAt = now();
+      ctx.drawImage(image, 0, 0);
+      const drawMs = now() - drawStartedAt;
+      const readStartedAt = now();
+      const originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const getImageDataMs = now() - readStartedAt;
+      const alpha48 = await this.getAlphaMap(48);
+      const alpha96 = await this.getAlphaMap(96);
+      const alpha96NewMargin = await this.getAlphaMap("96-20260520");
+      const alpha96OutlineLight = await this.getAlphaMap("96-outline-light");
+      const alpha96OutlineDark = await this.getAlphaMap("96-outline-dark");
+      await this.getAlphaMap("36-v2");
+      const processingStartedAt = now();
+      const result = processWatermarkImageData(originalImageData, {
+        alpha48,
+        alpha96,
+        alpha96Variants: {
+          "20260520": alpha96NewMargin,
+          "outline-light": alpha96OutlineLight,
+          "outline-dark": alpha96OutlineDark
+        },
+        adaptiveMode: options.adaptiveMode,
+        debugTimings: options.debugTimings === true,
+        getAlphaMap: (size) => this.alphaMaps[size] || interpolateAlphaMap(alpha96, 96, size)
+      });
+      const processWatermarkImageDataMs = now() - processingStartedAt;
+      const writeStartedAt = now();
+      ctx.putImageData(result.imageData, 0, 0);
+      const putImageDataMs = now() - writeStartedAt;
+      canvas.__watermarkMeta = result.meta;
+      canvas.__watermarkTiming = {
+        drawMs,
+        getImageDataMs,
+        processWatermarkImageDataMs,
+        putImageDataMs,
+        processor: result.debugTimings ?? null
+      };
+      return canvas;
+    }
+    /**
+     * Get watermark information (for display)
+     * @param {number} imageWidth - Image width
+     * @param {number} imageHeight - Image height
+     * @returns {Object} Watermark information {size, position, config}
+     */
+    getWatermarkInfo(imageWidth, imageHeight) {
+      const config = detectWatermarkConfig(imageWidth, imageHeight);
+      const position = calculateWatermarkPosition(imageWidth, imageHeight, config);
+      return {
+        size: config.logoSize,
+        position,
+        config
+      };
+    }
+  };
+
+  // src/shared/imageProcessing.js
+  function loadImageFromObjectUrl(objectUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Failed to decode Gemini image blob"));
+      image.src = objectUrl;
+    });
+  }
+  async function loadImageElementFromBlob(blob) {
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      return await loadImageFromObjectUrl(objectUrl);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+  async function loadRenderableFromBlobFallback(blob, originalError) {
+    if (typeof createImageBitmap !== "function") {
+      throw originalError;
+    }
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      throw originalError;
+    }
+  }
+  async function loadImageFromBlob(blob) {
+    try {
+      return await loadImageElementFromBlob(blob);
+    } catch (error) {
+      return await loadRenderableFromBlobFallback(blob, error);
+    }
+  }
+  function withProcessorPath(meta, processorPath) {
+    const normalizedMeta = meta && typeof meta === "object" ? { ...meta } : null;
+    if (processorPath != null) {
+      return {
+        ...normalizedMeta || {},
+        processorPath
+      };
+    }
+    return normalizedMeta;
+  }
+  function normalizeProcessorResult(result, processorPath = "main-thread") {
+    return {
+      processedBlob: result?.processedBlob || null,
+      processedMeta: withProcessorPath(result?.processedMeta || null, processorPath)
+    };
+  }
+  function normalizeProcessingOptions(options = {}) {
+    const { maxPasses: _ignoredMaxPasses, ...normalizedOptions } = options && typeof options === "object" ? options : {};
+    return {
+      adaptiveMode: "always",
+      ...normalizedOptions
+    };
+  }
+  function createCachedEngineGetter({
+    createEngine = () => WatermarkEngine.create()
+  } = {}) {
+    let enginePromise = null;
+    return async function getEngine() {
+      if (!enginePromise) {
+        enginePromise = Promise.resolve(createEngine()).catch((error) => {
+          enginePromise = null;
+          throw error;
+        });
+      }
+      return enginePromise;
+    };
+  }
+  function createCachedCanvasProcessor({
+    createEngine = () => WatermarkEngine.create(),
+    getEngine = null
+  } = {}) {
+    const resolveEngine = typeof getEngine === "function" ? getEngine : createCachedEngineGetter({ createEngine });
+    return async function processRenderableToCanvas(image, options = {}) {
+      const engine = await resolveEngine();
+      const normalizedOptions = normalizeProcessingOptions(options);
+      return engine.removeWatermarkFromImage(image, normalizedOptions);
+    };
+  }
+  function createCachedImageProcessor({
+    createEngine = () => WatermarkEngine.create(),
+    encodeCanvas = canvasToBlob,
+    processorPath = "main-thread"
+  } = {}) {
+    const processRenderableToCanvas = createCachedCanvasProcessor({ createEngine });
+    return async function processRenderable(image, options = {}) {
+      const canvas = await processRenderableToCanvas(image, options);
+      return {
+        processedBlob: await encodeCanvas(canvas),
+        processedMeta: withProcessorPath(canvas.__watermarkMeta || null, processorPath)
+      };
+    };
+  }
+  function createMainThreadBlobProcessor({
+    loadRenderable = loadImageFromBlob,
+    processRenderable = createCachedImageProcessor()
+  } = {}) {
+    return async function processBlobOnMainThread(blob, options = {}) {
+      const image = await loadRenderable(blob);
+      return processRenderable(image, options);
+    };
+  }
+  function createSharedBlobProcessor({
+    processMainThread = createMainThreadBlobProcessor(),
+    getWorkerProcessor = null,
+    onWorkerError = null
+  } = {}) {
+    return async function processWithBestPath(blob, options = { adaptiveMode: "always" }) {
+      const normalizedOptions = normalizeProcessingOptions(options);
+      const processWorker = typeof getWorkerProcessor === "function" ? getWorkerProcessor() : null;
+      if (typeof processWorker === "function") {
+        try {
+          return await processWorker(blob, normalizedOptions);
+        } catch (error) {
+          onWorkerError?.(error);
+        }
+      }
+      return normalizeProcessorResult(
+        await processMainThread(blob, normalizedOptions),
+        "main-thread"
+      );
+    };
+  }
+  var processWatermarkBlobOnMainThread = createMainThreadBlobProcessor();
+  var processWatermarkBlobWithBestPath = createSharedBlobProcessor();
+  async function processWatermarkBlob(blob, options = { adaptiveMode: "always" }) {
+    return processWatermarkBlobWithBestPath(blob, options);
+  }
+  async function removeWatermarkFromBlob(blob, options = { adaptiveMode: "always" }) {
+    const result = await processWatermarkBlob(blob, options);
+    return result.processedBlob;
+  }
+
+  // src/shared/pageImageReplacement.js
+global.GeminiEngine = {
+  WatermarkEngine,
+  removeWatermarkFromBlob,
+  processWatermarkBlob,
+  createCachedCanvasProcessor,
+  processRenderableToCanvas: createCachedCanvasProcessor()
+};
+})(window);

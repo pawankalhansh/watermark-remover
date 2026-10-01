@@ -375,9 +375,20 @@
         }
 
         /**
-         * Detects and removes watermark on a single frame using OpenCV.js
+         * Detects and removes watermark on a single frame using GeminiEngine (Reverse Alpha Blending)
+         * with fallback to OpenCV.js
          */
         async _removeWatermark(canvas, timestamp, duration) {
+            // First attempt to use the authentic Reverse Alpha Blending engine
+            if (global.GeminiEngine && typeof global.GeminiEngine.processRenderableToCanvas === 'function') {
+                try {
+                    const cleanedCanvas = await global.GeminiEngine.processRenderableToCanvas(canvas, { adaptiveMode: "always" });
+                    return new VideoFrame(cleanedCanvas, { timestamp, duration });
+                } catch (err) {
+                    console.warn("[VideoProcessor] GeminiEngine frame process fallback to OpenCV:", err);
+                }
+            }
+
             const ctx = canvas.getContext('2d');
             const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             
@@ -441,9 +452,6 @@
                         maskData[i] = 255;
                     }
                 }
-                
-                // Edge blending / morphological operations on mask could be applied here
-                // e.g. cv.dilate(mask, mask, cv.Mat.ones(3, 3, cv.CV_8U));
 
                 dst = new cv.Mat();
                 cv.inpaint(srcRGB, mask, dst, 5, cv.INPAINT_TELEA);

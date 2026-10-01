@@ -3,602 +3,468 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Watermark Remover — Free Browser Watermark Removal</title>
-    <meta name="description" content="Remove watermarks from your images instantly using free browser-based repair. No signup required. Supports JPG, PNG, WEBP formats. Get clean, watermark-free images in seconds." />
-    <meta name="keywords" content="remove watermark, watermark remover, remove watermark from image, watermark free, watermark removal tool, free watermark remover" />
-    <meta name="author" content="Watermark Remover" />
-    <meta name="robots" content="index, follow" />
-
-    <!-- Open Graph -->
-    <meta property="og:title" content="Watermark Remover — Free Browser Watermark Removal" />
-    <meta property="og:description" content="Remove watermarks from your images instantly in your browser. Free, no signup, high quality results." />
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://yourusername.github.io/watermark-remover/" />
-    <meta property="og:site_name" content="Watermark Remover" />
-
-    <!-- Twitter Card -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Watermark Remover — Free Browser Watermark Removal" />
-    <meta name="twitter:description" content="Remove watermarks from your images instantly in your browser. Free, no signup." />
+    <title>Gemini Watermark Remover — Free Online Image & Video Watermark Remover for Gemini & Veo 3</title>
+    <meta name="description" content="Free online Gemini watermark cleaner for images, videos, logos, and star overlays. Mathematically exact reverse alpha blending for Gemini and Veo 3. 100% local, private processing." />
+    <meta name="keywords" content="Gemini watermark remover, remove Gemini watermark, Veo 3 watermark remover, Gemini video watermark remover, reverse alpha blending, remove watermark without blur" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✨</text></svg>" />
 
-    <link rel="stylesheet" href="css/style.css" />
+    <!-- Google Fonts: Plus Jakarta Sans & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="css/style.css?v=10" />
+
+    <!-- Core Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.5.4-release.1/dist/opencv.js" async></script>
+    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
 </head>
-<body>
+<body class="site-body">
 
     <!-- ========== HEADER ========== -->
-    <header class="header" id="header">
-        <div class="container header__inner">
-            <a href="#" class="header__logo" id="logo">
-                <span class="header__logo-icon">✨</span>
-                WatermarkRemover
-            </a>
+    <header class="site-header" id="siteHeader">
+        <div class="header-container">
+            <div class="header-left">
+                <a href="#" class="header-logo" id="logoLink">
+                    <svg class="header-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M16 2L20.2 11.8L30 16L20.2 20.2L16 30L11.8 20.2L2 16L11.8 11.8L16 2Z" fill="url(#sparkle-grad)" />
+                        <defs>
+                            <linearGradient id="sparkle-grad" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#3B82F6"/>
+                                <stop offset="0.5" stop-color="#8B5CF6"/>
+                                <stop offset="1" stop-color="#EC4899"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <span class="header-logo-text">GeminiWatermarkRemover<span class="domain-tld">.io</span></span>
+                </a>
 
-            <nav class="header__nav" id="desktopNav">
-                <a href="#how-it-works" class="header__nav-link">How it Works</a>
-                <a href="#features" class="header__nav-link">Features</a>
-                <a href="#demo" class="header__nav-link">Demo</a>
-                <a href="#reviews" class="header__nav-link">Reviews</a>
-                <a href="#faq" class="header__nav-link">FAQ</a>
-            </nav>
+                <nav class="header-nav">
+                    <div class="nav-dropdown">
+                        <button class="nav-link dropdown-toggle" type="button">
+                            Tools
+                            <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="m6 9 6 6 6-6"/>
+                            </svg>
+                        </button>
+                        <div class="dropdown-menu">
+                            <a href="#hero" class="dropdown-item" id="navItemImage">
+                                <span class="item-title">Image Watermark Remover</span>
+                                <span class="item-desc">Lossless reverse alpha blending</span>
+                            </a>
+                            <a href="#hero" class="dropdown-item" id="navItemVideo">
+                                <span class="item-title">Video Watermark Remover</span>
+                                <span class="item-desc">Frame-by-frame Veo 3 & Gemini clips</span>
+                            </a>
+                            <a href="https://github.com/GargantuaX/gemini-watermark-remover" target="_blank" rel="noopener" class="dropdown-item">
+                                <span class="item-title">Userscript & Chrome Ext</span>
+                                <span class="item-desc">Auto-clean on gemini.google.com</span>
+                            </a>
+                        </div>
+                    </div>
 
-            <div class="header__actions">
-                <a href="#" class="btn btn--ghost">Login</a>
-                <a href="#hero" class="btn btn--primary btn--large" id="headerCta">Register</a>
-                <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
-                    <span class="hamburger__line"></span>
-                    <span class="hamburger__line"></span>
-                    <span class="hamburger__line"></span>
-                </button>
+                    <a href="#hero" class="nav-link nav-link--pill" id="quickVideoLink">
+                        Gemini Video Remover
+                    </a>
+                </nav>
+            </div>
+
+            <div class="header-right">
+                <a href="https://github.com/GargantuaX/gemini-watermark-remover" target="_blank" rel="noopener noreferrer" class="btn-github-stars" title="View on GitHub">
+                    <svg class="github-icon" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    <span class="stars-label">⭐ 5k Stars</span>
+                </a>
+
+                <a href="https://chromewebstore.google.com/detail/gemini-watermark-remover/cjlmnfcfnofnglkphbcdclbpimdjkmdf" target="_blank" rel="noopener noreferrer" class="btn-chrome-ext">
+                    <svg class="chrome-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="9"/>
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M12 9h8.4M14.6 13.5l-4.2 7.3M9.4 13.5l-4.2-7.3"/>
+                    </svg>
+                    <span>Install Chrome Extension</span>
+                </a>
             </div>
         </div>
-
-        <!-- Mobile Navigation -->
-        <nav class="mobile-nav" id="mobileNav">
-            <a href="#how-it-works" class="mobile-nav__link">How it Works</a>
-            <a href="#features" class="mobile-nav__link">Features</a>
-            <a href="#demo" class="mobile-nav__link">Demo</a>
-            <a href="#reviews" class="mobile-nav__link">Reviews</a>
-            <a href="#faq" class="mobile-nav__link">FAQ</a>
-            <div class="mobile-nav__actions">
-                <a href="#hero" class="btn btn--primary btn--large">Try Free Now</a>
-            </div>
-        </nav>
     </header>
 
     <!-- ========== HERO SECTION ========== -->
-    <section class="hero" id="hero">
-        <div class="container">
-            <div class="hero__content">
-                <div class="hero__badge">
-                    <span class="hero__badge-dot"></span>
-                    Free Browser-Based Tool — No Signup Required
-                </div>
+    <main class="hero-section" id="hero">
+        <div class="hero-container">
 
-                <h1 class="hero__title">
-                    <span class="gradient-text">Watermark</span> Remover
-                </h1>
-
-                <p class="hero__subtitle">
-                    Remove watermarks from images and videos — all processing happens in your browser.
+            <!-- Title & Subtitle (Dynamic based on Tab) -->
+            <div class="hero-header">
+                <h1 class="hero-title" id="heroTitle">Gemini Watermark Remover</h1>
+                <p class="hero-subtitle" id="heroSubtitle">
+                    Free online Gemini watermark cleaner for images, logos, and star overlays.<br>
+                    No upload, no sign-up — 100% local, private processing.
                 </p>
+            </div>
 
-                <div class="hero__panel">
-                    <!-- Mode Toggle Tabs -->
-                    <div class="mode-tabs" id="modeTabs">
-                        <button class="mode-tabs__btn mode-tabs__btn--active" id="modeImage" data-mode="image">
-                            🖼️ Image
-                        </button>
-                        <button class="mode-tabs__btn" id="modeVideo" data-mode="video">
-                            🎬 Video
-                            <span class="mode-tabs__badge">New</span>
-                        </button>
+            <!-- Mode Selector Tabs -->
+            <div class="mode-tabs-wrapper">
+                <div class="mode-tabs" id="modeTabs">
+                    <button class="mode-tab active" id="tabImages" data-mode="image" type="button">
+                        <span class="tab-emoji">🖼️</span>
+                        <span class="tab-text">Images</span>
+                    </button>
+                    <button class="mode-tab" id="tabVideos" data-mode="video" type="button">
+                        <span class="tab-emoji">🎬</span>
+                        <span class="tab-text">Videos</span>
+                        <span class="badge-beta">BETA</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ========== IMAGE WORKSPACE ========== -->
+            <div class="workspace-panel" id="imageWorkspace">
+                <!-- Idle / Upload View with Tilted Sample Cards -->
+                <div class="image-dropzone-layout" id="imageDropzoneLayout">
+                    <!-- Left Tilted Card -->
+                    <div class="tilted-card tilted-card--left" aria-hidden="true">
+                        <div class="tilted-card-inner marble-preview"></div>
                     </div>
 
-                    <!-- Image Upload Zone -->
-                    <div class="upload" id="uploadArea">
-                        <div class="upload__zone" id="uploadZone">
-                            <div class="upload__icon">📤</div>
-                            <h2 class="upload__title">Choose Images</h2>
-                            <p class="upload__subtitle">Or drag and drop files here</p>
-                            <button class="upload__btn" id="uploadBtn" type="button">
-                                Upload Image
-                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                </svg>
+                    <!-- Center Main Upload Card -->
+                    <div class="center-drop-card" id="imageDropCard">
+                        <div class="checkerboard-bg"></div>
+                        <div class="drop-card-content">
+                            <input type="file" id="imageFileInput" class="hidden-file-input" accept="image/png,image/jpeg,image/jpg,image/webp,image/heic" multiple />
+                            <button class="btn-primary-blue" id="btnStartPhotos" type="button">
+                                <span class="plus-icon">+</span> Start with photos
                             </button>
-                            <div class="upload__formats">
-                                <span>Supported:</span>
-                                <span class="upload__format-tag">JPG</span>
-                                <span class="upload__format-tag">JPEG</span>
-                                <span class="upload__format-tag">PNG</span>
-                                <span class="upload__format-tag">WEBP</span>
-                                <span class="upload__format-tag">HEIC*</span>
-                            </div>
-                            <input type="file" class="upload__input" id="fileInput" aria-label="Choose image files" accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple />
+                            <p class="drag-hint-text">or drag images here</p>
                         </div>
-                        <p class="upload__consent">
-                            Images are processed in your browser. HEIC works when your browser can decode it.
-                        </p>
                     </div>
 
-                    <!-- Video Upload Zone (hidden by default) -->
-                    <div class="upload upload--video" id="videoUploadArea" style="display: none;">
-                        <div class="upload__zone" id="videoUploadZone">
-                            <div class="upload__icon">🎬</div>
-                            <h2 class="upload__title">Choose Video</h2>
-                            <p class="upload__subtitle">Or drag and drop video here</p>
-                            <button class="upload__btn" id="videoUploadBtn" type="button">
-                                Upload Video
-                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                </svg>
-                            </button>
-                            <div class="upload__formats">
-                                <span>Supported:</span>
-                                <span class="upload__format-tag">MP4</span>
-                                <span class="upload__format-tag">WEBM</span>
-                                <span class="upload__format-tag">MOV</span>
-                            </div>
-                            <input type="file" class="upload__input" id="videoFileInput" aria-label="Choose video file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" />
-                        </div>
-                        <p class="upload__consent">
-                            Videos are processed frame-by-frame in your browser. Requires Chrome 94+ or Edge 94+.
-                        </p>
-                        <div class="video-compat" id="videoCompat" style="display: none;">
-                            <p class="video-compat__msg">⚠️ Your browser does not support WebCodecs API. Please use Chrome 94+ or Edge 94+.</p>
-                        </div>
+                    <!-- Right Tilted Card -->
+                    <div class="tilted-card tilted-card--right" aria-hidden="true">
+                        <div class="tilted-card-inner storm-preview"></div>
                     </div>
                 </div>
 
-                <!-- Processing State -->
-                <div class="processing" id="processingState">
-                    <div class="processing__spinner"></div>
-                    <h3 class="processing__title">Removing watermark...</h3>
-                    <p class="processing__subtitle">Your browser is repairing the image locally</p>
-                    <div class="progress-bar">
-                        <div class="progress-bar__fill" id="progressFill"></div>
-                    </div>
+                <!-- Image Processing State -->
+                <div class="processing-card" id="imageProcessingCard" style="display: none;">
+                    <div class="processing-spinner"></div>
+                    <h3 class="processing-title">Removing Watermark...</h3>
+                    <p class="processing-desc">Applying mathematically exact Reverse Alpha Blending</p>
                 </div>
 
-                <!-- Result State -->
-                <div class="result" id="resultState">
-                    <div class="result__header">
-                        <h3 class="result__title">✅ Watermark Removed!</h3>
-                        <p class="result__subtitle">Drag the slider to compare before and after</p>
-                        <p class="result__engine" id="resultEngine"></p>
+                <!-- Image Result View -->
+                <div class="result-card" id="imageResultCard" style="display: none;">
+                    <div class="result-card-header">
+                        <span class="result-badge-success">✅ Clean Image Ready</span>
                     </div>
-                    <div class="result__comparison" id="resultComparison">
-                        <img class="result__image result__image--before" id="resultBefore" alt="Original image with watermark" />
-                        <img class="result__image result__image--after" id="resultAfter" alt="Image with watermark removed" />
-                        <div class="result__slider" id="resultSlider">
-                            <div class="result__slider-handle">⟺</div>
-                        </div>
-                        <div class="result__labels">
-                            <span class="result__label">Before</span>
-                            <span class="result__label">After</span>
-                        </div>
-                    </div>
-                    <div class="result__actions">
-                        <button class="btn btn--primary btn--large" id="downloadBtn">
-                            ⬇️ Download Image
-                        </button>
-                        <button class="btn btn--outline btn--large" id="downloadAllBtn">
-                            Download All
-                        </button>
-                        <button class="btn btn--outline btn--large" id="touchUpBtn">
-                            🖌️ Touch Up
-                        </button>
-                        <button class="btn btn--outline btn--large" id="resetBtn">
-                            🔄 Process Another
-                        </button>
-                    </div>
-                    <div class="result__batch" id="batchResults" aria-label="Processed images"></div>
-                </div>
 
-                <!-- Video Result State -->
-                <div class="result result--video" id="videoResultState">
-                    <div class="result__header">
-                        <h3 class="result__title">✅ Video Watermark Removed!</h3>
-                        <p class="result__subtitle" id="videoResultInfo">Processing complete</p>
-                    </div>
-                    <div class="result__video-comparison">
-                        <div class="result__video-pair">
-                            <div class="result__video-box">
-                                <p class="result__video-label">Before</p>
-                                <video class="result__video-player" id="videoOriginal" controls muted></video>
+                    <div class="comparison-container" id="imageComparisonContainer">
+                        <div class="comparison-view comparison-view--side-by-side">
+                            <div class="preview-box">
+                                <span class="preview-tag tag-original">Original</span>
+                                <img id="imageBeforePreview" alt="Original image with watermark" />
                             </div>
-                            <div class="result__video-box">
-                                <p class="result__video-label">After</p>
-                                <video class="result__video-player" id="videoProcessed" controls muted></video>
+                            <div class="preview-box">
+                                <span class="preview-tag tag-cleaned">Cleaned</span>
+                                <img id="imageAfterPreview" alt="Cleaned watermark-free image" />
                             </div>
                         </div>
                     </div>
-                    <div class="result__actions">
-                        <button class="btn btn--primary btn--large" id="videoDownloadBtn">
-                            ⬇️ Download Video
+
+                    <div class="action-buttons-row">
+                        <button class="btn-action-outline" id="btnChooseAnotherImage" type="button">
+                            🔄 Choose Another
                         </button>
-                        <button class="btn btn--outline btn--large" id="videoResetBtn">
-                            🔄 Process Another
+                        <a id="btnDownloadImage" class="btn-action-primary" download="gemini-cleaned.png">
+                            ⬇️ Download Clean Image
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== VIDEO WORKSPACE ========== -->
+            <div class="workspace-panel" id="videoWorkspace" style="display: none;">
+                <!-- Video Upload View -->
+                <div class="video-drop-card" id="videoDropCard">
+                    <div class="video-drop-content">
+                        <div class="video-icon-circle">🎬</div>
+                        <h2 class="video-drop-title">Choose Video</h2>
+                        <p class="video-drop-subtitle">Or drag and drop video here</p>
+                        <input type="file" id="videoFileInput" class="hidden-file-input" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" />
+                        <button class="btn-primary-blue" id="btnUploadVideo" type="button">
+                            Upload Video <span class="plus-icon">+</span>
                         </button>
+                        <div class="supported-formats-pills">
+                            <span class="format-label">Supported:</span>
+                            <span class="pill-format">MP4</span>
+                            <span class="pill-format">WEBM</span>
+                            <span class="pill-format">MOV</span>
+                        </div>
+                        <p class="video-browser-note">Videos are processed frame-by-frame in your browser. Requires Chrome 94+ or Edge 94+.</p>
+                    </div>
+                </div>
+
+                <!-- Video Processing Progress Card -->
+                <div class="video-processing-card" id="videoProcessingCard" style="display: none;">
+                    <div class="processing-spinner"></div>
+                    <h3 class="processing-title" id="videoProgressTitle">Processing Video...</h3>
+                    <p class="processing-desc" id="videoProgressSubtitle">Demuxing & preparing frames...</p>
+                    <div class="progress-bar-track">
+                        <div class="progress-bar-fill" id="videoProgressBar" style="width: 0%;"></div>
+                    </div>
+                    <span class="progress-percent-label" id="videoProgressPercent">0%</span>
+                </div>
+
+                <!-- Video Result View (Side-by-Side Player) -->
+                <div class="video-result-card" id="videoResultCard" style="display: none;">
+                    <div class="video-result-header">
+                        <span class="result-badge-success">✅ Video Watermark Removed!</span>
+                        <p class="video-meta-label" id="videoMetaLabel">Clean video ready</p>
+                    </div>
+
+                    <!-- Side-by-Side Video Players -->
+                    <div class="video-players-grid">
+                        <div class="video-player-card">
+                            <span class="player-tag tag-original">Original</span>
+                            <video id="videoOriginalPlayer" playsinline muted></video>
+                        </div>
+                        <div class="video-player-card">
+                            <span class="player-tag tag-processed">Processed</span>
+                            <video id="videoProcessedPlayer" playsinline></video>
+                        </div>
+                    </div>
+
+                    <!-- Unified Playback Scrubber Bar -->
+                    <div class="unified-player-controls">
+                        <button class="player-btn-play" id="btnSyncPlayPause" type="button" aria-label="Play/Pause">
+                            <svg class="play-icon" id="playIconSvg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                            <svg class="pause-icon" id="pauseIconSvg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none;">
+                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                            </svg>
+                        </button>
+                        <input type="range" class="player-scrubber" id="syncTimelineScrubber" min="0" max="100" value="0" step="0.1" />
+                        <span class="player-time-display" id="syncTimeDisplay">0:00 / 0:00</span>
+                    </div>
+
+                    <!-- Video Actions Row -->
+                    <div class="video-actions-row">
+                        <button class="btn-action-outline" id="btnChooseAnotherVideo" type="button">
+                            🔄 Choose Another
+                        </button>
+                        <button class="btn-action-outline" id="btnSaveVideoQuick" type="button">
+                            💾 Save
+                        </button>
+                        <button class="btn-action-outline" id="btnOpenOriginalVideo" type="button">
+                            👁️ Open Original
+                        </button>
+                        <a id="btnDownloadVideo" class="btn-action-primary" download="gemini-cleaned.mp4">
+                            ⬇️ Download MP4
+                        </a>
+                    </div>
+
+                    <p class="chrome-edge-note">Supported on Chrome and Edge</p>
+                </div>
+            </div>
+
+            <!-- ========== TRUST BADGES ========== -->
+            <div class="trust-badges-section">
+                <div class="trust-badge">
+                    <span class="wreath-icon">🌿</span>
+                    <span class="trust-text">100% Local Processing</span>
+                    <span class="wreath-icon">🌿</span>
+                </div>
+                <div class="trust-badge">
+                    <span class="wreath-icon">🌿</span>
+                    <span class="trust-text">No Upload Required</span>
+                    <span class="wreath-icon">🌿</span>
+                </div>
+                <div class="trust-badge">
+                    <span class="wreath-icon">🌿</span>
+                    <span class="trust-text">Open Source Pipeline</span>
+                    <span class="wreath-icon">🌿</span>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- ========== HOW TO REMOVE WATERMARK (3 STEPS) ========== -->
+    <section class="section-steps">
+        <div class="section-container">
+            <h2 class="section-title">How to remove Gemini watermark from video & photos</h2>
+            <p class="section-subtitle">Upload supported Gemini or Veo style clips, process locally, then download a clean MP4 without sending the source media to a server.</p>
+
+            <div class="steps-grid">
+                <div class="step-card">
+                    <div class="step-badge">Step 1</div>
+                    <h3 class="step-title">Upload a Gemini or Veo file</h3>
+                    <p class="step-desc">Choose an MP4, WebM, MOV, JPG, or PNG file. Short Gemini and Veo 3 clips under 100 MB are the safest first test.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-badge">Step 2</div>
+                    <h3 class="step-title">Run the local remover</h3>
+                    <p class="step-desc">The browser pipeline detects the supported watermark region and reverses the alpha blending frame by frame — completely locally.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-badge">Step 3</div>
+                    <h3 class="step-title">Download without watermark</h3>
+                    <p class="step-desc">Download the pristine clean output with zero quality degradation or artificial inpainting artifacts.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== 6-FEATURE GRID ========== -->
+    <section class="section-features">
+        <div class="section-container">
+            <h2 class="section-title">Video watermark remover for Gemini clips</h2>
+            <p class="section-subtitle">Built for supported Gemini, Google Imagen, and Veo-style video watermarks when you need a private browser workflow instead of a generic cloud remover.</p>
+
+            <div class="features-grid">
+                <div class="feature-item">
+                    <div class="feature-icon">🔍</div>
+                    <h4 class="feature-title">Frame-by-frame detection</h4>
+                    <p class="feature-desc">Each frame leverages the dependency runtime client-side to locate the watermark region.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">⚡</div>
+                    <h4 class="feature-title">Browser-native processing</h4>
+                    <p class="feature-desc">Runs entirely in your browser using WebCodecs and canvas runtime — no server round trips.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🎞️</div>
+                    <h4 class="feature-title">MP4, WebM, MOV support</h4>
+                    <p class="feature-desc">Works with the most common video containers output in modern video runs.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">↔️</div>
+                    <h4 class="feature-title">Side-by-side preview</h4>
+                    <p class="feature-desc">Compare original and processed video in real-time before downloading.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">💻</div>
+                    <h4 class="feature-title">CLI fallback for large files</h4>
+                    <p class="feature-desc">If the browser hits limits, switch to the CLI pipeline for heavier terminal workflows.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🛡️</div>
+                    <h4 class="feature-title">Fully open source</h4>
+                    <p class="feature-desc">The entire pipeline is open source on GitHub. Audit, fork, or run offline.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FAQ ACCORDION ========== -->
+    <section class="section-faq">
+        <div class="section-container">
+            <h2 class="section-title">Video FAQ</h2>
+
+            <div class="faq-accordion">
+                <div class="faq-item active">
+                    <button class="faq-question" type="button">
+                        <span>How do I remove a Gemini watermark from video?</span>
+                        <span class="faq-toggle-icon">−</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>Choose a supported MP4, WebM, or MOV file, start local cleanup, then download the clean MP4. The browser workflow runs on your device and is best for short Gemini or Veo 3 video clips.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <button class="faq-question" type="button">
+                        <span>Can this remove Veo 3 watermarks?</span>
+                        <span class="faq-toggle-icon">+</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>Yes. It targets supported Gemini and Veo-style visible video watermarks using exact reverse alpha blending and spatial detection.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <button class="faq-question" type="button">
+                        <span>Is this a free Gemini video watermark remover?</span>
+                        <span class="faq-toggle-icon">+</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>Yes, 100% free and client-side. No credits, tokens, signups, or cloud servers required.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <button class="faq-question" type="button">
+                        <span>Are my videos uploaded to a server?</span>
+                        <span class="faq-toggle-icon">+</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>No. The browser tool runs strictly in your local browser sandbox. Your video never leaves your computer.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <button class="faq-question" type="button">
+                        <span>Is video cleanup as stable as image cleanup?</span>
+                        <span class="faq-toggle-icon">+</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>Image cleanup uses instant mathematical reverse alpha blending and is mature. Video cleanup uses browser WebCodecs decoding and encoding frame-by-frame, which works best on clips under 60 seconds.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <button class="faq-question" type="button">
+                        <span>What should I use for very large videos?</span>
+                        <span class="faq-toggle-icon">+</span>
+                    </button>
+                    <div class="faq-answer">
+                        <p>For large videos (>100MB or multi-minute clips), use the CLI version available on our GitHub repository to prevent browser memory limitations.</p>
                     </div>
                 </div>
             </div>
         </div>
     </section>
 
-    <!-- ========== HOW IT WORKS ========== -->
-    <section class="how-it-works" id="how-it-works">
-        <div class="container">
-            <div class="section-header reveal">
-                <div class="section-header__label">⚡ Simple Process</div>
-                <h2 class="section-header__title">How It Works</h2>
-                <p class="section-header__subtitle">
-                    Remove watermarks in three simple steps. No technical skills needed — the repair runs locally in your browser.
-                </p>
-            </div>
-
-            <div class="steps">
-                <div class="step reveal reveal-delay-1">
-                    <div class="step__number">📤</div>
-                    <h3 class="step__title">Upload Image</h3>
-                    <p class="step__desc">
-                        Drag and drop or browse to upload your watermarked image. We support JPG, PNG, and WEBP formats.
-                    </p>
-                </div>
-                <div class="step reveal reveal-delay-2">
-                    <div class="step__number">🤖</div>
-                    <h3 class="step__title">Local Repair</h3>
-                    <p class="step__desc">
-                        The browser detects watermark-colored regions and inpaints them while preserving image quality.
-                    </p>
-                </div>
-                <div class="step reveal reveal-delay-3">
-                    <div class="step__number">⬇️</div>
-                    <h3 class="step__title">Download Result</h3>
-                    <p class="step__desc">
-                        Preview the before and after comparison, then download your clean, watermark-free image instantly.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ========== BEFORE/AFTER DEMO ========== -->
-    <section class="demo" id="demo">
-        <div class="container">
-            <div class="section-header reveal">
-                <div class="section-header__label">🎯 See the Difference</div>
-                <h2 class="section-header__title">Before & After</h2>
-                <p class="section-header__subtitle">
-                    Drag the slider to see the watermark removal in action and check the repaired details.
-                </p>
-            </div>
-
-            <div class="demo__slider-container reveal" id="demoSlider">
-                <img class="demo__image demo__image--before" src="assets/images/demo-before.png" alt="Image with watermark" id="demoBefore" />
-                <img class="demo__image demo__image--after" src="assets/images/demo-after.png" alt="Image without watermark" id="demoAfter" />
-                <div class="demo__divider" id="demoDivider"></div>
-                <div class="demo__handle" id="demoHandle">⟺</div>
-                <div class="demo__labels">
-                    <span class="demo__label">Before</span>
-                    <span class="demo__label">After</span>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ========== FEATURES ========== -->
-    <section class="features" id="features">
-        <div class="container">
-            <div class="section-header reveal">
-                <div class="section-header__label">🚀 Why Choose Us</div>
-                <h2 class="section-header__title">Powerful Features</h2>
-                <p class="section-header__subtitle">
-                    Everything you need to remove watermarks efficiently, using free browser-based repair.
-                </p>
-            </div>
-
-            <div class="features__grid">
-                <div class="feature-card reveal reveal-delay-1" id="feature1">
-                    <div class="feature-card__icon">🆓</div>
-                    <h3 class="feature-card__title">100% Free</h3>
-                    <p class="feature-card__desc">
-                        No hidden fees, no subscriptions. Remove watermarks from your images completely free of charge.
-                    </p>
-                </div>
-                <div class="feature-card reveal reveal-delay-2" id="feature2">
-                    <div class="feature-card__icon">🔒</div>
-                    <h3 class="feature-card__title">No Signup Required</h3>
-                    <p class="feature-card__desc">
-                        Start removing watermarks instantly. No account creation, no email verification — just upload and go.
-                    </p>
-                </div>
-                <div class="feature-card reveal reveal-delay-3" id="feature3">
-                    <div class="feature-card__icon">🤖</div>
-                    <h3 class="feature-card__title">Browser Repair</h3>
-                    <p class="feature-card__desc">
-                        Local detection and inpainting remove visible watermark marks without paid API calls.
-                    </p>
-                </div>
-                <div class="feature-card reveal reveal-delay-1" id="feature4">
-                    <div class="feature-card__icon">⚡</div>
-                    <h3 class="feature-card__title">Instant Results</h3>
-                    <p class="feature-card__desc">
-                        Get your watermark-free image in seconds. No waiting, no queues — results are delivered instantly.
-                    </p>
-                </div>
-                <div class="feature-card reveal reveal-delay-2" id="feature5">
-                    <div class="feature-card__icon">🖼️</div>
-                    <h3 class="feature-card__title">Multiple Formats</h3>
-                    <p class="feature-card__desc">
-                        Support for all major image formats including JPG, JPEG, PNG, and WEBP. Upload any image type.
-                    </p>
-                </div>
-                <div class="feature-card reveal reveal-delay-3" id="feature6">
-                    <div class="feature-card__icon">✨</div>
-                    <h3 class="feature-card__title">High Quality Output</h3>
-                    <p class="feature-card__desc">
-                        Preserve original image resolution and quality with browser-side inpainting and manual touch up.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ========== REVIEWS ========== -->
-    <section class="reviews" id="reviews">
-        <div class="container">
-            <div class="reviews__top reveal">
-                <div>
-                    <div class="section-header__label">💬 Testimonials</div>
-                    <h2 class="section-header__title">What Users Say</h2>
-                </div>
-                <div class="reviews__rating">
-                    <span class="reviews__rating-number gradient-text">4.6</span>
-                    <div class="reviews__rating-info">
-                        <div class="reviews__stars">★★★★★</div>
-                        <span class="reviews__rating-count">Based on 100+ reviews</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="reviews__carousel reveal" id="reviewsCarousel">
-                <div class="review-card" id="review1">
-                    <div class="review-card__stars">★★★★★</div>
-                    <p class="review-card__text">
-                        This online tool is a time-saver! It allowed me to quickly remove watermarks from a batch of images without compromising on quality. Absolutely amazing!
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">W</div>
-                        <div>
-                            <div class="review-card__name">Wyatt Cormier</div>
-                            <div class="review-card__role">Photographer</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="review-card" id="review2">
-                    <div class="review-card__stars">★★★★★</div>
-                    <p class="review-card__text">
-                        This website saved me hours of manual editing. It's efficient, and the clean, watermark-free images speak for themselves. Highly recommended tool!
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">S</div>
-                        <div>
-                            <div class="review-card__name">Scarlett Reynolds</div>
-                            <div class="review-card__role">Designer</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="review-card" id="review3">
-                    <div class="review-card__stars">★★★★★</div>
-                    <p class="review-card__text">
-                        The results are impressive. It made my photos look as if the watermark was never there. Best watermark removal tool I've ever used online.
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">C</div>
-                        <div>
-                            <div class="review-card__name">Carter Johnson</div>
-                            <div class="review-card__role">Content Creator</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="review-card" id="review4">
-                    <div class="review-card__stars">★★★★★</div>
-                    <p class="review-card__text">
-                        I was pleasantly surprised by the speed and quality. It's a powerful tool for anyone dealing with watermarked images on a regular basis.
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">E</div>
-                        <div>
-                            <div class="review-card__name">Emily Fraser</div>
-                            <div class="review-card__role">Marketing Manager</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="review-card" id="review5">
-                    <div class="review-card__stars">★★★★☆</div>
-                    <p class="review-card__text">
-                        The effectiveness is unmatched. It handled complex watermarks with ease, and the clarity in the final images was beyond my expectations.
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">L</div>
-                        <div>
-                            <div class="review-card__name">Logan Tremblay</div>
-                            <div class="review-card__role">Freelancer</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="review-card" id="review6">
-                    <div class="review-card__stars">★★★★★</div>
-                    <p class="review-card__text">
-                        I've tried a few online watermark removers, and this is the best by far. It's fast, reliable, and the final images look professionally edited.
-                    </p>
-                    <div class="review-card__author">
-                        <div class="review-card__avatar">A</div>
-                        <div>
-                            <div class="review-card__name">Abigail Harper</div>
-                            <div class="review-card__role">Blogger</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ========== FAQ ========== -->
-    <section class="faq" id="faq">
-        <div class="container">
-            <div class="section-header reveal">
-                <div class="section-header__label">❓ Got Questions</div>
-                <h2 class="section-header__title">Frequently Asked Questions</h2>
-                <p class="section-header__subtitle">
-                    Find answers to the most common questions about our watermark removal tool.
-                </p>
-            </div>
-
-            <div class="faq__list">
-                <div class="faq__item reveal reveal-delay-1" id="faq1">
-                    <button class="faq__question" aria-expanded="false" id="faq1Btn">
-                        <span>What is a watermark remover?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
+    <!-- ========== DARK CTA BANNER ========== -->
+    <section class="section-cta">
+        <div class="section-container">
+            <div class="cta-banner-card">
+                <h2 class="cta-title">Ready to clean your Gemini videos?</h2>
+                <p class="cta-desc">Process supported Gemini and Veo 3 video watermarks locally and download a clean MP4 — free, private, and open source.</p>
+                <div class="cta-buttons">
+                    <button class="btn-cta-white" id="ctaStartNow" type="button">
+                        Remove Gemini video watermark →
                     </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            A watermark remover is a tool that removes overlays, text, or logos from digital photos. This free browser tool detects watermark regions and fills them with surrounding pixel data to improve the image appearance.
-                        </div>
-                    </div>
-                </div>
-
-                <div class="faq__item reveal reveal-delay-2" id="faq2">
-                    <button class="faq__question" aria-expanded="false" id="faq2Btn">
-                        <span>Is it free to use?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
-                    </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            Yes! Processing images directly on the website is completely free for individual use. No subscription or payment required. Simply upload your image and download the result.
-                        </div>
-                    </div>
-                </div>
-
-                <div class="faq__item reveal reveal-delay-3" id="faq3">
-                    <button class="faq__question" aria-expanded="false" id="faq3Btn">
-                        <span>Which image formats are supported?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
-                    </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            We support the most common image formats: JPG, JPEG, PNG, and WEBP. You can upload images of any size, and our tool will process them while maintaining the original resolution.
-                        </div>
-                    </div>
-                </div>
-
-                <div class="faq__item reveal reveal-delay-4" id="faq4">
-                    <button class="faq__question" aria-expanded="false" id="faq4Btn">
-                        <span>How does the watermark removal process work?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
-                    </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            The browser analyzes your image to detect watermark regions, then uses inpainting algorithms to reconstruct pixels under the watermark while preserving surrounding image quality. The entire process takes just a few seconds.
-                        </div>
-                    </div>
-                </div>
-
-                <div class="faq__item reveal reveal-delay-5" id="faq5">
-                    <button class="faq__question" aria-expanded="false" id="faq5Btn">
-                        <span>Is my data safe and private?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
-                    </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            Absolutely! All image processing happens entirely in your browser. Your images are never uploaded to any server. We take privacy seriously — your data stays on your device at all times.
-                        </div>
-                    </div>
-                </div>
-
-                <div class="faq__item reveal" id="faq6">
-                    <button class="faq__question" aria-expanded="false" id="faq6Btn">
-                        <span>Is watermark removal legal?</span>
-                        <svg class="faq__chevron" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                        </svg>
-                    </button>
-                    <div class="faq__answer">
-                        <div class="faq__answer-inner">
-                            Watermark removal can be legal depending on the context. It's perfectly fine to remove watermarks from your own images or images you have rights to. However, watermark-free images should not be used for commercial purposes without the copyright owner's consent. Always respect intellectual property rights.
-                        </div>
-                    </div>
+                    <a href="https://github.com/GargantuaX/gemini-watermark-remover" target="_blank" rel="noopener noreferrer" class="btn-cta-ghost">
+                        View on GitHub
+                    </a>
                 </div>
             </div>
         </div>
     </section>
 
     <!-- ========== FOOTER ========== -->
-    <footer class="footer" id="footer">
-        <div class="container">
-            <a href="#" class="footer__logo">
-                <span class="footer__logo-icon">✨</span>
-                WatermarkRemover
-            </a>
-
-            <p class="footer__desc">
-                Remove watermarks from your images using free browser-based repair. Get your images watermark-free instantly, without signup or subscription.
-            </p>
-
-            <div class="footer__links">
-                <a href="#" class="footer__link">Privacy Policy</a>
-                <a href="#" class="footer__link">Terms of Use</a>
-                <a href="#how-it-works" class="footer__link">How it Works</a>
-                <a href="#features" class="footer__link">Features</a>
-                <a href="#faq" class="footer__link">FAQ</a>
-                <a href="#" class="footer__link">About Us</a>
-            </div>
-
-            <div class="footer__social">
-                <a href="#" class="footer__social-link" aria-label="Facebook" id="socialFacebook">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+    <footer class="site-footer">
+        <div class="section-container footer-content">
+            <div class="footer-links">
+                <a href="https://github.com/GargantuaX/gemini-watermark-remover" target="_blank" rel="noopener" aria-label="GitHub">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
                 </a>
-                <a href="#" class="footer__social-link" aria-label="Twitter" id="socialTwitter">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                </a>
-                <a href="#" class="footer__social-link" aria-label="Instagram" id="socialInstagram">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>
-                </a>
-                <a href="#" class="footer__social-link" aria-label="LinkedIn" id="socialLinkedin">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
-                </a>
-                <a href="#" class="footer__social-link" aria-label="YouTube" id="socialYoutube">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                <a href="#" aria-label="X (Twitter)">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
                 </a>
             </div>
-
-            <div class="footer__bottom">
-                <p>© 2024 WatermarkRemover. All rights reserved. Built with ❤️</p>
-            </div>
+            <p class="footer-copy">Free online Gemini watermark remover • 100% client-side, zero server processing • MIT License</p>
         </div>
     </footer>
 
-    <!-- Video processing dependencies -->
-    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
-    <script src="js/video-processor.js?v=5"></script>
-    <script src="js/app.js?v=6"></script>
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <!-- SCRIPTS -->
+    <script src="js/gemini-engine.js?v=1"></script>
+    <script src="js/video-processor.js?v=10"></script>
+    <script src="js/app.js?v=10"></script>
 </body>
 </html>
