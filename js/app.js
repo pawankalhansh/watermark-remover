@@ -91,16 +91,16 @@
       imageWorkspace.style.display = 'block';
       videoWorkspace.style.display = 'none';
 
-      heroTitle.textContent = 'Gemini Watermark Remover';
-      heroSubtitle.innerHTML = 'Free online Gemini watermark cleaner for images, logos, and star overlays.<br>No upload, no sign-up — 100% local, private processing.';
+      heroTitle.textContent = 'Watermark Remover';
+      heroSubtitle.innerHTML = 'Free online watermark cleaner for images, logos, and star overlays.<br>No upload, no sign-up — 100% local, private processing.';
     } else {
       tabVideos.classList.add('active');
       tabImages.classList.remove('active');
       videoWorkspace.style.display = 'block';
       imageWorkspace.style.display = 'none';
 
-      heroTitle.textContent = 'Free Video Watermark Remover for Gemini and Veo 3';
-      heroSubtitle.innerHTML = 'Remove supported Gemini video watermarks without uploading your file. Use this video watermark remover for short Gemini clips locally in Chrome or Edge, then download a clean MP4.';
+      heroTitle.textContent = 'Free Video Watermark Remover';
+      heroSubtitle.innerHTML = 'Remove video watermarks without uploading your file. Use this video watermark remover locally in Chrome or Edge, then download a clean MP4.';
     }
   }
 
